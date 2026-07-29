@@ -1,5 +1,7 @@
 """主机业务逻辑服务测试"""
 
+from unittest.mock import MagicMock
+
 import pytest
 
 from remote_cmd.core.host import Host
@@ -111,3 +113,125 @@ class TestHostService:
         # 通过 service 读取，密码自动解密
         loaded = svc.get_host("secure")
         assert loaded.password == "secret"
+
+    # ========================================================================
+    # 连接管理测试
+    # ========================================================================
+
+    def test_connect_to_host(self, service):
+        """测试：建立 SSH 连接"""
+        from unittest.mock import patch
+
+        with patch.object(service._ssh, "create_client") as m:
+            service.add_host(Host(name="srv", hostname="10.0.0.1", username="admin"))
+            service.connect_to_host("srv")
+            m.assert_called_once_with(
+                hostname="10.0.0.1", username="admin", port=22,
+                password=None, key_filename=None,
+            )
+
+    def test_test_connection_success(self, service):
+        """测试：连接测试成功"""
+        from unittest.mock import patch
+
+        with patch.object(service._ssh, "test_connection", return_value=True) as m:
+            service.add_host(Host(name="srv", hostname="10.0.0.1", username="admin"))
+            result = service.test_connection("srv")
+            assert result is True
+            m.assert_called_once()
+
+    def test_test_connection_failure(self, service):
+        """测试：连接测试失败"""
+        from unittest.mock import patch
+
+        with patch.object(service._ssh, "test_connection", return_value=False) as m:
+            service.add_host(Host(name="srv", hostname="10.0.0.1", username="admin"))
+            result = service.test_connection("srv")
+            assert result is False
+
+    def test_test_all_connections(self, service):
+        """测试：并行连接测试"""
+        from unittest.mock import patch
+
+        with patch.object(service, "test_connection") as m:
+            m.side_effect = lambda name: {"a": True, "b": False, "c": True}.get(name, False)
+            service.add_host(Host(name="a", hostname="1", username="u"))
+            service.add_host(Host(name="b", hostname="2", username="u"))
+            service.add_host(Host(name="c", hostname="3", username="u"))
+            results = service.test_all_connections()
+            assert results == {"a": True, "b": False, "c": True}
+
+    def test_update_host_with_password_encrypts(self, tmp_path):
+        """测试：update_host 时密码被自动加密"""
+        key_path = tmp_path / ".key"
+        crypto = CredentialEncryption(key_path=key_path)
+        repo = JsonHostRepository(filepath=str(tmp_path / "hosts.json"), encryption=crypto)
+        svc = HostService(repository=repo, encryption=crypto)
+
+        svc.add_host(Host(name="srv", hostname="10.0.0.1", username="admin"))
+        svc.update_host("srv", password="newsecret")
+
+        updated = svc.get_host("srv")
+        assert updated.password == "newsecret"
+
+        # 磁盘上应存为加密形式
+        import json
+
+        with open(tmp_path / "hosts.json") as f:
+            data = json.load(f)
+        stored = data["hosts"]["srv"]["password"]
+        assert stored.startswith("$encrypted$")
+
+    def test_decrypt_host_failure_logs_warning(self, service):
+        """测试：密码解密失败时安静返回原始主机"""
+        from unittest.mock import patch
+
+        host = Host(name="srv", hostname="1", username="u", password="$encrypted$bad")
+        service.add_host(host)
+        patch_enc = patch.object(service._encryption, "is_encrypted", return_value=True)
+        patch_dec = patch.object(service._encryption, "decrypt", side_effect=Exception("decrypt fail"))
+        patch_enc.start()
+        patch_dec.start()
+        try:
+            result = service.get_host("srv")
+            assert result.password == "$encrypted$bad"
+        finally:
+            patch_enc.stop()
+            patch_dec.stop()
+
+    def test_connect_to_host_resolves_key_path(self, service, tmp_path):
+        """测试：_resolve_host 展开密钥路径"""
+        key_file = tmp_path / ".ssh" / "id_aws"
+        key_file.parent.mkdir(parents=True)
+        key_file.write_text("key")
+        host = Host(name="srv", hostname="1", username="u", key_filename=str(key_file))
+        service.add_host(host)
+        resolved = service._resolve_host("srv")
+        assert resolved.key_filename == str(key_file)
+
+    def test_test_all_connections_with_exception(self, service):
+        """测试：并行连接测试中个别主机抛异常"""
+        from unittest.mock import patch
+
+        def mock_test(name):
+            if name == "a":
+                return True
+            raise Exception("boom")
+
+        with patch.object(service, "test_connection") as m:
+            m.side_effect = mock_test
+            service.add_host(Host(name="a", hostname="1", username="u"))
+            service.add_host(Host(name="b", hostname="2", username="u"))
+            results = service.test_all_connections()
+            assert results == {"a": True, "b": False}
+
+    def test_custom_credential_provider(self, tmp_path):
+        """测试：传入自定义凭证提供者"""
+        from unittest.mock import MagicMock
+
+        from remote_cmd.service.credential_provider import CredentialProvider
+
+        provider = MagicMock(spec=CredentialProvider)
+        repo = JsonHostRepository(filepath=str(tmp_path / "hosts.json"))
+        svc = HostService(repository=repo, credential_provider=provider)
+        assert svc._cred_provider is provider

@@ -172,3 +172,67 @@ class TestJsonHostRepositoryEncryption:
         loaded = repo2.get("plain")
         assert loaded.password is None
         assert loaded.key_filename == "~/.ssh/id_rsa"
+
+    def test_decryption_failure_returns_none_password(self, tmp_path):
+        """测试：解密失败时密码设为 None"""
+        key_path = tmp_path / ".key"
+        crypto = CredentialEncryption(key_path=key_path)
+        path = str(tmp_path / "hosts.json")
+        repo = JsonHostRepository(filepath=path, encryption=crypto)
+        repo.save(Host(name="srv", hostname="1", username="u", password="secret"))
+        repo.flush()
+
+        # 篡改密码字段使其无法解密
+        import json
+
+        with open(path) as f:
+            data = json.load(f)
+        data["hosts"]["srv"]["password"] = "$encrypted$bad" + "x"
+        with open(path, "w") as f:
+            json.dump(data, f)
+
+        repo2 = JsonHostRepository(filepath=path, encryption=crypto)
+        loaded = repo2.get("srv")
+        assert loaded.password is None
+
+    def test_skip_invalid_host_data(self, tmp_path):
+        """测试：跳过无效主机数据"""
+        import json
+
+        path = tmp_path / "hosts.json"
+        repo = JsonHostRepository(filepath=str(path))
+        repo.save(Host(name="good", hostname="1", username="u"))
+        repo.flush()
+
+        # 写入无效主机
+        with open(path) as f:
+            data = json.load(f)
+        data["hosts"]["bad"] = {"hostname": None}  # 缺少必要字段
+        with open(path, "w") as f:
+            json.dump(data, f)
+
+        repo2 = JsonHostRepository(filepath=str(path))
+        # 应安全跳过 bad，只加载 good
+        assert repo2.count() == 1
+        assert repo2.contains("good")
+
+    def test_load_from_dict(self, tmp_path):
+        """测试：load_from_dict / to_dict"""
+        repo = JsonHostRepository(filepath=str(tmp_path / "hosts.json"))
+        hosts = {
+            "a": Host(name="a", hostname="1", username="u"),
+            "b": Host(name="b", hostname="2", username="u"),
+        }
+        repo.load_from_dict(hosts)
+        assert repo.count() == 2
+        d = repo.to_dict()
+        assert set(d.keys()) == {"a", "b"}
+
+    def test_flush_persists(self, tmp_path):
+        """测试：flush 后数据持久化到磁盘"""
+        path = tmp_path / "hosts.json"
+        repo = JsonHostRepository(filepath=str(path))
+        repo.save(Host(name="p", hostname="1", username="u"))
+        repo.flush()
+        assert path.exists()
+        assert path.stat().st_size > 10

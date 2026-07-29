@@ -19,7 +19,7 @@ from typing import Optional
 
 from remote_cmd.core.host import Host
 from remote_cmd.repository.host_repository import HostRepository
-from remote_cmd.utils.crypto import CredentialEncryption
+from remote_cmd.utils.crypto import CredentialEncryption, CredentialEncryptionError
 
 logger = logging.getLogger(__name__)
 
@@ -137,7 +137,7 @@ class JsonHostRepository(HostRepository):
             if pw and self._encryption and self._encryption.is_encrypted(pw):
                 try:
                     host_data["password"] = self._encryption.decrypt(pw)
-                except (ValueError, TypeError, KeyError) as e:
+                except (ValueError, TypeError, KeyError, CredentialEncryptionError) as e:
                     logger.error(f"解密主机 '{name}' 密码失败: {e}")
                     host_data["password"] = None
 

@@ -113,6 +113,14 @@ class BatchExecutor:
         host_service: HostService 实例，用于获取主机配置和凭据
         max_concurrency: 最大并发数，默认 10
         command_timeout: 单个命令超时时间（秒），默认 30
+        use_async: 是否启用异步内核（基于 asyncssh 的原生异步实现）。默认 False
+            保持原有 ThreadPoolExecutor 行为；设为 True 时，execute 会在内部使用
+            asyncio.run 调用 AsyncBatchExecutor 完成并发调度，从而在大规模场景下
+            降低线程/CPU 开销。注意：启用时调用线程不应已运行 asyncio 事件循环。
+
+    Note:
+        无论 `use_async` 取值，对外 `execute` 始终为同步接口，返回类型一致，
+        便于上层无差别切换。
     """
 
     def __init__(
@@ -120,10 +128,23 @@ class BatchExecutor:
         host_service: Any,
         max_concurrency: int = 10,
         command_timeout: int = 30,
+        use_async: bool = False,
     ):
         self._host_service = host_service
         self._max_concurrency = max_concurrency
         self._command_timeout = command_timeout
+        self._use_async = use_async
+        # 延迟导入以避免在未安装 asyncssh 的环境下的导入失败
+        # 使用前向引用避免在模块加载期引入 asyncssh 硬依赖（开启 use_async 时才惰性导入）
+        self._async_executor: Optional["AsyncBatchExecutor"] = None  # noqa: UP037
+        if use_async:
+            from remote_cmd.service.async_batch_executor import AsyncBatchExecutor
+
+            self._async_executor = AsyncBatchExecutor(
+                host_service=host_service,
+                max_concurrency=max_concurrency,
+                command_timeout=command_timeout,
+            )
 
     def execute(
         self,
@@ -151,6 +172,21 @@ class BatchExecutor:
         """
         if not host_names:
             raise ValueError("主机列表不能为空")
+
+        # 异步内核委托路径：同步接口 + asyncio.run(异步实现)
+        if self._async_executor is not None:
+            import asyncio
+
+            # 保证空列表校验语义一致（已在上方判断）
+            return asyncio.run(
+                self._async_executor.execute(
+                    host_names=host_names,
+                    command=command,
+                    retry_count=retry_count,
+                    retry_delay=retry_delay,
+                    progress_callback=progress_callback,
+                )
+            )
 
         total = len(host_names)
         results: dict[str, BatchHostResult] = {}

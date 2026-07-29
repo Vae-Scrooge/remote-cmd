@@ -63,6 +63,8 @@ logging.getLogger(__name__).addHandler(logging.NullHandler())
 
 # 向后兼容导出（原有 API）
 from remote_cmd.core.async_client import AsyncSSHClient, ConnectionPool
+from remote_cmd.core.async_connection_pool import AsyncConnectionPool
+from remote_cmd.core.async_ssh_client import AsyncSSHClient as NativeAsyncSSHClient
 from remote_cmd.core.host import Host
 from remote_cmd.core.host_manager import HostManager
 from remote_cmd.core.ssh_client import SSHClient
@@ -79,6 +81,7 @@ from remote_cmd.service import (
     HostService,
     SSHService,
 )
+from remote_cmd.service.async_batch_executor import AsyncBatchExecutor
 from remote_cmd.service.batch_executor import BatchExecutor, BatchHostResult, BatchResult
 from remote_cmd.service.credential_provider import KeyringCredentialProvider
 from remote_cmd.service.task_runner import Task, TaskRunner, TaskStatus
@@ -95,6 +98,9 @@ __all__ = [
     "SSHClient",
     "AsyncSSHClient",
     "ConnectionPool",
+    "NativeAsyncSSHClient",
+    "AsyncConnectionPool",
+    "AsyncBatchExecutor",
     "HostManager",
     "Host",
     # 新架构导出

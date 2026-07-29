@@ -214,3 +214,165 @@ class TestSqliteHostRepository:
         repo.save(Host(name="no-tags", hostname="10.0.0.1", username="admin"))
         retrieved = repo.get("no-tags")
         assert retrieved.tags == []
+
+    # --- 迁移 ---
+
+    def test_migrate_from_json(self, tmp_path, temp_db_path):
+        """测试：从 JSON 文件迁移到 SQLite"""
+        import json
+
+        json_path = tmp_path / "hosts.json"
+        hosts_data = {
+            "version": 2,
+            "hosts": {
+                "srv1": {"name": "srv1", "hostname": "10.0.0.1", "username": "admin", "port": 22},
+                "srv2": {"name": "srv2", "hostname": "10.0.0.2", "username": "root", "port": 2222},
+            },
+        }
+        with open(json_path, "w") as f:
+            json.dump(hosts_data, f)
+
+        repo = SqliteHostRepository(temp_db_path, migrate_from=str(json_path))
+        assert repo.count() == 2
+        assert repo.get("srv1").hostname == "10.0.0.1"
+
+    def test_migrate_from_json_nonempty_skips(self, tmp_path, temp_db_path):
+        """测试：数据库非空时跳过迁移"""
+        import json
+
+        json_path = tmp_path / "hosts.json"
+        with open(json_path, "w") as f:
+            json.dump({"version": 2, "hosts": {"x": {"name": "x", "hostname": "1", "username": "u"}}}, f)
+
+        repo = SqliteHostRepository(temp_db_path)
+        repo.save(Host(name="existing", hostname="1", username="u"))
+        repo2 = SqliteHostRepository(temp_db_path, migrate_from=str(json_path))
+        assert repo2.count() == 1
+        assert repo2.contains("existing")
+
+    def test_migrate_from_json_missing_file(self, tmp_path, temp_db_path):
+        """测试：JSON 文件缺失时静默跳过"""
+        repo = SqliteHostRepository(temp_db_path, migrate_from=str(tmp_path / "nope.json"))
+        assert repo.count() == 0
+
+    def test_migrate_from_json_invalid_data(self, tmp_path, temp_db_path):
+        """测试：JSON 格式无效时静默跳过"""
+        json_path = tmp_path / "hosts.json"
+        json_path.write_text("{bad json}", encoding="utf-8")
+        repo = SqliteHostRepository(temp_db_path, migrate_from=str(json_path))
+        assert repo.count() == 0
+
+    def test_migrate_from_json_v1_format(self, tmp_path, temp_db_path):
+        """测试：v1 格式兼容"""
+        import json
+
+        json_path = tmp_path / "hosts.json"
+        with open(json_path, "w") as f:
+            json.dump({"srv1": {"name": "srv1", "hostname": "10.0.0.1", "username": "admin"}}, f)
+
+        repo = SqliteHostRepository(temp_db_path, migrate_from=str(json_path))
+        assert repo.count() == 1
+
+    def test_migrate_from_json_bad_dict_format(self, tmp_path, temp_db_path):
+        """测试：无法识别的 JSON 格式时静默跳过"""
+        import json
+
+        json_path = tmp_path / "hosts.json"
+        with open(json_path, "w") as f:
+            json.dump({"version": 2, "hosts": ["not", "a", "dict"]}, f)
+
+        repo = SqliteHostRepository(temp_db_path, migrate_from=str(json_path))
+        assert repo.count() == 0
+
+    # --- 边缘路径 ---
+
+    def test_list_tags_corrupted_json(self, temp_db_path):
+        """测试：标签 JSON 损坏时静默跳过"""
+        import sqlite3
+
+        repo = SqliteHostRepository(temp_db_path)
+        repo.save(Host(name="good", hostname="1", username="u", tags=["web"]))
+        # 直写坏数据
+        conn = sqlite3.connect(temp_db_path)
+        conn.execute("UPDATE hosts SET tags=? WHERE name=?", ("{bad json}", "good"))
+        conn.commit()
+        conn.close()
+
+        repo = SqliteHostRepository(temp_db_path)
+        tags = repo.list_tags()
+        # 坏 JSON 被跳过，不抛异常
+        assert isinstance(tags, list)
+
+    def test_list_paginated_with_tag(self, temp_db_path):
+        """测试：按标签分页"""
+        repo = SqliteHostRepository(temp_db_path)
+        for i in range(15):
+            repo.save(Host(name=f"web{i}", hostname=f"10.0.0.{i}", username="admin", tags=["web"]))
+        for i in range(5):
+            repo.save(Host(name=f"db{i}", hostname=f"10.0.0.{i}", username="admin", tags=["db"]))
+
+        page, total = repo.list_paginated(tag="web", offset=0, limit=5)
+        assert len(page) == 5
+        assert total == 15
+        for h in page:
+            assert "web" in h.tags
+
+    def test_list_paginated_with_tag_no_match(self, temp_db_path):
+        """测试：按标签分页无匹配"""
+        repo = SqliteHostRepository(temp_db_path)
+        repo.save(Host(name="srv", hostname="1", username="u", tags=["web"]))
+        page, total = repo.list_paginated(tag="nonexistent", offset=0, limit=10)
+        assert page == []
+        assert total == 0
+
+    def test_list_with_tag_handles_corrupted_tags(self, temp_db_path):
+        """测试：损坏的标签 JSON 在 list 时被跳过"""
+        import sqlite3
+
+        repo = SqliteHostRepository(temp_db_path)
+        repo.save(Host(name="good", hostname="1", username="u", tags=["ok"]))
+        conn = sqlite3.connect(temp_db_path)
+        conn.execute("INSERT INTO hosts (name, hostname, username, tags) VALUES (?, ?, ?, ?)",
+                     ("bad", "2", "u", "{not json}"))
+        conn.commit()
+        conn.close()
+
+        repo2 = SqliteHostRepository(temp_db_path)
+        result = repo2.list(tag="ok")
+        assert len(result) >= 1
+
+    def test_row_to_host_handles_bad_tags(self, temp_db_path):
+        """测试：_row_to_host 处理损坏的标签 JSON"""
+        import sqlite3
+
+        repo = SqliteHostRepository(temp_db_path)
+        repo.save(Host(name="good", hostname="1", username="u", tags=["ok"]))
+        conn = sqlite3.connect(temp_db_path)
+        conn.execute("INSERT INTO hosts (name, hostname, username, tags) VALUES (?, ?, ?, ?)",
+                     ("bad", "2", "u", "{not json}"))
+        conn.commit()
+        conn.close()
+
+        repo2 = SqliteHostRepository(temp_db_path)
+        hosts = repo2.list()
+        assert len(hosts) == 2
+
+    def test_migrate_skips_invalid_host(self, tmp_path, temp_db_path):
+        """测试：迁移时跳过无效主机"""
+        import json
+
+        json_path = tmp_path / "hosts.json"
+        hosts_data = {
+            "version": 2,
+            "hosts": {
+                "good": {"name": "good", "hostname": "10.0.0.1", "username": "admin"},
+                "bad": {"name": "bad"},  # 缺少 hostname
+            },
+        }
+        with open(json_path, "w") as f:
+            json.dump(hosts_data, f)
+
+        repo = SqliteHostRepository(temp_db_path, migrate_from=str(json_path))
+        assert repo.count() == 1
+        assert repo.contains("good")
+        assert not repo.contains("bad")

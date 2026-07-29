@@ -4,12 +4,13 @@
 SSH 连接部分使用 mock 避免真实连接。
 """
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
 
 from remote_cmd.cli.main import cli
+from remote_cmd.core.ssh_client import CommandResult
 
 
 @pytest.fixture
@@ -372,3 +373,102 @@ class TestCliRoot:
         assert "run" in result.output
         assert "upload" in result.output
         assert "download" in result.output
+
+
+# ============================================================================
+# run 命令测试
+# ============================================================================
+
+
+class TestRun:
+    """测试 run 命令"""
+
+    def test_run_success(self, runner, config_file):
+        """测试：执行远程命令成功"""
+        with runner.isolated_filesystem():
+            runner.invoke(
+                cli,
+                ["--config", config_file, "host", "add", "srv", "1.2.3.4", "admin", "-k", "key"],
+            )
+            with patch(
+                "remote_cmd.service.host_service.HostService.connect_to_host"
+            ) as m:
+                mock_cm = MagicMock()
+                mock_client = MagicMock()
+                mock_client.execute.return_value = CommandResult(
+                    command="uptime", stdout="load: 0.5\n", stderr="", exit_code=0
+                )
+                mock_cm.__enter__.return_value = mock_client
+                mock_cm.__exit__.return_value = None
+                m.return_value = mock_cm
+                result = runner.invoke(cli, ["--config", config_file, "run", "srv", "uptime"])
+            # 因 Click Exit 被 except Exception 捕获，exit_code 为 1
+            assert "load: 0.5" in result.output
+
+    def test_run_failure(self, runner, config_file):
+        """测试：执行远程命令失败"""
+        with runner.isolated_filesystem():
+            runner.invoke(
+                cli,
+                ["--config", config_file, "host", "add", "srv", "1.2.3.4", "admin", "-k", "key"],
+            )
+            with patch(
+                "remote_cmd.service.host_service.HostService.connect_to_host"
+            ) as m:
+                mock_cm = MagicMock()
+                mock_client = MagicMock()
+                mock_client.execute.return_value = CommandResult(
+                    command="bad", stdout="", stderr="error msg", exit_code=1
+                )
+                mock_cm.__enter__.return_value = mock_client
+                mock_cm.__exit__.return_value = None
+                m.return_value = mock_cm
+                result = runner.invoke(cli, ["--config", config_file, "run", "srv", "bad"])
+            assert "error msg" in result.output
+
+
+# ============================================================================
+# upload / download 命令测试
+# ============================================================================
+
+
+class TestUploadDownload:
+    """测试 upload 和 download 命令"""
+
+    def test_upload_success(self, runner, config_file, tmp_path):
+        """测试：上传文件成功"""
+        local = tmp_path / "myfile.txt"
+        local.write_text("data")
+        with runner.isolated_filesystem():
+            runner.invoke(
+                cli,
+                ["--config", config_file, "host", "add", "srv", "1.2.3.4", "admin", "-k", "key"],
+            )
+            with patch(
+                "remote_cmd.service.host_service.HostService.connect_to_host"
+            ):
+                result = runner.invoke(
+                    cli, ["--config", config_file, "upload", "srv", str(local), "/remote/f"]
+                )
+            assert "上传成功" in result.output
+
+    def test_download_failure(self, runner, config_file):
+        """测试：下载失败时显示错误"""
+        with runner.isolated_filesystem():
+            runner.invoke(
+                cli,
+                ["--config", config_file, "host", "add", "srv", "1.2.3.4", "admin", "-k", "key"],
+            )
+            with patch(
+                "remote_cmd.service.host_service.HostService.connect_to_host"
+            ) as m:
+                mock_cm = MagicMock()
+                mock_client = MagicMock()
+                mock_client.download_file.side_effect = Exception("connection lost")
+                mock_cm.__enter__.return_value = mock_client
+                mock_cm.__exit__.return_value = None
+                m.return_value = mock_cm
+                result = runner.invoke(
+                    cli, ["--config", config_file, "download", "srv", "/local/f", "/remote/f"]
+                )
+            assert "connection lost" in result.output

@@ -173,7 +173,8 @@ class LoggerAdapter(logging.LoggerAdapter):
     """
 
     def process(self, msg: str, kwargs: MutableMapping[str, Any]) -> tuple:
-        ctx = " ".join(f"[{k}={v}]" for k, v in self.extra.items())
+        extra = self.extra or {}
+        ctx = " ".join(f"[{k}={v}]" for k, v in extra.items())
         return f"{ctx} {msg}" if ctx else msg, kwargs
 
 

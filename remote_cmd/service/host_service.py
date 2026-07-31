@@ -237,15 +237,28 @@ class HostService:
         """
         获取主机并尝试解密密码
 
-        如果主机有加密密码，先通过凭据链获取明文。
+        解密优先级：
+        1. 通过凭据提供链（环境变量 / keyring / 加密文件存储等）获取明文
+        2. 若凭据链未命中，则回退到本地 CredentialEncryption 解密存储中的加密 token
+
+        这一层兜底是必需的：CLI 的默认凭据链可能不包含
+        EncryptedFileCredentialProvider，但主机密码已被 add_host 加密落盘，
+        若不兜底解密则 connect_to_host 会拿到加密 token 当密码使用，必然认证失败。
         """
         host = self._repo.get(name)
 
-        # 尝试解密密码
+        # 尝试通过凭据链解密密码
         if host.password and self._encryption.is_encrypted(host.password):
             resolved = self._cred_provider.get_password(host)
             if resolved:
                 host.password = resolved
+            else:
+                # 凭据链未命中，回退到本地加密器解密
+                try:
+                    host.password = self._encryption.decrypt(host.password)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(f"密码解密失败 ({host.name}): {e}")
+                    # 保留加密 token，留给 SSH 层报认证失败
 
         # 尝试解析密钥路径
         if host.key_filename:

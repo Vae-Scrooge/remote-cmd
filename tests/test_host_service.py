@@ -126,8 +126,11 @@ class TestHostService:
             service.add_host(Host(name="srv", hostname="10.0.0.1", username="admin"))
             service.connect_to_host("srv")
             m.assert_called_once_with(
-                hostname="10.0.0.1", username="admin", port=22,
-                password=None, key_filename=None,
+                hostname="10.0.0.1",
+                username="admin",
+                port=22,
+                password=None,
+                key_filename=None,
             )
 
     def test_test_connection_success(self, service):
@@ -238,3 +241,111 @@ class TestHostService:
         repo = JsonHostRepository(filepath=str(tmp_path / "hosts.json"))
         svc = HostService(repository=repo, credential_provider=provider)
         assert svc._cred_provider is provider
+
+
+# ============================================================================
+# P0-A 回归测试：加密存储的主机连接时解密链路
+# ============================================================================
+
+
+class TestEncryptedPasswordConnectRoundtrip:
+    """回归：add_host 加密密码 → connect_to_host 应能拿到明文密码传给 SSHClient
+
+    历史问题：cli _build_service 的凭据链仅含 EnvCredentialProvider，
+    而 _resolve_host 没有 _encryption.decrypt 兜底，导致加密存储的主机
+    连接时把 $encrypted$... token 当作密码送给 SSH，必然认证失败。
+    """
+
+    def test_connect_to_host_decrypts_password_for_ssh(self, repo):
+        """_resolve_host 在凭据链未命中时回退 _encryption.decrypt，
+        传给 SSHService.create_client 的 password 应是明文。"""
+        from remote_cmd.service.credential_provider import (
+            ChainCredentialProvider,
+            EnvCredentialProvider,
+        )
+
+        # 与 CLI 的 _build_service 等价：链上只有 EnvCredentialProvider
+        # 不含 EncryptedFileCredentialProvider，迫使 _resolve_host 走兜底
+        cred_chain = ChainCredentialProvider([EnvCredentialProvider()])
+        service = HostService(repository=repo, credential_provider=cred_chain)
+
+        # add_host 会用内置 CredentialEncryption 加密保存密码
+        plain = "super-secret-123"
+        service.add_host(Host(name="srv", hostname="10.0.0.1", username="root", password=plain))
+
+        # 验证落盘的密码确实加密了（非明文）
+        stored = repo.get("srv")
+        assert stored.password != plain, "add_host 应加密保存密码"
+
+        # mock SSHService.create_client，断言传入的是明文密码
+        ssh_mock = MagicMock()
+        service._ssh = ssh_mock
+        service.connect_to_host("srv")
+
+        ssh_mock.create_client.assert_called_once()
+        kwargs = ssh_mock.create_client.call_args.kwargs
+        assert kwargs["password"] == plain, (
+            f"传给 SSH 的应是明文密码 {plain!r}, 实际是 {kwargs['password']!r}"
+            " —— _resolve_host 兜底解密失效"
+        )
+        assert kwargs["hostname"] == "10.0.0.1"
+        assert kwargs["username"] == "root"
+
+    def test_env_provider_takes_precedence_over_encrypted(self, repo):
+        """环境变量命中时优先使用环境变量密码，不调 _encryption.decrypt。"""
+        import os
+        from unittest.mock import patch
+
+        from remote_cmd.service.credential_provider import (
+            ChainCredentialProvider,
+            EnvCredentialProvider,
+        )
+
+        cred_chain = ChainCredentialProvider([EnvCredentialProvider()])
+        service = HostService(repository=repo, credential_provider=cred_chain)
+
+        service.add_host(
+            Host(name="srv", hostname="10.0.0.1", username="root", password="disk_plain")
+        )
+
+        # 设置环境变量覆盖
+        with patch.dict(os.environ, {"REMOTE_CMD_PASSWORD": "env_plain"}):
+            ssh_mock = MagicMock()
+            service._ssh = ssh_mock
+            service.connect_to_host("srv")
+
+        kwargs = ssh_mock.create_client.call_args.kwargs
+        assert kwargs["password"] == "env_plain"
+
+    def test_encrypted_file_provider_in_chain_avoids_fallback(self, tmp_path):
+        """若凭据链含 EncryptedFileCredentialProvider，它应直接命中，
+        无需依赖 _resolve_host 的 _encryption.decrypt 兜底分支。"""
+        from remote_cmd.service.credential_provider import (
+            ChainCredentialProvider,
+            EncryptedFileCredentialProvider,
+            EnvCredentialProvider,
+        )
+
+        repo = JsonHostRepository(filepath=str(tmp_path / "hosts.json"))
+        cred_chain = ChainCredentialProvider(
+            [
+                EnvCredentialProvider(),
+                EncryptedFileCredentialProvider(repo),
+            ]
+        )
+        service = HostService(repository=repo, credential_provider=cred_chain)
+
+        plain = "stored-via-add"
+        service.add_host(Host(name="srv", hostname="10.0.0.1", username="root", password=plain))
+
+        # 直接调 cred_chain，应能解密（无需靠 _resolve_host 兜底）
+        fetched = repo.get("srv")
+        resolved = cred_chain.get_password(fetched)
+        assert resolved == plain
+
+        # connect_to_host 也应成功（无论由链解密还是兜底解密）
+        ssh_mock = MagicMock()
+        service._ssh = ssh_mock
+        service.connect_to_host("srv")
+        kwargs = ssh_mock.create_client.call_args.kwargs
+        assert kwargs["password"] == plain

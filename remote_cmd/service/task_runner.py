@@ -138,6 +138,14 @@ class TaskRunner:
         # 获取信号量后再启动线程（限制并发）
         self._semaphore.acquire()
 
+        # 若在等待信号量期间任务已被取消，放弃启动并归还槽位。
+        # （cancel(PENDING) 只 set cancel_flag 不 release，槽位配对关系：
+        #  submit.acquire() ↔ 本处 release 或 _execute_wrapper.finally）
+        if self._cancel_flags.get(task_id, threading.Event()).is_set():
+            self._semaphore.release()
+            logger.info(f"任务在调度前已取消: [{task_id[:8]}] {task.name}")
+            return task_id
+
         thread = threading.Thread(
             target=self._execute_wrapper,
             args=(task_id, fn, args, kwargs),
@@ -170,7 +178,13 @@ class TaskRunner:
             if task.status == TaskStatus.PENDING:
                 task.status = TaskStatus.CANCELLED
                 task.completed_at = datetime.now()
-                self._semaphore.release()
+                # 设置取消标志：阻塞在信号量 acquire 的 submit 线程在拿到
+                # 槽位后会检查该标志，发现已取消则放弃启动并归还槽位。
+                # 注意：此处不 release 信号量 —— 槽位配对关系为
+                # submit.acquire() ↔ (_execute_wrapper.finally 或 submit 放弃时)
+                # 的 release，cancel 介入会破坏对称性导致双 release（P0-C）。
+                if task_id in self._cancel_flags:
+                    self._cancel_flags[task_id].set()
                 if task_id in self._events:
                     self._events[task_id].set()
                 logger.info(f"任务已取消: [{task_id[:8]}] {task.name}")
@@ -268,7 +282,10 @@ class TaskRunner:
         if not event.wait(timeout=timeout):
             raise TimeoutError(f"等待任务 '{task_id[:8]}' 超时")
 
-        return self.get_task(task_id)
+        task = self.get_task(task_id)
+        if task is None:
+            raise KeyError(f"任务 '{task_id[:8]}' 不存在")
+        return task
 
     def cancel_all(self) -> int:
         """
@@ -283,7 +300,11 @@ class TaskRunner:
                 if task.status == TaskStatus.PENDING:
                     task.status = TaskStatus.CANCELLED
                     task.completed_at = datetime.now()
-                    self._semaphore.release()
+                    # 与 cancel(PENDING) 一致：只设标志不释放信号量。
+                    # 阻塞在 acquire 的 submit 线程拿到槽位后会检查标志，
+                    # 发现已取消则归还槽位并放弃启动（P0-C）。
+                    if task_id in self._cancel_flags:
+                        self._cancel_flags[task_id].set()
                     if task_id in self._events:
                         self._events[task_id].set()
                     count += 1
@@ -364,15 +385,17 @@ class TaskRunner:
 
         负责状态转换、取消检查、异常处理和资源释放。
         """
-        # 检查是否在启动前已被取消
+        # 检查是否在启动前已被取消（竞态窗口：cancel 发生在 submit 检查之后、
+        # 本线程启动之前）。已获取的槽位必须归还，否则信号量泄漏。
         if self._cancel_flags.get(task_id, threading.Event()).is_set():
+            self._semaphore.release()
             with self._lock:
                 task = self._tasks.get(task_id)
-                if task:
+                if task and task.status == TaskStatus.PENDING:
                     task.status = TaskStatus.CANCELLED
                     task.completed_at = datetime.now()
-            self._semaphore.release()
-            self._events[task_id].set()
+            if task_id in self._events:
+                self._events[task_id].set()
             return
 
         # 设置为运行中

@@ -16,6 +16,7 @@ SQLite 主机仓库实现
 """
 
 import builtins
+import contextlib
 import json
 import logging
 import sqlite3
@@ -93,7 +94,7 @@ class SqliteHostRepository(HostRepository):
 
     def _init_db(self) -> None:
         """初始化数据库：创建表和索引"""
-        with self._get_conn() as conn:
+        with self._txn() as conn:
             conn.execute(CREATE_TABLE_SQL)
             conn.execute(CREATE_META_SQL)
             for idx_sql in CREATE_INDEXES_SQL:
@@ -114,6 +115,28 @@ class SqliteHostRepository(HostRepository):
         conn.execute("PRAGMA foreign_keys=ON;")
         return conn
 
+    @contextlib.contextmanager
+    def _txn(self):
+        """
+        事务 + 连接生命周期上下文
+
+        包装 ``with conn:`` 与 ``conn.close()`` 为单一上下文：
+        - 进入时打开新连接并执行 PRAGMA
+        - 退出时先 ``conn.__exit__`` 提交/回滚，再 ``conn.close()`` 释放 fd
+
+        解决 ``with self._get_conn() as conn:`` 不自动 close 导致的 fd 累积泄漏
+        （sqlite3.Connection.__exit__ 仅管理事务边界，不释放连接句柄）。
+
+        所有读写操作都应通过 ``with self._lock, self._txn() as conn:`` 使用，
+        保证 ``self._lock`` 串行化的同时每次操作后释放 fd。
+        """
+        conn = self._get_conn()
+        try:
+            with conn:  # 事务：commit 或 rollback
+                yield conn
+        finally:
+            conn.close()
+
     # ========================================================================
     # JSON 迁移
     # ========================================================================
@@ -125,7 +148,7 @@ class SqliteHostRepository(HostRepository):
         Args:
             json_path: JSON 文件路径
         """
-        with self._lock, self._get_conn() as conn:
+        with self._lock, self._txn() as conn:
             count = conn.execute("SELECT COUNT(*) as cnt FROM hosts").fetchone()["cnt"]
             if count > 0:
                 logger.info("数据库非空，跳过 JSON 迁移")
@@ -172,7 +195,7 @@ class SqliteHostRepository(HostRepository):
 
     def save(self, host: Host) -> None:
         """保存或更新主机"""
-        with self._lock, self._get_conn() as conn:
+        with self._lock, self._txn() as conn:
             tags_json = json.dumps(host.tags or [], ensure_ascii=False)
             conn.execute(
                 """
@@ -204,7 +227,7 @@ class SqliteHostRepository(HostRepository):
 
     def get(self, name: str) -> Host:
         """按名称获取主机"""
-        with self._lock, self._get_conn() as conn:
+        with self._lock, self._txn() as conn:
             row = conn.execute("SELECT * FROM hosts WHERE name = ?", (name,)).fetchone()
 
         if row is None:
@@ -214,7 +237,7 @@ class SqliteHostRepository(HostRepository):
 
     def delete(self, name: str) -> None:
         """按名称删除主机"""
-        with self._lock, self._get_conn() as conn:
+        with self._lock, self._txn() as conn:
             cursor = conn.execute("DELETE FROM hosts WHERE name = ?", (name,))
             conn.commit()
 
@@ -223,7 +246,7 @@ class SqliteHostRepository(HostRepository):
 
     def list(self, tag: Optional[str] = None) -> list[Host]:
         """列出主机，可选按标签筛选"""
-        with self._lock, self._get_conn() as conn:
+        with self._lock, self._txn() as conn:
             if tag:
                 # 使用 LIKE 匹配 tags JSON 中的标签
                 rows = conn.execute(
@@ -237,7 +260,7 @@ class SqliteHostRepository(HostRepository):
 
     def list_tags(self) -> builtins.list[str]:
         """列出所有标签"""
-        with self._lock, self._get_conn() as conn:
+        with self._lock, self._txn() as conn:
             rows = conn.execute("SELECT DISTINCT tags FROM hosts WHERE tags IS NOT NULL").fetchall()
 
         tags_set: set = set()
@@ -253,14 +276,14 @@ class SqliteHostRepository(HostRepository):
 
     def contains(self, name: str) -> bool:
         """检查主机是否存在"""
-        with self._lock, self._get_conn() as conn:
+        with self._lock, self._txn() as conn:
             row = conn.execute("SELECT 1 FROM hosts WHERE name = ?", (name,)).fetchone()
 
         return row is not None
 
     def count(self) -> int:
         """返回主机数量"""
-        with self._lock, self._get_conn() as conn:
+        with self._lock, self._txn() as conn:
             row = conn.execute("SELECT COUNT(*) as cnt FROM hosts").fetchone()
 
         return row["cnt"] if row else 0
@@ -270,7 +293,7 @@ class SqliteHostRepository(HostRepository):
         SQLite 写入即时生效，flush 为空操作
         此处仅触发一个检查点以压缩 WAL 日志
         """
-        with self._lock, self._get_conn() as conn:
+        with self._lock, self._txn() as conn:
             conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
 
     # ========================================================================
@@ -290,7 +313,7 @@ class SqliteHostRepository(HostRepository):
             List[Host]: 匹配的主机列表
         """
         pattern = f"%{query}%"
-        with self._lock, self._get_conn() as conn:
+        with self._lock, self._txn() as conn:
             rows = conn.execute(
                 """
                     SELECT * FROM hosts
@@ -322,7 +345,7 @@ class SqliteHostRepository(HostRepository):
         Returns:
             Tuple[List[Host], int]: (主机列表, 总数)
         """
-        with self._lock, self._get_conn() as conn:
+        with self._lock, self._txn() as conn:
             if tag:
                 count_row = conn.execute(
                     "SELECT COUNT(*) as cnt FROM hosts WHERE tags LIKE ?",

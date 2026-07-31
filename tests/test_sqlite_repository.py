@@ -333,8 +333,10 @@ class TestSqliteHostRepository:
         repo = SqliteHostRepository(temp_db_path)
         repo.save(Host(name="good", hostname="1", username="u", tags=["ok"]))
         conn = sqlite3.connect(temp_db_path)
-        conn.execute("INSERT INTO hosts (name, hostname, username, tags) VALUES (?, ?, ?, ?)",
-                     ("bad", "2", "u", "{not json}"))
+        conn.execute(
+            "INSERT INTO hosts (name, hostname, username, tags) VALUES (?, ?, ?, ?)",
+            ("bad", "2", "u", "{not json}"),
+        )
         conn.commit()
         conn.close()
 
@@ -349,8 +351,10 @@ class TestSqliteHostRepository:
         repo = SqliteHostRepository(temp_db_path)
         repo.save(Host(name="good", hostname="1", username="u", tags=["ok"]))
         conn = sqlite3.connect(temp_db_path)
-        conn.execute("INSERT INTO hosts (name, hostname, username, tags) VALUES (?, ?, ?, ?)",
-                     ("bad", "2", "u", "{not json}"))
+        conn.execute(
+            "INSERT INTO hosts (name, hostname, username, tags) VALUES (?, ?, ?, ?)",
+            ("bad", "2", "u", "{not json}"),
+        )
         conn.commit()
         conn.close()
 
@@ -377,3 +381,43 @@ class TestSqliteHostRepository:
         assert repo.count() == 1
         assert repo.contains("good")
         assert not repo.contains("bad")
+
+
+class TestConnectionLifecycle:
+    """P0-B 回归测试：每次操作后连接 fd 应被释放
+
+    历史问题：`with self._get_conn() as conn:` 中 sqlite3.Connection.__exit__
+    只提交/回滚不 close，导致每次 save/get/list 都累积一个打开的连接句柄，
+    long-running 场景下最终触发 EMFILE。
+    """
+
+    def test_no_fd_leak_over_many_operations(self, temp_db_path):
+        """循环读写后进程打开的文件描述符数量不应增长"""
+        import os
+
+        repo = SqliteHostRepository(temp_db_path)
+        host = Host(name="srv", hostname="10.0.0.1", username="admin")
+
+        proc_fd = "/proc/self/fd"
+        if not os.path.isdir(proc_fd):
+            import pytest
+
+            pytest.skip("需要 Linux /proc 支持")
+
+        # 预热（确保 WAL、缓存等已建立，基线稳定）
+        repo.save(host)
+        repo.get("srv")
+        repo.list()
+
+        fds_before = len(os.listdir(proc_fd))
+
+        for i in range(200):
+            repo.save(Host(name=f"srv{i}", hostname="1", username="u"))
+            repo.get(f"srv{i}")
+            repo.list()
+            repo.count()
+
+        fds_after = len(os.listdir(proc_fd))
+        assert fds_after <= fds_before + 2, (
+            f"数据库连接 fd 泄漏：操作前 {fds_before}，操作后 {fds_after}"
+        )

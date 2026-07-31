@@ -96,6 +96,71 @@ class TestTaskRunner:
         runner.wait_for(id1, timeout=5)
         runner.wait_for(id2, timeout=5)
 
+    def test_cancel_pending_does_not_overflow_semaphore(self):
+        """P0-C 回归：cancel(PENDING) 后信号量不被双释放，并发上限仍生效
+
+        历史问题：cancel(PENDING) 直接 release 一次，_execute_wrapper 的
+        finally 又 release 一次，导致信号量计数超过 max_workers。
+        现象：active_count = max_workers - semaphore._value 会变成负数。
+
+        正确语义：cancel(PENDING) 不 release（该任务未占用槽位），
+        阻塞中的 submit 线程拿到槽位后发现已取消，归还槽位并放弃启动。
+
+        验证：经历 "提交→取消 PENDING→等待完成" 后，信号量不溢出
+        （active_count 始终非负），且后续并发上限仍生效。
+        """
+        runner = TaskRunner(max_workers=2)
+
+        def quick():
+            return "ok"
+
+        # 每个任务正常完成（不取消）
+        ids = [runner.submit(f"ok{i}", quick) for i in range(6)]
+        for tid in ids:
+            runner.wait_for(tid, timeout=5)
+        assert runner.active_count == 0
+
+        # 制造 PENDING 任务并取消（阻塞在信号量上才能是 PENDING）
+        block = threading.Event()
+
+        def waiter():
+            block.wait(timeout=5)
+            return "done"
+
+        b1 = runner.submit("b1", waiter)
+        b2 = runner.submit("b2", waiter)
+        time.sleep(0.05)
+        assert runner.active_count == 2
+
+        # pending3 因无槽位而停留在 acquire，但其 task 已在 acquire 前登记，
+        # 可通过 list_tasks 找到。submit 同步阻塞，放到独立线程。
+        def submit_pending():
+            runner.submit("pending3", waiter)
+
+        threading.Thread(target=submit_pending, daemon=True).start()
+        time.sleep(0.05)
+        pending3 = [t for t in runner.list_tasks() if t.name == "pending3"]
+        assert len(pending3) == 1, "pending3 应已登记为任务"
+        pending_id = pending3[0].id
+        assert runner.get_status(pending_id) == TaskStatus.PENDING
+
+        # 取消 PENDING 任务（不释放信号量）
+        assert runner.cancel(pending_id) is True
+        assert runner.get_status(pending_id) == TaskStatus.CANCELLED
+
+        # 释放 blocker，让 pending3 的 submit 线程拿到槽位并发现已取消、
+        # 归还槽位；随后正常任务仍受 max_workers=2 限制
+        block.set()
+        runner.wait_for(b1, timeout=5)
+        runner.wait_for(b2, timeout=5)
+
+        # 提交 6 个快速任务，验证并发上限与信号量健康
+        tids = [runner.submit(f"after{i}", quick) for i in range(6)]
+        for tid in tids:
+            runner.wait_for(tid, timeout=5)
+
+        assert runner.active_count == 0, "信号量未恢复满值（可能泄漏）"
+
     def test_cancel_nonexistent(self):
         runner = TaskRunner()
         assert runner.cancel("nonexistent") is False
@@ -169,6 +234,10 @@ class TestTaskRunner:
 
         cancelled = runner.cancel_all()
         assert cancelled >= 1
+        for tid in pending_ids:
+            assert runner.get_status(tid) == TaskStatus.CANCELLED
+        # P0-C：cancel_all 不应释放信号量（槽位由阻塞中的 submit 醒来后归还）
+        assert runner.active_count == 1
 
     def test_cleanup_old(self):
         runner = TaskRunner()

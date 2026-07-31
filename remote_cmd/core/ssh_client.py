@@ -237,7 +237,7 @@ class SSHClient:
             logger.info(f"正在连接到 {self.config.hostname}:{self.config.port}")
 
             # 建立连接
-            self._client.connect(**connect_kwargs)  # type: ignore[arg-type]
+            self._client.connect(**connect_kwargs)
             logger.info(f"成功连接到 {self.config.hostname}")
 
             return self

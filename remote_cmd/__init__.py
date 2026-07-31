@@ -62,12 +62,17 @@ import logging
 logging.getLogger(__name__).addHandler(logging.NullHandler())
 
 # 向后兼容导出（原有 API）
-from remote_cmd.core.async_client import AsyncSSHClient, ConnectionPool
+# TODO: deprecated, remove in v2.0 —— AsyncSSHClient 与 ConnectionPool 已统一为
+#       原生 asyncssh 实现（remote_cmd.core.async_ssh_client / async_connection_pool）
 from remote_cmd.core.async_connection_pool import AsyncConnectionPool
-from remote_cmd.core.async_ssh_client import AsyncSSHClient as NativeAsyncSSHClient
+from remote_cmd.core.async_ssh_client import AsyncSSHClient
 from remote_cmd.core.host import Host
 from remote_cmd.core.host_manager import HostManager
 from remote_cmd.core.ssh_client import SSHClient
+
+# 兼容别名（历史名称）
+NativeAsyncSSHClient = AsyncSSHClient
+ConnectionPool = AsyncConnectionPool
 
 # 新架构导出（推荐）
 from remote_cmd.repository import HostRepository, JsonHostRepository

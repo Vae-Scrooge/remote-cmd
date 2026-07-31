@@ -409,15 +409,18 @@ class AsyncSSHBackend(SSHBackend):
 ### 连接复用
 
 当前实现：
-- 每次操作新建连接（简单但开销大）
+- 同步路径每次操作新建连接（简单但开销大）
+- 异步路径使用 `AsyncConnectionPool`（`remote_cmd.core.async_connection_pool`），
+  基于 asyncssh 复用连接并带空闲/生命周期回收与健康检查；由
+  `AsyncBatchExecutor` 在批量执行中启用。
 
-优化方案（计划中）：
 ```python
-# 连接池
-class ConnectionPool:
-    def get_connection(self, host: str) -> SSHClient:
-        # 复用现有连接或创建新连接
-        pass
+# 连接池（已实现，供异步批量执行使用）
+from remote_cmd.core.async_connection_pool import AsyncConnectionPool
+
+pool = AsyncConnectionPool(config_factory, max_connections=10)
+client = await pool.acquire()   # 复用现有连接或创建新连接
+await pool.release(client)
 ```
 
 ### 批量操作优化

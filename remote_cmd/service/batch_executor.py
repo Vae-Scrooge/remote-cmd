@@ -18,16 +18,22 @@
     >>> print(f"成功: {result.success}/{result.total}")
 """
 
+import inspect
 import logging
 import time
+from collections.abc import Awaitable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from typing import Callable, Optional
 
 from remote_cmd.core.host import Host
 from remote_cmd.core.ssh_client import ConnectionConfig, SSHClient
+from remote_cmd.service.host_service import HostService
 
 logger = logging.getLogger(__name__)
+
+# 进度回调签名：completed, total, current_host_name；async 或 sync 均可
+ProgressCallback = Callable[[int, int, str], Optional[Awaitable[None]]]
 
 
 @dataclass
@@ -125,7 +131,7 @@ class BatchExecutor:
 
     def __init__(
         self,
-        host_service: Any,
+        host_service: HostService,
         max_concurrency: int = 10,
         command_timeout: int = 30,
         use_async: bool = False,
@@ -152,7 +158,7 @@ class BatchExecutor:
         command: str,
         retry_count: int = 0,
         retry_delay: float = 1.0,
-        progress_callback: Optional[Callable[[int, int, str], None]] = None,
+        progress_callback: Optional[ProgressCallback] = None,
     ) -> BatchResult:
         """
         在指定主机上批量执行命令
@@ -162,7 +168,8 @@ class BatchExecutor:
             command: 要执行的命令
             retry_count: 失败重试次数，默认 0（不重试）
             retry_delay: 重试间隔（秒），默认 1.0
-            progress_callback: 进度回调，参数 (completed, total, current_host_name)
+            progress_callback: 进度回调，参数 (completed, total, current_host_name)。
+                同步内核下回调应为同步函数；异步回调请使用 use_async=True。
 
         Returns:
             BatchResult: 批量执行结果
@@ -225,7 +232,11 @@ class BatchExecutor:
                     completed += 1
 
                     if progress_callback:
-                        progress_callback(completed, total, host_name)
+                        rv = progress_callback(completed, total, host_name)
+                        if inspect.isawaitable(rv):
+                            logger.warning(
+                                "同步内核不支持异步进度回调，请使用 use_async=True"
+                            )
 
                     logger.debug(
                         f"[{completed}/{total}] {host_name}: "
@@ -284,7 +295,7 @@ class BatchExecutor:
         """
         # 解析主机配置（包括凭据解密）
         try:
-            host: Host = self._host_service._resolve_host(host_name)
+            host: Host = self._host_service.resolve_host(host_name)
         except KeyError as e:
             return BatchHostResult(
                 host=host_name,

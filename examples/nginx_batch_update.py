@@ -61,7 +61,7 @@ def add_demo_hosts(manager: HostManager) -> None:
     print(f"Added {len(hosts)} hosts to hosts.json")
 
 
-def update_nginx_web(manager: HomeManager, host_name: str, config_path: str) -> dict:
+def update_nginx_web(manager: HostManager, host_name: str, config_path: str) -> dict:
     """
     Update nginx config on a single web server.
 

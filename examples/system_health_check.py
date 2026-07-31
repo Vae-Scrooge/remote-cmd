@@ -94,7 +94,7 @@ def run_health_check(config_file: str = "hosts.json") -> None:
 
     # Print report
     print(f"\n{'='*70}")
-    print(f"  REPORT")
+    print("  REPORT")
     print(f"{'='*70}")
     print(f"  {'Host':<14} {'Disk':<8} {'Mem':<8} {'Load':<8} {'Status':<8}")
     print(f"  {'─'*14} {'─'*8} {'─'*8} {'─'*8} {'─'*8}")

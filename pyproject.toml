@@ -103,6 +103,8 @@ ignore = [
 "tests/test_async_batch_executor.py" = ["ARG001", "ARG002"]
 # 性能测试中 mock stub 方法需保留与真实方法一致的签名（self/timeout 等）
 "tests/performance/conftest.py" = ["ARG001"]
+# 示例脚本中桩函数保留参数以展示 API 用法（函数体为注释占位）
+"examples/*.py" = ["ARG001", "ARG002"]
 
 [tool.ruff.format]
 quote-style = "double"

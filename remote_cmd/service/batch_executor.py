@@ -24,10 +24,11 @@ import time
 from collections.abc import Awaitable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from typing import Callable, Optional
 
 from remote_cmd.core.host import Host
 from remote_cmd.core.ssh_client import ConnectionConfig, SSHClient
+from remote_cmd.service.host_service import HostService
 
 logger = logging.getLogger(__name__)
 
@@ -130,7 +131,7 @@ class BatchExecutor:
 
     def __init__(
         self,
-        host_service: Any,
+        host_service: HostService,
         max_concurrency: int = 10,
         command_timeout: int = 30,
         use_async: bool = False,

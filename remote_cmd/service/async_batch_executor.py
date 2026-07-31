@@ -18,7 +18,7 @@ Paramiko）相比，本执行器使用 `asyncio.Semaphore` 控制并发，并在
 import asyncio
 import logging
 import time
-from typing import Any, Optional
+from typing import Optional
 
 from remote_cmd.core.async_ssh_client import AsyncSSHClient
 from remote_cmd.core.host import Host
@@ -28,6 +28,7 @@ from remote_cmd.service.batch_executor import (
     BatchResult,
     ProgressCallback,
 )
+from remote_cmd.service.host_service import HostService
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +44,7 @@ class AsyncBatchExecutor:
 
     def __init__(
         self,
-        host_service: Any,
+        host_service: HostService,
         max_concurrency: int = 10,
         command_timeout: int = 30,
     ) -> None:

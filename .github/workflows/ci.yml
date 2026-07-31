@@ -34,8 +34,8 @@ jobs:
           python-version: ${{ matrix.python-version }}
           enable-cache: true
 
-      - name: Install async extra
-        run: uv sync --group dev --extra async
+      - name: Install dev deps and async extra
+        run: uv sync --extra dev --extra async
 
       - name: Lint with ruff
         run: uv run ruff check .

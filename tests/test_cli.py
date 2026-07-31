@@ -384,7 +384,7 @@ class TestRun:
     """测试 run 命令"""
 
     def test_run_success(self, runner, config_file):
-        """测试：执行远程命令成功"""
+        """测试：执行远程命令成功，应返回 exit_code 0"""
         with runner.isolated_filesystem():
             runner.invoke(
                 cli,
@@ -402,11 +402,11 @@ class TestRun:
                 mock_cm.__exit__.return_value = None
                 m.return_value = mock_cm
                 result = runner.invoke(cli, ["--config", config_file, "run", "srv", "uptime"])
-            # 因 Click Exit 被 except Exception 捕获，exit_code 为 1
+            assert result.exit_code == 0
             assert "load: 0.5" in result.output
 
     def test_run_failure(self, runner, config_file):
-        """测试：执行远程命令失败"""
+        """测试：执行远程命令失败，应返回 exit_code 1"""
         with runner.isolated_filesystem():
             runner.invoke(
                 cli,
@@ -424,6 +424,7 @@ class TestRun:
                 mock_cm.__exit__.return_value = None
                 m.return_value = mock_cm
                 result = runner.invoke(cli, ["--config", config_file, "run", "srv", "bad"])
+            assert result.exit_code == 1
             assert "error msg" in result.output
 
 
@@ -472,3 +473,104 @@ class TestUploadDownload:
                     cli, ["--config", config_file, "download", "srv", "/local/f", "/remote/f"]
                 )
             assert "connection lost" in result.output
+
+
+# ============================================================================
+# Exit 捕获 bug 回归测试
+# ============================================================================
+
+
+class TestExitCodePropagation:
+    """回归测试：确保 ctx.exit() 抛出的 SystemExit 不被 except Exception 捕获"""
+
+    def test_run_success_exit_code_zero(self, runner, config_file):
+        """run 命令成功时应返回 exit_code 0"""
+        with runner.isolated_filesystem():
+            runner.invoke(
+                cli,
+                ["--config", config_file, "host", "add", "srv", "1.2.3.4", "admin", "-k", "key"],
+            )
+            with patch(
+                "remote_cmd.service.host_service.HostService.connect_to_host"
+            ) as m:
+                mock_cm = MagicMock()
+                mock_client = MagicMock()
+                mock_client.execute.return_value = CommandResult(
+                    command="ls", stdout="file.txt\n", stderr="", exit_code=0
+                )
+                mock_cm.__enter__.return_value = mock_client
+                mock_cm.__exit__.return_value = None
+                m.return_value = mock_cm
+                result = runner.invoke(cli, ["--config", config_file, "run", "srv", "ls"])
+            assert result.exit_code == 0
+
+    def test_run_nonzero_exit_code_propagated(self, runner, config_file):
+        """run 命令应正确传播远程命令的非零退出码"""
+        with runner.isolated_filesystem():
+            runner.invoke(
+                cli,
+                ["--config", config_file, "host", "add", "srv", "1.2.3.4", "admin", "-k", "key"],
+            )
+            with patch(
+                "remote_cmd.service.host_service.HostService.connect_to_host"
+            ) as m:
+                mock_cm = MagicMock()
+                mock_client = MagicMock()
+                mock_client.execute.return_value = CommandResult(
+                    command="false", stdout="", stderr="", exit_code=42
+                )
+                mock_cm.__enter__.return_value = mock_client
+                mock_cm.__exit__.return_value = None
+                m.return_value = mock_cm
+                result = runner.invoke(cli, ["--config", config_file, "run", "srv", "false"])
+            assert result.exit_code == 42
+
+    def test_upload_success_exit_code_zero(self, runner, config_file, tmp_path):
+        """upload 命令成功时应返回 exit_code 0"""
+        local = tmp_path / "myfile.txt"
+        local.write_text("data")
+        with runner.isolated_filesystem():
+            runner.invoke(
+                cli,
+                ["--config", config_file, "host", "add", "srv", "1.2.3.4", "admin", "-k", "key"],
+            )
+            with patch(
+                "remote_cmd.service.host_service.HostService.connect_to_host"
+            ):
+                result = runner.invoke(
+                    cli, ["--config", config_file, "upload", "srv", str(local), "/remote/f"]
+                )
+            assert result.exit_code == 0
+
+    def test_download_success_exit_code_zero(self, runner, config_file):
+        """download 命令成功时应返回 exit_code 0"""
+        with runner.isolated_filesystem():
+            runner.invoke(
+                cli,
+                ["--config", config_file, "host", "add", "srv", "1.2.3.4", "admin", "-k", "key"],
+            )
+            with patch(
+                "remote_cmd.service.host_service.HostService.connect_to_host"
+            ) as m:
+                mock_cm = MagicMock()
+                mock_client = MagicMock()
+                mock_cm.__enter__.return_value = mock_client
+                mock_cm.__exit__.return_value = None
+                m.return_value = mock_cm
+                result = runner.invoke(
+                    cli, ["--config", config_file, "download", "srv", "/local/f", "/remote/f"]
+                )
+            assert result.exit_code == 0
+
+    def test_host_add_error_exits_nonzero(self, runner, config_file):
+        """host add 重复主机时应返回非零退出码"""
+        with runner.isolated_filesystem():
+            runner.invoke(
+                cli,
+                ["--config", config_file, "host", "add", "dup", "1.2.3.4", "admin", "-k", "key"],
+            )
+            result = runner.invoke(
+                cli,
+                ["--config", config_file, "host", "add", "dup", "5.6.7.8", "admin", "-k", "key"],
+            )
+            assert result.exit_code != 0

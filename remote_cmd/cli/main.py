@@ -20,6 +20,7 @@ import os
 from typing import Any, Optional
 
 import click
+from click.exceptions import Exit
 
 from remote_cmd.core.host import Host
 from remote_cmd.repository.json_host_repository import JsonHostRepository
@@ -180,6 +181,8 @@ def host_add(
     try:
         service.add_host(host)
         click.echo(f"✓ 主机 '{name}' 添加成功")
+    except (Exit, click.Abort):
+        raise
     except ValueError as e:
         click.echo(f"✗ 错误: {e}", err=True)
         ctx.exit(1)
@@ -221,6 +224,8 @@ def host_remove(ctx, name: str):
     try:
         service.remove_host(name)
         click.echo(f"✓ 主机 '{name}' 已移除")
+    except (Exit, click.Abort):
+        raise
     except KeyError as e:
         click.echo(f"✗ 错误: {e}", err=True)
         ctx.exit(1)
@@ -255,6 +260,8 @@ def host_show(ctx, name: str):
         click.echo(f"  标签:      {tags_str}")
         click.echo(f"  描述:      {host.description or '-'}")
         click.echo(f"{'=' * 50}\n")
+    except (Exit, click.Abort):
+        raise
     except KeyError as e:
         click.echo(f"✗ 错误: {e}", err=True)
         ctx.exit(1)
@@ -301,6 +308,8 @@ def run(ctx, host_name: str, command: str):
 
             ctx.exit(result.exit_code)
 
+    except (Exit, click.Abort):
+        raise
     except Exception as e:  # noqa: BLE001
         click.echo(f"✗ 错误: {e}", err=True)
         ctx.exit(1)
@@ -325,6 +334,8 @@ def upload(ctx, host_name: str, local_path: str, remote_path: str):
         with service.connect_to_host(host_name) as client:
             client.upload_file(local_path, remote_path)
             click.echo(f"✓ 上传成功: {local_path} -> {host_name}:{remote_path}")
+    except (Exit, click.Abort):
+        raise
     except Exception as e:  # noqa: BLE001
         click.echo(f"✗ 错误: {e}", err=True)
         ctx.exit(1)
@@ -349,6 +360,8 @@ def download(ctx, host_name: str, local_path: str, remote_path: str):
         with service.connect_to_host(host_name) as client:
             client.download_file(remote_path, local_path)
             click.echo(f"✓ 下载成功: {host_name}:{remote_path} -> {local_path}")
+    except (Exit, click.Abort):
+        raise
     except Exception as e:  # noqa: BLE001
         click.echo(f"✗ 错误: {e}", err=True)
         ctx.exit(1)

@@ -1,8 +1,8 @@
 """原生异步 SSH 连接池（基于 asyncssh 实现）。
 
-与 `remote_cmd.core.async_client.ConnectionPool`（内部包装同步 Paramiko）相比，
-本连接池完全使用 asyncssh 原生异步 API，不依赖 `_sync` 句柄，因此不会触发线程
-池调度，可在大规模并发批量执行场景下显著降低 CPU 与线程占用。
+本连接池完全使用 asyncssh 原生异步 API，不依赖线程池调度，可在大规模并发
+批量执行场景下显著降低 CPU 与线程占用。它是项目中唯一的连接池实现
+（旧的包装同步 Paramiko 版本已在 P2 合并中移除）。
 
 设计要点：
 - `asyncio.Queue` 维护空闲连接；`asyncio.Semaphore` 控制最大连接数。

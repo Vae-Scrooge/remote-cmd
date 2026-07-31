@@ -1,14 +1,13 @@
 """
 原生异步 SSH 客户端（基于 asyncssh 实现）
 
-与 `remote_cmd.core.async_client` 中基于 `run_in_executor` 包装 Paramiko 的实现相比，
 本模块直接使用 asyncssh 原生 async/await API，可避免线程池开销，在大规模并发
-场景下显著降低 CPU 与线程占用。
+场景下显著降低 CPU 与线程占用。它是项目中唯一的 AsyncSSHClient 实现
+（旧的 run_in_executor 包装 Paramiko 版本已在 P2 合并中移除）。
 
 设计目标：
-- 对外 API 与现有 `AsyncSSHClient` 保持一致（connect / disconnect / execute /
-  execute_sudo / upload_file / download_file / list_remote_directory），便于
-  在 P0 阶段平滑切换与回退。
+- 对外 API 与同步 `SSHClient` 保持一致（connect / disconnect / execute /
+  execute_sudo / upload_file / download_file / list_remote_directory）。
 - 复用 `ConnectionConfig` / `CommandResult` 数据契约，保证与同步 SSHClient 行为对齐。
 - 安全：默认使用 known_hosts 校验；未显式提供时回退到 asyncssh 的默认策略
   （与同步实现 RejectPolicy 等价），仅在配置显式开启 AutoAdd 时才放宽。
@@ -35,8 +34,7 @@ logger = logging.getLogger(__name__)
 class AsyncSSHClient:
     """基于 asyncssh 的原生异步 SSH 客户端。
 
-    对外接口与 `remote_cmd.core.async_client.AsyncSSHClient` 一致，便于在不改动
-    调用方的前提下切换到底层原生异步实现。
+    对外接口与同步 `SSHClient` 一致，是项目中唯一的异步 SSH 客户端实现。
 
     Args:
         config: SSH 连接配置

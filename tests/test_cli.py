@@ -390,9 +390,7 @@ class TestRun:
                 cli,
                 ["--config", config_file, "host", "add", "srv", "1.2.3.4", "admin", "-k", "key"],
             )
-            with patch(
-                "remote_cmd.service.host_service.HostService.connect_to_host"
-            ) as m:
+            with patch("remote_cmd.service.host_service.HostService.connect_to_host") as m:
                 mock_cm = MagicMock()
                 mock_client = MagicMock()
                 mock_client.execute.return_value = CommandResult(
@@ -412,9 +410,7 @@ class TestRun:
                 cli,
                 ["--config", config_file, "host", "add", "srv", "1.2.3.4", "admin", "-k", "key"],
             )
-            with patch(
-                "remote_cmd.service.host_service.HostService.connect_to_host"
-            ) as m:
+            with patch("remote_cmd.service.host_service.HostService.connect_to_host") as m:
                 mock_cm = MagicMock()
                 mock_client = MagicMock()
                 mock_client.execute.return_value = CommandResult(
@@ -445,9 +441,7 @@ class TestUploadDownload:
                 cli,
                 ["--config", config_file, "host", "add", "srv", "1.2.3.4", "admin", "-k", "key"],
             )
-            with patch(
-                "remote_cmd.service.host_service.HostService.connect_to_host"
-            ):
+            with patch("remote_cmd.service.host_service.HostService.connect_to_host"):
                 result = runner.invoke(
                     cli, ["--config", config_file, "upload", "srv", str(local), "/remote/f"]
                 )
@@ -460,9 +454,7 @@ class TestUploadDownload:
                 cli,
                 ["--config", config_file, "host", "add", "srv", "1.2.3.4", "admin", "-k", "key"],
             )
-            with patch(
-                "remote_cmd.service.host_service.HostService.connect_to_host"
-            ) as m:
+            with patch("remote_cmd.service.host_service.HostService.connect_to_host") as m:
                 mock_cm = MagicMock()
                 mock_client = MagicMock()
                 mock_client.download_file.side_effect = Exception("connection lost")
@@ -490,9 +482,7 @@ class TestExitCodePropagation:
                 cli,
                 ["--config", config_file, "host", "add", "srv", "1.2.3.4", "admin", "-k", "key"],
             )
-            with patch(
-                "remote_cmd.service.host_service.HostService.connect_to_host"
-            ) as m:
+            with patch("remote_cmd.service.host_service.HostService.connect_to_host") as m:
                 mock_cm = MagicMock()
                 mock_client = MagicMock()
                 mock_client.execute.return_value = CommandResult(
@@ -511,9 +501,7 @@ class TestExitCodePropagation:
                 cli,
                 ["--config", config_file, "host", "add", "srv", "1.2.3.4", "admin", "-k", "key"],
             )
-            with patch(
-                "remote_cmd.service.host_service.HostService.connect_to_host"
-            ) as m:
+            with patch("remote_cmd.service.host_service.HostService.connect_to_host") as m:
                 mock_cm = MagicMock()
                 mock_client = MagicMock()
                 mock_client.execute.return_value = CommandResult(
@@ -534,9 +522,7 @@ class TestExitCodePropagation:
                 cli,
                 ["--config", config_file, "host", "add", "srv", "1.2.3.4", "admin", "-k", "key"],
             )
-            with patch(
-                "remote_cmd.service.host_service.HostService.connect_to_host"
-            ):
+            with patch("remote_cmd.service.host_service.HostService.connect_to_host"):
                 result = runner.invoke(
                     cli, ["--config", config_file, "upload", "srv", str(local), "/remote/f"]
                 )
@@ -549,9 +535,7 @@ class TestExitCodePropagation:
                 cli,
                 ["--config", config_file, "host", "add", "srv", "1.2.3.4", "admin", "-k", "key"],
             )
-            with patch(
-                "remote_cmd.service.host_service.HostService.connect_to_host"
-            ) as m:
+            with patch("remote_cmd.service.host_service.HostService.connect_to_host") as m:
                 mock_cm = MagicMock()
                 mock_client = MagicMock()
                 mock_cm.__enter__.return_value = mock_client
@@ -574,3 +558,160 @@ class TestExitCodePropagation:
                 ["--config", config_file, "host", "add", "dup", "5.6.7.8", "admin", "-k", "key"],
             )
             assert result.exit_code != 0
+
+
+# ============================================================================
+# batch-run 命令测试
+# ============================================================================
+
+
+def make_batch_result(success_hosts=(), failed_hosts=()):
+    """构造 BatchResult，results 中每个主机附带 BatchHostResult"""
+    from remote_cmd.service.batch_executor import BatchHostResult, BatchResult
+
+    results = {}
+    for h in success_hosts:
+        results[h] = BatchHostResult(host=h, success=True, command="uptime", exit_code=0)
+    for h in failed_hosts:
+        results[h] = BatchHostResult(
+            host=h, success=False, command="uptime", exit_code=1, error="boom"
+        )
+    return BatchResult(
+        total=len(success_hosts) + len(failed_hosts),
+        success=len(success_hosts),
+        failed=len(failed_hosts),
+        duration=1.5,
+        results=results,
+    )
+
+
+class TestBatchRun:
+    """测试 batch-run 命令"""
+
+    def test_batch_run_success(self, runner, config_file):
+        """测试：全部成功时 exit_code 0 且显示成功主机"""
+        with runner.isolated_filesystem():
+            runner.invoke(
+                cli,
+                ["--config", config_file, "host", "add", "srv1", "1.2.3.4", "admin", "-k", "key"],
+            )
+            runner.invoke(
+                cli,
+                ["--config", config_file, "host", "add", "srv2", "5.6.7.8", "admin", "-k", "key"],
+            )
+            with patch("remote_cmd.cli.main.BatchExecutor") as mock_executor_cls:
+                mock_executor = MagicMock()
+                mock_executor.execute.return_value = make_batch_result(
+                    success_hosts=["srv1", "srv2"]
+                )
+                mock_executor_cls.return_value = mock_executor
+                result = runner.invoke(
+                    cli,
+                    [
+                        "--config",
+                        config_file,
+                        "batch-run",
+                        "srv1",
+                        "srv2",
+                        "uptime",
+                        "-C",
+                        "5",
+                        "-T",
+                        "10",
+                        "-r",
+                        "2",
+                    ],
+                )
+            assert result.exit_code == 0
+            assert "执行结果汇总" in result.output
+            assert "成功:     2" in result.output
+            assert "失败:     0" in result.output
+            assert "srv1" in result.output
+            assert "srv2" in result.output
+
+    def test_batch_run_partial_failure_exits_1(self, runner, config_file):
+        """测试：部分失败时 exit_code 1 且显示失败主机"""
+        with runner.isolated_filesystem():
+            runner.invoke(
+                cli,
+                ["--config", config_file, "host", "add", "srv1", "1.2.3.4", "admin", "-k", "key"],
+            )
+            with patch("remote_cmd.cli.main.BatchExecutor") as mock_executor_cls:
+                mock_executor = MagicMock()
+                mock_executor.execute.return_value = make_batch_result(
+                    success_hosts=["srv1"], failed_hosts=["srv2"]
+                )
+                mock_executor_cls.return_value = mock_executor
+                result = runner.invoke(
+                    cli,
+                    ["--config", config_file, "batch-run", "srv1", "srv2", "uptime"],
+                )
+            assert result.exit_code == 1
+            assert "失败主机:" in result.output
+            assert "boom" in result.output
+
+    def test_batch_run_show_failures_only(self, runner, config_file):
+        """测试：--show-failures 时不显示成功主机"""
+        with runner.isolated_filesystem():
+            runner.invoke(
+                cli,
+                ["--config", config_file, "host", "add", "srv1", "1.2.3.4", "admin", "-k", "key"],
+            )
+            with patch("remote_cmd.cli.main.BatchExecutor") as mock_executor_cls:
+                mock_executor = MagicMock()
+                mock_executor.execute.return_value = make_batch_result(
+                    success_hosts=["srv1"], failed_hosts=["srv2"]
+                )
+                mock_executor_cls.return_value = mock_executor
+                result = runner.invoke(
+                    cli,
+                    [
+                        "--config",
+                        config_file,
+                        "batch-run",
+                        "srv1",
+                        "srv2",
+                        "uptime",
+                        "--show-failures",
+                    ],
+                )
+            assert result.exit_code == 1
+            assert "成功主机:" not in result.output
+            assert "失败主机:" in result.output
+
+    def test_batch_run_passes_options(self, runner, config_file):
+        """测试：并发/超时/重试参数传递给 BatchExecutor"""
+        with runner.isolated_filesystem():
+            with patch("remote_cmd.cli.main.BatchExecutor") as mock_executor_cls:
+                mock_executor = MagicMock()
+                mock_executor.execute.return_value = make_batch_result(success_hosts=["srv1"])
+                mock_executor_cls.return_value = mock_executor
+                result = runner.invoke(
+                    cli,
+                    [
+                        "--config",
+                        config_file,
+                        "batch-run",
+                        "srv1",
+                        "uptime",
+                        "-C",
+                        "3",
+                        "-T",
+                        "15",
+                        "-r",
+                        "4",
+                        "--retry-delay",
+                        "2.5",
+                    ],
+                )
+            assert result.exit_code == 0
+            mock_executor_cls.assert_called_once()
+            _, kwargs = mock_executor_cls.call_args
+            assert kwargs["max_concurrency"] == 3
+            assert kwargs["command_timeout"] == 15
+            call_kwargs = mock_executor.execute.call_args.kwargs
+            assert call_kwargs["host_names"] == ["srv1"]
+            assert call_kwargs["command"] == "uptime"
+            assert call_kwargs["retry_count"] == 4
+            assert call_kwargs["retry_delay"] == 2.5
+            assert callable(call_kwargs["progress_callback"])

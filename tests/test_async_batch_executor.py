@@ -121,6 +121,241 @@ class TestAsyncConnectionPool:
         await pool.close_all()
         assert pool.get_metrics()["total_connections"] == 0
 
+    @pytest.mark.asyncio
+    async def test_reuse_free_connection(self, config, patched_client):
+        """测试：空闲队列中有健康连接时直接复用，不新建"""
+        pool = AsyncConnectionPool(config=config, max_connections=3)
+        try:
+            c1 = await pool.acquire()
+            await pool.release(c1)
+            c2 = await pool.acquire()
+            assert c1 is c2
+            assert pool.get_metrics()["total_created"] == 1
+        finally:
+            await pool.close_all()
+
+    @pytest.mark.asyncio
+    async def test_acquire_skips_unhealthy_free(self, config, patched_client):
+        """测试：空闲连接探活失败时关闭并新建"""
+        pool = AsyncConnectionPool(config=config, max_connections=3)
+        try:
+            c1 = await pool.acquire()
+            await pool.release(c1)
+            # 让探活失败：execute 抛异常
+            c1.execute = AsyncMock(side_effect=OSError("connection dead"))
+            c2 = await pool.acquire()
+            assert c1 is not c2
+            assert pool.get_metrics()["reconnects"] >= 1
+        finally:
+            await pool.close_all()
+
+    @pytest.mark.asyncio
+    async def test_acquire_disconnected_free(self, config, patched_client):
+        """测试：空闲连接已断开时关闭并新建"""
+        pool = AsyncConnectionPool(config=config, max_connections=3)
+        try:
+            c1 = await pool.acquire()
+            await pool.release(c1)
+            c1.is_connected.return_value = False
+            c2 = await pool.acquire()
+            assert c1 is not c2
+            assert pool.get_metrics()["total_created"] == 2
+        finally:
+            await pool.close_all()
+
+    @pytest.mark.asyncio
+    async def test_release_disconnected_closes(self, config, patched_client):
+        """测试：释放已断开的连接时关闭并释放信号量"""
+        pool = AsyncConnectionPool(config=config, max_connections=2)
+        try:
+            c1 = await pool.acquire()
+            c2 = await pool.acquire()
+            c1.is_connected.return_value = False
+            await pool.release(c1)
+            # 释放后槽位可用，可再获取
+            c3 = await pool.acquire()
+            assert c3 is not None
+            await pool.release(c2)
+            await pool.release(c3)
+        finally:
+            await pool.close_all()
+
+    @pytest.mark.asyncio
+    async def test_release_expired_meta(self, config, patched_client):
+        """测试：释放生命周期过期的连接时关闭"""
+        pool = AsyncConnectionPool(config=config, max_connections=2, max_lifetime=1)
+        try:
+            c1 = await pool.acquire()
+            pool._meta[id(c1)]["created_at"] = 0
+            await pool.release(c1)
+            assert pool._free.qsize() == 0
+            assert pool._free.empty()
+        finally:
+            await pool.close_all()
+
+    @pytest.mark.asyncio
+    async def test_release_none(self, config, patched_client):
+        """测试：release(None) 安全返回"""
+        pool = AsyncConnectionPool(config=config)
+        try:
+            await pool.release(None)
+        finally:
+            await pool.close_all()
+
+    @pytest.mark.asyncio
+    async def test_release_queue_full(self, config, patched_client):
+        """测试：空闲队列满时关闭连接"""
+        pool = AsyncConnectionPool(config=config, max_connections=2)
+        try:
+            c1 = await pool.acquire()
+            c2 = await pool.acquire()
+            pool._free = asyncio.Queue(maxsize=1)  # 容量为 1
+            await pool.release(c1)  # 占满队列
+            await pool.release(c2)  # put_nowait 失败 → 关闭
+            assert pool.get_metrics()["total_connections"] == 1
+        finally:
+            await pool.close_all()
+
+    @pytest.mark.asyncio
+    async def test_check_connection_no_meta(self, config, patched_client):
+        """测试：无元数据（非池内创建）的连接探活直接放行"""
+        pool = AsyncConnectionPool(config=config)
+        try:
+            conn = _client_mock()
+            assert await pool._check_connection(conn) is True
+        finally:
+            await pool.close_all()
+
+    @pytest.mark.asyncio
+    async def test_cleanup_expired_no_meta(self, config, patched_client):
+        """测试：清理无元数据的空闲连接"""
+        pool = AsyncConnectionPool(config=config, max_connections=2)
+        try:
+            conn = await pool.acquire()
+            pool._free.put_nowait(conn)
+            pool._meta.pop(id(conn))  # 模拟元数据丢失
+            await pool._cleanup_expired()
+            assert pool._free.qsize() == 0
+        finally:
+            await pool.close_all()
+
+    @pytest.mark.asyncio
+    async def test_monitor_loop_handles_exception(self, config, patched_client):
+        """测试：监控循环中异常被捕获并继续运行"""
+        pool = AsyncConnectionPool(config=config, health_check_interval=0.01)
+        pool._cleanup_expired = AsyncMock(
+            side_effect=[RuntimeError("boom"), None, None, None]
+        )
+        pool._start_monitor()
+        await asyncio.sleep(0.05)
+        pool.stop_monitor()
+        await asyncio.sleep(0)
+        assert pool._monitor_task.done()
+
+    @pytest.mark.asyncio
+    async def test_create_connection_failure(self, config):
+        """测试：创建连接失败时释放信号量并累计失败数"""
+        def failing_factory(cfg):
+            client = _client_mock()
+            client.connect = AsyncMock(side_effect=OSError("auth failed"))
+            return client
+
+        pool = AsyncConnectionPool(config=config, max_connections=1)
+        try:
+            with patch(
+                "remote_cmd.core.async_connection_pool.AsyncSSHClient",
+                side_effect=failing_factory,
+            ), pytest.raises(OSError):
+                await pool.acquire()
+            assert pool.get_metrics()["failed"] == 1
+        finally:
+            await pool.close_all()
+
+    @pytest.mark.asyncio
+    async def test_check_connection_lifetime(self, config, patched_client):
+        """测试：探活检查生命周期超时返回 False"""
+        pool = AsyncConnectionPool(config=config, max_lifetime=1)
+        try:
+            conn = await pool.acquire()
+            pool._meta[id(conn)]["created_at"] = 0
+            assert await pool._check_connection(conn) is False
+        finally:
+            await pool.close_all()
+
+    @pytest.mark.asyncio
+    async def test_check_connection_probe_success(self, config, patched_client):
+        """测试：探活命令成功返回 True"""
+        pool = AsyncConnectionPool(config=config)
+        try:
+            conn = await pool.acquire()
+            assert await pool._check_connection(conn) is True
+        finally:
+            await pool.close_all()
+
+    @pytest.mark.asyncio
+    async def test_monitor_loop_cancelled(self, config, patched_client):
+        """测试：监控任务可被取消"""
+        pool = AsyncConnectionPool(
+            config=config, health_check_interval=0.01
+        )
+        pool._start_monitor()
+        assert pool._monitor_task is not None
+        await asyncio.sleep(0.05)
+        pool.stop_monitor()
+        await asyncio.sleep(0)  # 让取消完成
+        assert pool._monitor_task.done()
+
+    @pytest.mark.asyncio
+    async def test_monitor_start_idempotent(self, config, patched_client):
+        """测试：重复启动监控不重复创建任务"""
+        pool = AsyncConnectionPool(config=config, health_check_interval=60)
+        pool._start_monitor()
+        first = pool._monitor_task
+        pool._start_monitor()
+        assert pool._monitor_task is first
+        pool.stop_monitor()
+
+    @pytest.mark.asyncio
+    async def test_cleanup_expired(self, config, patched_client):
+        """测试：清理过期与空闲超时连接"""
+        pool = AsyncConnectionPool(
+            config=config, max_connections=3, max_lifetime=1, idle_timeout=1
+        )
+        try:
+            c1 = await pool.acquire()
+            c2 = await pool.acquire()
+            await pool.release(c1)
+            await pool.release(c2)
+            pool._meta[id(c1)]["created_at"] = 0  # 生命周期过期
+            pool._meta[id(c2)]["last_used"] = 0  # 空闲超时
+            await pool._cleanup_expired()
+            assert pool._free.qsize() == 0
+        finally:
+            await pool.close_all()
+
+    @pytest.mark.asyncio
+    async def test_cleanup_expired_keeps_healthy(self, config, patched_client):
+        """测试：健康连接在清理后保留"""
+        pool = AsyncConnectionPool(config=config, max_connections=3)
+        try:
+            c1 = await pool.acquire()
+            await pool.release(c1)
+            await pool._cleanup_expired()
+            assert pool._free.qsize() == 1
+        finally:
+            await pool.close_all()
+
+    @pytest.mark.asyncio
+    async def test_async_context_manager(self, config, patched_client):
+        """测试：async with pool 启动监控并在退出时关闭所有连接"""
+        pool = AsyncConnectionPool(config=config, max_connections=2)
+        async with pool:
+            assert pool._monitor_task is not None
+            await pool.acquire()
+        await asyncio.sleep(0)  # 让取消完成
+        assert pool._monitor_task is None or pool._monitor_task.done()
+        assert pool.get_metrics()["total_connections"] == 0
+
 
 # ============================================================================
 # AsyncBatchExecutor 测试

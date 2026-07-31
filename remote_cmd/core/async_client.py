@@ -251,16 +251,16 @@ class ConnectionPool:
     async def release(self, conn: AsyncSSHClient) -> None:
         """释放连接回池中"""
         if conn and conn.is_connected():
-            conn._last_used = time.time()
-            # 检查 idle timeout
+            # 检查 idle timeout（需在刷新 last_used 之前计算）
             idle = time.time() - conn._last_used
             if idle > self._idle_timeout:
                 logger.debug(f"连接 {conn._connection_id[:8]} 空闲超时，关闭")
                 await self._close_connection(conn)
                 self._total_released += 1
                 return
+            conn._last_used = time.time()
             try:
-                await self._free.put(conn)
+                self._free.put_nowait(conn)
                 self._total_released += 1
             except asyncio.QueueFull:
                 await self._close_connection(conn)

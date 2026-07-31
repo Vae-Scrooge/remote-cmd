@@ -166,7 +166,7 @@ class HostService:
         Returns:
             SSHClient: 已连接的客户端
         """
-        host = self._resolve_host(name)
+        host = self.resolve_host(name)
         client = self._ssh.create_client(
             hostname=host.hostname,
             username=host.username,
@@ -186,7 +186,7 @@ class HostService:
         Returns:
             bool: 连接成功返回 True
         """
-        host = self._resolve_host(name)
+        host = self.resolve_host(name)
         return self._ssh.test_connection(
             hostname=host.hostname,
             username=host.username,
@@ -233,7 +233,7 @@ class HostService:
                 logger.warning(f"密码解密失败 ({host.name}): {e}")
         return host
 
-    def _resolve_host(self, name: str) -> Host:
+    def resolve_host(self, name: str) -> Host:
         """
         获取主机并尝试解密密码
 

@@ -18,18 +18,18 @@ Paramiko）相比，本执行器使用 `asyncio.Semaphore` 控制并发，并在
 import asyncio
 import logging
 import time
-from collections.abc import Awaitable
-from typing import Any, Callable, Optional
+from typing import Any, Optional
 
 from remote_cmd.core.async_ssh_client import AsyncSSHClient
 from remote_cmd.core.host import Host
 from remote_cmd.core.ssh_client import ConnectionConfig
-from remote_cmd.service.batch_executor import BatchHostResult, BatchResult
+from remote_cmd.service.batch_executor import (
+    BatchHostResult,
+    BatchResult,
+    ProgressCallback,
+)
 
 logger = logging.getLogger(__name__)
-
-# 进度回调签名：async 或 sync 均可
-ProgressCallback = Callable[[int, int, str], Optional[Awaitable[None]]]
 
 
 class AsyncBatchExecutor:
@@ -112,7 +112,12 @@ class AsyncBatchExecutor:
                     result.duration,
                 )
 
-        await asyncio.gather(*(_per_host(n) for n in host_names))
+        tasks = [asyncio.create_task(_per_host(n)) for n in host_names]
+        try:
+            await asyncio.gather(*tasks)
+        except KeyboardInterrupt:
+            logger.warning("用户中断批量执行")
+            await self._cancel_and_mark_interrupted(tasks, host_names, results, command)
 
         duration = time.time() - start
         success_count = sum(1 for r in results.values() if r.success)
@@ -127,6 +132,28 @@ class AsyncBatchExecutor:
             results=results,
         )
 
+    async def _cancel_and_mark_interrupted(
+        self,
+        tasks: list[asyncio.Task],
+        host_names: list[str],
+        results: dict[str, BatchHostResult],
+        command: str,
+    ) -> None:
+        """用户中断时取消所有任务，并为未完成主机创建失败记录。"""
+        for t in tasks:
+            t.cancel()
+        # 等待取消完成，避免 pending task 告警
+        await asyncio.gather(*tasks, return_exceptions=True)
+        # 为尚未有结果的主机创建失败记录
+        for name in host_names:
+            if name not in results:
+                results[name] = BatchHostResult(
+                    host=name,
+                    success=False,
+                    command=command,
+                    error="用户中断",
+                )
+
     async def _execute_on_host(
         self,
         host_name: str,
@@ -137,7 +164,7 @@ class AsyncBatchExecutor:
         """在单台主机上异步执行命令（含重试逻辑）。"""
         # 主机解析
         try:
-            host: Host = self._host_service._resolve_host(host_name)
+            host: Host = self._host_service.resolve_host(host_name)
         except KeyError as e:
             return BatchHostResult(
                 host=host_name, success=False, command=command,

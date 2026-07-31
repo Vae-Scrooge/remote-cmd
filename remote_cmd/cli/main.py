@@ -39,7 +39,7 @@ def _build_service(config_file: str) -> HostService:
 
     凭据链顺序：环境变量 → 加密文件存储。
     加密文件存储 EncryptedFileCredentialProvider 用于回退解密 add_host 已落盘
-    的加密密码；与 HostService._resolve_host 的 _encryption.decrypt 兜底共同
+    的加密密码；与 HostService.resolve_host 的 _encryption.decrypt 兜底共同
     保证 CLI 存储的主机可正常连接（参见 P0-A 修复）。
     """
     repo = JsonHostRepository(filepath=config_file, auto_load=True)

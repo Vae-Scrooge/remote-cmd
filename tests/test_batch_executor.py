@@ -93,7 +93,7 @@ class TestBatchExecutor:
                 return host_dict[name]
             raise KeyError(f"主机 '{name}' 不存在")
 
-        service._resolve_host = resolve_host
+        service.resolve_host = resolve_host
         return service
 
     def test_empty_host_list_raises(self):

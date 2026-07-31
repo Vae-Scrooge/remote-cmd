@@ -207,13 +207,13 @@ class TestHostService:
             patch_dec.stop()
 
     def test_connect_to_host_resolves_key_path(self, service, tmp_path):
-        """测试：_resolve_host 展开密钥路径"""
+        """测试：resolve_host 展开密钥路径"""
         key_file = tmp_path / ".ssh" / "id_aws"
         key_file.parent.mkdir(parents=True)
         key_file.write_text("key")
         host = Host(name="srv", hostname="1", username="u", key_filename=str(key_file))
         service.add_host(host)
-        resolved = service._resolve_host("srv")
+        resolved = service.resolve_host("srv")
         assert resolved.key_filename == str(key_file)
 
     def test_test_all_connections_with_exception(self, service):
@@ -252,12 +252,12 @@ class TestEncryptedPasswordConnectRoundtrip:
     """回归：add_host 加密密码 → connect_to_host 应能拿到明文密码传给 SSHClient
 
     历史问题：cli _build_service 的凭据链仅含 EnvCredentialProvider，
-    而 _resolve_host 没有 _encryption.decrypt 兜底，导致加密存储的主机
+    而 resolve_host 没有 _encryption.decrypt 兜底，导致加密存储的主机
     连接时把 $encrypted$... token 当作密码送给 SSH，必然认证失败。
     """
 
     def test_connect_to_host_decrypts_password_for_ssh(self, repo):
-        """_resolve_host 在凭据链未命中时回退 _encryption.decrypt，
+        """resolve_host 在凭据链未命中时回退 _encryption.decrypt，
         传给 SSHService.create_client 的 password 应是明文。"""
         from remote_cmd.service.credential_provider import (
             ChainCredentialProvider,
@@ -265,7 +265,7 @@ class TestEncryptedPasswordConnectRoundtrip:
         )
 
         # 与 CLI 的 _build_service 等价：链上只有 EnvCredentialProvider
-        # 不含 EncryptedFileCredentialProvider，迫使 _resolve_host 走兜底
+        # 不含 EncryptedFileCredentialProvider，迫使 resolve_host 走兜底
         cred_chain = ChainCredentialProvider([EnvCredentialProvider()])
         service = HostService(repository=repo, credential_provider=cred_chain)
 
@@ -286,7 +286,7 @@ class TestEncryptedPasswordConnectRoundtrip:
         kwargs = ssh_mock.create_client.call_args.kwargs
         assert kwargs["password"] == plain, (
             f"传给 SSH 的应是明文密码 {plain!r}, 实际是 {kwargs['password']!r}"
-            " —— _resolve_host 兜底解密失效"
+            " —— resolve_host 兜底解密失效"
         )
         assert kwargs["hostname"] == "10.0.0.1"
         assert kwargs["username"] == "root"
@@ -319,7 +319,7 @@ class TestEncryptedPasswordConnectRoundtrip:
 
     def test_encrypted_file_provider_in_chain_avoids_fallback(self, tmp_path):
         """若凭据链含 EncryptedFileCredentialProvider，它应直接命中，
-        无需依赖 _resolve_host 的 _encryption.decrypt 兜底分支。"""
+        无需依赖 resolve_host 的 _encryption.decrypt 兜底分支。"""
         from remote_cmd.service.credential_provider import (
             ChainCredentialProvider,
             EncryptedFileCredentialProvider,
@@ -338,7 +338,7 @@ class TestEncryptedPasswordConnectRoundtrip:
         plain = "stored-via-add"
         service.add_host(Host(name="srv", hostname="10.0.0.1", username="root", password=plain))
 
-        # 直接调 cred_chain，应能解密（无需靠 _resolve_host 兜底）
+        # 直接调 cred_chain，应能解密（无需靠 resolve_host 兜底）
         fetched = repo.get("srv")
         resolved = cred_chain.get_password(fetched)
         assert resolved == plain

@@ -53,7 +53,7 @@ def make_mock_service(hosts: list[Host]):
             return host_dict[name]
         raise KeyError(f"主机 '{name}' 不存在")
 
-    service._resolve_host = resolve
+    service.resolve_host = resolve
     return service
 
 

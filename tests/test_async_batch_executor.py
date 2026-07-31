@@ -12,7 +12,7 @@ from remote_cmd.core.async_ssh_client import AsyncSSHClient
 from remote_cmd.core.host import Host
 from remote_cmd.core.ssh_client import CommandResult, ConnectionConfig
 from remote_cmd.service.async_batch_executor import AsyncBatchExecutor
-from remote_cmd.service.batch_executor import BatchExecutor
+from remote_cmd.service.batch_executor import BatchExecutor, BatchHostResult
 
 # ============================================================================
 # AsyncConnectionPool 测试
@@ -371,7 +371,7 @@ def make_mock_service(hosts: list[Host]):
             return host_dict[name]
         raise KeyError(name)
 
-    service._resolve_host = _resolve
+    service.resolve_host = _resolve
     return service
 
 
@@ -462,6 +462,22 @@ class TestAsyncBatchExecutor:
 
         await ex.execute(["srv1"], "uptime", progress_callback=cb)
         assert events == [(1, 1, "srv1")]
+
+    @pytest.mark.asyncio
+    async def test_cancel_and_mark_interrupted(self, mock_async_client_class):
+        cm, instance = mock_async_client_class
+        ex = AsyncBatchExecutor(host_service=MagicMock())
+
+        async def never_done():
+            await asyncio.Event().wait()
+
+        tasks = [asyncio.create_task(never_done()) for _ in range(3)]
+        results = {"srv1": BatchHostResult(host="srv1", success=True, command="uptime")}
+        await ex._cancel_and_mark_interrupted(tasks, ["srv1", "srv2", "srv3"], results, "uptime")
+        assert all(t.cancelled() for t in tasks)
+        assert results["srv1"].success
+        assert results["srv2"].error == "用户中断"
+        assert results["srv3"].error == "用户中断"
 
 
 # ============================================================================

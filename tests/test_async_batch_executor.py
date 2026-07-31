@@ -24,7 +24,9 @@ def _client_mock(connected=True):
     c.is_connected.return_value = connected
     c.connect = AsyncMock(return_value=c)
     c.disconnect = AsyncMock()
-    c.execute = AsyncMock(return_value=CommandResult(command="true", stdout="", stderr="", exit_code=0))
+    c.execute = AsyncMock(
+        return_value=CommandResult(command="true", stdout="", stderr="", exit_code=0)
+    )
     return c
 
 
@@ -128,7 +130,13 @@ class TestAsyncConnectionPool:
 def make_mock_service(hosts: list[Host]):
     service = MagicMock()
     host_dict = {h.name: h for h in hosts}
-    service._resolve_host = lambda name: host_dict[name] if name in host_dict else (_ for _ in ()).throw(KeyError(name))
+
+    def _resolve(name):
+        if name in host_dict:
+            return host_dict[name]
+        raise KeyError(name)
+
+    service._resolve_host = _resolve
     return service
 
 

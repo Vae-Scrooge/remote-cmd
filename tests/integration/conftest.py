@@ -4,6 +4,7 @@
 无需 Docker/testcontainers 即可测试完整 SSH 连接流程。
 """
 
+import contextlib
 import socket
 import threading
 
@@ -16,21 +17,23 @@ from remote_cmd.core.host import Host
 class MockSSHServerInterface(paramiko.ServerInterface):
     """模拟 SSH 服务器，接受所有认证"""
 
-    def check_channel_request(self, kind: str, chanid: int) -> int:
+    def check_channel_request(self, kind: str, chanid: int) -> int:  # noqa: ARG002
         if kind == "session":
             return paramiko.OPEN_SUCCEEDED
         return paramiko.OPEN_FAILED_ADMINISTRATIVELY_PROHIBITED
 
-    def check_auth_password(self, username: str, password: str) -> int:
+    def check_auth_password(self, username: str, password: str) -> int:  # noqa: ARG002
         return paramiko.AUTH_SUCCESSFUL
 
-    def check_auth_publickey(self, username: str, key: paramiko.PKey) -> int:
+    def check_auth_publickey(self, username: str, key: paramiko.PKey) -> int:  # noqa: ARG002
         return paramiko.AUTH_SUCCESSFUL
 
-    def get_allowed_auths(self, username: str) -> str:
+    def get_allowed_auths(self, username: str) -> str:  # noqa: ARG002
         return "password,publickey"
 
-    def check_channel_exec_request(self, channel: paramiko.Channel, command: bytes) -> bool:
+    def check_channel_exec_request(
+        self, channel: paramiko.Channel, command: bytes  # noqa: ARG002
+    ) -> bool:
         return True
 
 
@@ -64,10 +67,8 @@ def mock_ssh_server(unused_tcp_port_factory, rsa_key: paramiko.RSAKey):
             t = paramiko.Transport(client)
             t.add_server_key(host_key)
             server = MockSSHServerInterface()
-            try:
+            with contextlib.suppress(EOFError, paramiko.SSHException):
                 t.start_server(server=server)
-            except (EOFError, paramiko.SSHException):
-                pass
             # NOTE: t.close() 不能在此处调用，否则会重置连接
 
     thread = threading.Thread(target=server_loop, daemon=True)

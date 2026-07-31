@@ -243,13 +243,13 @@ class SSHClient:
             return self
 
         except paramiko.AuthenticationException as e:
-            raise SSHConnectionError(f"认证失败: {e}")
-        except socket.timeout:
-            raise SSHConnectionError(f"连接超时: {self.config.hostname}")
-        except socket.gaierror:
-            raise SSHConnectionError(f"无法解析主机名: {self.config.hostname}")
+            raise SSHConnectionError(f"认证失败: {e}") from e
+        except socket.timeout as e:
+            raise SSHConnectionError(f"连接超时: {self.config.hostname}") from e
+        except socket.gaierror as e:
+            raise SSHConnectionError(f"无法解析主机名: {self.config.hostname}") from e
         except (OSError, paramiko.SSHException) as e:
-            raise SSHConnectionError(f"连接错误: {e}")
+            raise SSHConnectionError(f"连接错误: {e}") from e
 
     def disconnect(self) -> None:
         """
@@ -392,7 +392,7 @@ class SSHClient:
             return result
 
         except (paramiko.SSHException, OSError) as e:
-            raise SSHCommandError(f"执行命令 '{command}' 失败: {e}")
+            raise SSHCommandError(f"执行命令 '{command}' 失败: {e}") from e
 
     def execute_sudo(
         self,
@@ -446,7 +446,7 @@ class SSHClient:
                 exit_code=exit_code,
             )
         except paramiko.SSHException as e:
-            raise SSHCommandError(f"执行 sudo 命令 '{command}' 失败: {e}")
+            raise SSHCommandError(f"执行 sudo 命令 '{command}' 失败: {e}") from e
 
     # ========================================================================
     # 文件传输方法
@@ -480,7 +480,7 @@ class SSHClient:
             sftp.put(str(local_file), remote_path)
             logger.info("文件上传完成")
         except (paramiko.SSHException, OSError) as e:
-            raise SSHFileTransferError(f"文件上传失败: {e}")
+            raise SSHFileTransferError(f"文件上传失败: {e}") from e
 
     def download_file(self, remote_path: str, local_path: str) -> None:
         """
@@ -512,7 +512,7 @@ class SSHClient:
             sftp.get(remote_path, str(local_file))
             logger.info("文件下载完成")
         except (paramiko.SSHException, OSError) as e:
-            raise SSHFileTransferError(f"文件下载失败: {e}")
+            raise SSHFileTransferError(f"文件下载失败: {e}") from e
 
     def list_remote_directory(self, remote_path: str = ".") -> list[dict[str, Any]]:
         """
@@ -555,7 +555,7 @@ class SSHClient:
                 )
             return entries
         except (paramiko.SSHException, OSError) as e:
-            raise SSHFileTransferError(f"列出远程目录失败: {e}")
+            raise SSHFileTransferError(f"列出远程目录失败: {e}") from e
 
     def create_remote_directory(self, path: str) -> None:
         """创建远程目录（支持递归创建）"""
@@ -574,7 +574,7 @@ class SSHClient:
             _makedirs(sftp, path)
             logger.info(f"已创建远程目录: {path}")
         except (paramiko.SSHException, OSError) as e:
-            raise SSHFileTransferError(f"创建远程目录失败: {e}")
+            raise SSHFileTransferError(f"创建远程目录失败: {e}") from e
 
     def remove_remote_file(self, path: str) -> None:
         """删除远程文件"""
@@ -583,7 +583,7 @@ class SSHClient:
             sftp.remove(path)
             logger.info(f"已删除远程文件: {path}")
         except (paramiko.SSHException, OSError) as e:
-            raise SSHFileTransferError(f"删除远程文件失败: {e}")
+            raise SSHFileTransferError(f"删除远程文件失败: {e}") from e
 
     def remove_remote_directory(self, path: str, recursive: bool = False) -> None:
         """删除远程目录"""
@@ -613,7 +613,7 @@ class SSHClient:
                 sftp.rmdir(path)
             logger.info(f"已删除远程目录: {path}")
         except (paramiko.SSHException, OSError) as e:
-            raise SSHFileTransferError(f"删除远程目录失败: {e}")
+            raise SSHFileTransferError(f"删除远程目录失败: {e}") from e
 
     def remote_file_exists(self, path: str) -> bool:
         """检查远程文件是否存在"""
@@ -641,4 +641,4 @@ class SSHClient:
                 "is_file": stat.S_ISREG(mode),
             }
         except (paramiko.SSHException, OSError) as e:
-            raise SSHFileTransferError(f"获取文件信息失败: {e}")
+            raise SSHFileTransferError(f"获取文件信息失败: {e}") from e

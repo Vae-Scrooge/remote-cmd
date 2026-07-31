@@ -241,8 +241,9 @@ class TestSqliteHostRepository:
         import json
 
         json_path = tmp_path / "hosts.json"
+        data = {"version": 2, "hosts": {"x": {"name": "x", "hostname": "1", "username": "u"}}}
         with open(json_path, "w") as f:
-            json.dump({"version": 2, "hosts": {"x": {"name": "x", "hostname": "1", "username": "u"}}}, f)
+            json.dump(data, f)
 
         repo = SqliteHostRepository(temp_db_path)
         repo.save(Host(name="existing", hostname="1", username="u"))

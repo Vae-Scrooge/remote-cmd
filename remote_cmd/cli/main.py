@@ -15,6 +15,7 @@
 - download: 从远程主机下载文件
 """
 
+import getpass
 import os
 from typing import Any, Optional
 
@@ -106,7 +107,10 @@ def host():
     "--password",
     "-P",
     default=None,
-    help="登录密码（不推荐直接在命令行输入，建议使用 REMOTE_CMD_PASSWORD 环境变量或交互式输入）",
+    help=(
+        "登录密码（不安全：会出现在 shell 历史和进程列表）。"
+        "推荐使用 REMOTE_CMD_PASSWORD 环境变量，或不指定此参数以交互式输入。"
+    ),
 )
 @click.option("--key", "-k", help="SSH 私钥文件路径")
 @click.option("--tag", "-t", multiple=True, help="主机标签（可多次指定）")
@@ -132,27 +136,42 @@ def host_add(
     """
     service: HostService = ctx.obj["service"]
 
-    # 获取密码：优先级 REMOTE_CMD_PASSWORD > --password > 交互式输入
-    resolved_password = os.environ.get("REMOTE_CMD_PASSWORD") or password
-    if not resolved_password and not key:
-        resolved_password = click.prompt(
-            "SSH 密码", hide_input=True, default="", show_default=False
-        )
-    elif password and not os.environ.get("REMOTE_CMD_PASSWORD"):
+    # 获取密码：优先级 REMOTE_CMD_PASSWORD 环境变量 > 交互式 getpass > --password 参数
+    # 安全顺序：环境变量最安全（不出现在命令行/历史），getpass 交互式不回显且不记录
+    # --password 参数会出现在 shell 历史、进程列表中，作为最低优先级且触发警告
+    env_password = os.environ.get("REMOTE_CMD_PASSWORD")
+    resolved_password: Optional[str] = None
+
+    if env_password:
+        resolved_password = env_password
+    elif not key:
+        # 没有密钥也没有环境变量时，通过 getpass 安全地交互式输入
+        try:
+            resolved_password = getpass.getpass("SSH 密码: ") or None
+        except (EOFError, KeyboardInterrupt):
+            click.echo(click.style("\n✗ 已取消", fg="red"), err=True)
+            ctx.exit(1)
+
+    if password and not env_password:
+        # 仅当用户显式使用 --password 参数（而非环境变量）时给出安全警告
         click.echo(
             click.style(
-                "⚠ 警告: 在命令行参数中传递密码不安全，建议使用 REMOTE_CMD_PASSWORD 环境变量",
+                "⚠ 警告: 通过 --password 参数传递密码不安全（会出现在 shell 历史和进程列表中）。"
+                " 建议改用 REMOTE_CMD_PASSWORD 环境变量或交互式输入。",
                 fg="yellow",
             ),
             err=True,
         )
+        # --password 作为最后的回退
+        if not resolved_password:
+            resolved_password = password
 
     host = Host(
         name=name,
         hostname=hostname,
         username=username,
         port=port,
-        password=resolved_password or password,
+        password=resolved_password,
         key_filename=key,
         tags=list(tag),
         description=description,
@@ -223,9 +242,13 @@ def host_show(ctx, name: str):
         click.echo(f"  主机地址:  {host.hostname}")
         click.echo(f"  用户名:    {host.username}")
         click.echo(f"  端口:      {host.port}")
-        click.echo(
-            f"  认证方式:  {'密码' if host.password else 'SSH 密钥' if host.key_filename else 'SSH Agent'}"
-        )
+        if host.password:
+            auth_type = "密码"
+        elif host.key_filename:
+            auth_type = "SSH 密钥"
+        else:
+            auth_type = "SSH Agent"
+        click.echo(f"  认证方式:  {auth_type}")
         if host.key_filename:
             click.echo(f"  密钥路径:  {host.key_filename}")
         tags_str = ", ".join(host.tags) if host.tags else "-"

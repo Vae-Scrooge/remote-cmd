@@ -24,7 +24,9 @@ def _make_conn_mock(stdout="OK\n", stderr="", exit_status=0):
     conn = MagicMock()
     # asyncssh 用 is_closed() 表示连接是否已关闭；活动连接应返回 False
     conn.is_closed.return_value = False
-    conn.run = AsyncMock(return_value=MagicMock(stdout=stdout, stderr=stderr, exit_status=exit_status))
+    conn.run = AsyncMock(
+        return_value=MagicMock(stdout=stdout, stderr=stderr, exit_status=exit_status)
+    )
     # create_process 返回 SSHClientProcess 模拟
     proc = MagicMock()
     proc.stdin = MagicMock()

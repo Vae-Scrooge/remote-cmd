@@ -43,6 +43,8 @@ class CredentialEncryption:
         key_path: 密钥文件存储路径
     """
 
+    _PREFIX = "$encrypted$"
+
     def __init__(self, key_path: Optional[Path] = None):
         """
         Args:
@@ -78,7 +80,7 @@ class CredentialEncryption:
         """
         try:
             token = self._cipher.encrypt(plaintext.encode("utf-8"))
-            return "$encrypted$" + token.decode("utf-8")
+            return self._PREFIX + token.decode("utf-8")
         except Exception as e:
             raise CredentialEncryptionError(f"加密失败: {e}") from e
 
@@ -95,18 +97,46 @@ class CredentialEncryption:
         Raises:
             CredentialEncryptionError: 解密失败或格式错误
         """
-        if not ciphertext.startswith("$encrypted$"):
+        if not ciphertext.startswith(self._PREFIX):
             raise CredentialEncryptionError("错误的密文格式")
 
         try:
-            token = ciphertext[len("$encrypted$") :].encode("utf-8")
+            token = ciphertext[len(self._PREFIX) :].encode("utf-8")
             return self._cipher.decrypt(token).decode("utf-8")
         except Exception as e:
             raise CredentialEncryptionError(f"解密失败: {e}") from e
 
     def is_encrypted(self, value: str) -> bool:
-        """检查字符串是否为加密格式"""
-        return value.startswith("$encrypted$")
+        """
+        检查字符串是否为加密格式
+
+        采用双重校验降低格式碰撞风险：
+        1. 前缀匹配 ``$encrypted$``
+        2. token 部分必须是 Fernet 格式（version byte 0x80，base64 编码后以 ``g`` 开头，
+           且解码后总长度至少 57 字节 = 1 + 8 + 16 + 32）
+
+        这避免了与真实密码恰好以 ``$encrypted$`` 开头时被误判的场景：
+        真实密码很少以 ``$encrypted$g`` 开头，且 base64 解码长度必须 >= 57 字节。
+
+        Attention: 本函数不验证 HMAC/签名，仅为廉价标识符检测；
+        完整合法性校验在 :meth:`decrypt` 中完成。
+        """
+        if not value.startswith(self._PREFIX):
+            return False
+        token = value[len(self._PREFIX) :]
+        # Fernet token base64 解码后第一字节恒为 0x80（编码后开头为 "g"）
+        if not token.startswith("g"):
+            return False
+        # 重新填充 base64 并解码长度校验，避免误判纯字符串
+        import base64
+
+        padding = "=" * (-len(token) % 4)
+        try:
+            decoded = base64.urlsafe_b64decode(token + padding)
+        except ValueError:
+            return False
+        # 最小密文长度 = version(1) + timestamp(8) + IV(16) + HMAC(32)
+        return len(decoded) >= 57
 
     def _load_or_create_key(self) -> bytes:
         """

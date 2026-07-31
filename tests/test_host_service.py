@@ -144,7 +144,7 @@ class TestHostService:
         """测试：连接测试失败"""
         from unittest.mock import patch
 
-        with patch.object(service._ssh, "test_connection", return_value=False) as m:
+        with patch.object(service._ssh, "test_connection", return_value=False):
             service.add_host(Host(name="srv", hostname="10.0.0.1", username="admin"))
             result = service.test_connection("srv")
             assert result is False
@@ -186,13 +186,17 @@ class TestHostService:
         """测试：密码解密失败时安静返回原始主机"""
         from unittest.mock import patch
 
-        host = Host(name="srv", hostname="1", username="u", password="$encrypted$bad")
-        service.add_host(host)
+        # patch 需在 add_host 之前生效，否则真实的 is_encrypted 会将
+        # 伪装的 "$encrypted$bad" 视为明文并二次加密
         patch_enc = patch.object(service._encryption, "is_encrypted", return_value=True)
-        patch_dec = patch.object(service._encryption, "decrypt", side_effect=Exception("decrypt fail"))
+        patch_dec = patch.object(
+            service._encryption, "decrypt", side_effect=Exception("decrypt fail")
+        )
         patch_enc.start()
         patch_dec.start()
         try:
+            host = Host(name="srv", hostname="1", username="u", password="$encrypted$bad")
+            service.add_host(host)
             result = service.get_host("srv")
             assert result.password == "$encrypted$bad"
         finally:
@@ -227,7 +231,6 @@ class TestHostService:
 
     def test_custom_credential_provider(self, tmp_path):
         """测试：传入自定义凭证提供者"""
-        from unittest.mock import MagicMock
 
         from remote_cmd.service.credential_provider import CredentialProvider
 

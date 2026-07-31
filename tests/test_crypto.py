@@ -83,3 +83,27 @@ class TestCredentialEncryption:
         password = "密码123!@#"
         encrypted = crypto.encrypt(password)
         assert crypto.decrypt(encrypted) == password
+
+    def test_is_encrypted_false_on_prefix_collision(self, tmp_path):
+        """测试：以 $encrypted$ 开头但非合法 Fernet token 的字符串不应被误判"""
+        crypto = CredentialEncryption(key_path=tmp_path / ".key")
+
+        # 真实密码恰好以 $encrypted$ 开头但不是 Fernet token
+        assert crypto.is_encrypted("$encrypted$plain_password") is False
+        # 没有后续 token 部分
+        assert crypto.is_encrypted("$encrypted$") is False
+        # token 不以 Fernet version byte 'g' 开头
+        assert crypto.is_encrypted("$encrypted$hAAAAAB0test") is False
+        # token 是合法 base64 但解码后长度不足 57 字节
+        assert crypto.is_encrypted("$encrypted$gAAAAAB") is False
+        # token 形式上像 Fernet 但内容是随便的 base64（解码后 < 57B）
+        assert crypto.is_encrypted("$encrypted$gA") is False
+
+    def test_is_encrypted_true_for_genuine_token(self, tmp_path):
+        """测试：真实加密 token 正确识别为已加密"""
+        crypto = CredentialEncryption(key_path=tmp_path / ".key")
+        encrypted = crypto.encrypt("real_password")
+        assert crypto.is_encrypted(encrypted) is True
+        # token 部分单独也能通过校验链
+        token_part = encrypted[len("$encrypted$") :]
+        assert crypto.is_encrypted("$encrypted$" + token_part) is True

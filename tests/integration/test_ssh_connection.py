@@ -5,6 +5,10 @@
     pytest -m integration
 """
 
+# ruff: noqa: ARG002
+# 上述文件级抑制：本文件中 mock_ssh_server 等 fixture 仅为请求其
+# 启动服务器的副作用而存在，pytest fixture 请求即视为使用。
+
 import paramiko
 import pytest
 
@@ -44,7 +48,7 @@ class TestSSHConnectionIntegration:
         client.disconnect()
         assert not client.is_connected()
 
-    def test_connect_wrong_port(self, mock_ssh_server, integration_host):
+    def test_connect_wrong_port(self):  # noqa: ARG002
         """错误端口应抛出 SSHConnectionError"""
         config = ConnectionConfig(port=9999, **self.TEST_CONFIG)
         client = SSHClient(config)

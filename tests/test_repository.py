@@ -182,12 +182,18 @@ class TestJsonHostRepositoryEncryption:
         repo.save(Host(name="srv", hostname="1", username="u", password="secret"))
         repo.flush()
 
-        # 篡改密码字段使其无法解密
+        # 篡改密码字段：使用另一把密钥加密生成的合法 Fernet token，
+        # 以保证 is_encrypted() 通过校验（格式合法），但解密失败（HMAC 不匹配），
+        # 触发 "解密失败" 分支 → password = None
+        other_key_path = tmp_path / ".other_key"
+        other_crypto = CredentialEncryption(key_path=other_key_path)
+        tampered_token = other_crypto.encrypt("will_not_decrypt_correctly")
+
         import json
 
         with open(path) as f:
             data = json.load(f)
-        data["hosts"]["srv"]["password"] = "$encrypted$bad" + "x"
+        data["hosts"]["srv"]["password"] = tampered_token
         with open(path, "w") as f:
             json.dump(data, f)
 

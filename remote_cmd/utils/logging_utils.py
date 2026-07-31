@@ -37,12 +37,14 @@ def redact_sensitive_data(message: str) -> str:
 
     替换密码等字段的值为 [REDACTED]。
     """
-    return SENSITIVE_PATTERN.sub(
-        lambda m: (
-            f"{m.group(0).split('=')[0] if '=' in m.group(0) else m.group(0).split(':')[0]}={'[REDACTED]' if '=' in m.group(0) else ': [REDACTED]'}"
-        ),
-        message,
-    )
+
+    def _redact(m: re.Match) -> str:
+        text = m.group(0)
+        if "=" in text:
+            return f"{text.split('=')[0]}=[REDACTED]"
+        return f"{text.split(':')[0]}: [REDACTED]"
+
+    return SENSITIVE_PATTERN.sub(_redact, message)
 
 
 class SensitiveDataFilter(logging.Filter):

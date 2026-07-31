@@ -100,11 +100,9 @@ class TestConnectionPool:
         finally:
             pool.stop_monitor()
 
-    def test_get_metrics(self):
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+    async def test_get_metrics(self):
+        pool = ConnectionPool(config=ConnectionConfig(hostname="h", username="u"))
         try:
-            pool = ConnectionPool(config=ConnectionConfig(hostname="h", username="u"))
             metrics = pool.get_metrics()
             expected_keys = (
                 "active",
@@ -116,7 +114,7 @@ class TestConnectionPool:
             for key in expected_keys:
                 assert key in metrics
         finally:
-            loop.close()
+            pool.stop_monitor()
 
     @pytest.mark.asyncio
     async def test_connection_id(self, config):

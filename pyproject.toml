@@ -47,11 +47,11 @@ dev = [
     "pytest-cov>=4.0",
     "ruff>=0.4",
     "mypy>=1.10",
-    # 文档生成
-    "pdoc>=16.0",
     # 测试 keyring 凭据提供者（生产为可选依赖，测试环境固定安装）
     "keyring>=24.0",
 ]
+# 文档生成（pdoc>=16 需 Python>=3.10，独立 extra 避免影响 3.9 的 dev 安装）
+docs = ["pdoc>=16.0"]
 
 [project.urls]
 Homepage = "https://github.com/Vae-Scrooge/remote-cmd"

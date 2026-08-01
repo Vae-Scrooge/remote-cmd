@@ -35,7 +35,7 @@ jobs:
           enable-cache: true
 
       - name: Install dev deps and async extra
-        run: uv sync --extra dev --extra async
+        run: uv sync --extra dev --extra async ${{ matrix.python-version == '3.12' && '--extra docs' || '' }}
 
       - name: Lint with ruff
         run: uv run ruff check .
@@ -46,25 +46,12 @@ jobs:
       - name: Test with pytest
         run: uv run pytest -v --tb=short --cov=remote_cmd --cov-report=xml --cov-report=term-missing
 
+      - name: Verify API docs generation (3.12 only)
+        if: matrix.python-version == '3.12'
+        run: uv run pdoc remote_cmd -o /tmp/pdoc-check
+
       - name: Upload coverage
         uses: codecov/codecov-action@v6
         with:
           file: ./coverage.xml
           fail_ci_if_error: false
-
-  docs:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v7
-        with:
-          python-version: "3.12"
-          enable-cache: true
-
-      - name: Install dev, async and docs extras
-        run: uv sync --extra dev --extra async --extra docs
-
-      - name: Verify API docs generation
-        run: uv run pdoc remote_cmd -o /tmp/pdoc-check

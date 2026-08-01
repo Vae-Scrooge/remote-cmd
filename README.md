@@ -82,11 +82,12 @@ remote-cmd batch-run -t production "df -h / | tail -1"
 
 ### 🚀 Deploy — Pull code and restart service
 ```python
-from remote_cmd.core.host_manager import HostManager
+from remote_cmd.service.host_service import HostService
+from remote_cmd.repository.json_host_repository import JsonHostRepository
 
-manager = HostManager("hosts.json")
-for host in manager.list_hosts(tag="staging"):
-    with manager.connect_to_host(host.name) as client:
+service = HostService(repository=JsonHostRepository("hosts.json"))
+for host in service.list_hosts(tag="staging"):
+    with service.connect_to_host(host.name) as client:
         client.execute("cd /app && git pull")
         client.execute("pip install -r requirements.txt")
         client.execute_sudo("systemctl restart app", password="sudopass")
@@ -153,8 +154,11 @@ with SSHClient(config) as client:
 ## Installation
 
 ```bash
-# From PyPI (recommended)
+# From PyPI (recommended) — 同步 API 与 CLI
 pip install remote_cmd_manager
+
+# With async native support (AsyncSSHClient / AsyncConnectionPool / AsyncBatchExecutor)
+pip install "remote_cmd_manager[async]"
 
 # From source
 git clone git@github.com:Vae-Scrooge/remote-cmd.git
@@ -162,13 +166,18 @@ cd remote-cmd
 pip install -e ".[dev]"
 ```
 
+The `[async]` extra installs `asyncssh` and enables the native async execution
+kernel: `AsyncSSHClient`, `AsyncConnectionPool` and `AsyncBatchExecutor`
+(also available via `BatchExecutor(use_async=True)`). Without it, `import remote_cmd`
+still works — async symbols are simply not exported.
+
 ---
 
 ## Documentation
 
 | Document | Contents |
 |---|---|
-| [API Reference](./docs/API.md) | Full API docs for SSHClient, HostManager, and more |
+| [API Reference](./docs/API.md) | Full API docs: SSHClient, AsyncSSHClient, HostService, and more |
 | [Quickstart Tutorial](./docs/tutorial-quickstart.md) | Step-by-step walkthrough |
 | [Advanced Tutorial](./docs/tutorial-advanced.md) | Batch ops, error handling, production patterns |
 | [Development Guide](./docs/DEVELOPMENT.md) | Setup dev environment, contributing |
@@ -183,7 +192,7 @@ pip install -e ".[dev]"
 **Beta.** The core API is stable. Breaking changes will be communicated via semantic versioning.
 
 **Roadmap:**
-- [ ] Async SSH operations (parallel execution)
+- [x] Async SSH operations (parallel execution) — v1.1.0
 - [ ] Configuration profiles (AWS, GCP, custom)
 - [ ] Output formatting (JSON, table)
 

@@ -649,6 +649,218 @@ print(f"共有 {count} 台主机")
 
 ---
 
+## 异步模块（v1.1.0+）
+
+> 异步模块基于 `asyncssh`，需要额外安装：
+> ```bash
+> pip install "remote_cmd_manager[async]"
+> ```
+> 未安装 asyncssh 时，`import remote_cmd` 仍可用，但异步符号不会被导出。
+
+### AsyncSSHClient
+
+原生异步 SSH 客户端，基于 asyncssh 实现，API 与同步 `SSHClient` 保持一致。
+
+#### 类定义
+
+```python
+class AsyncSSHClient:
+    def __init__(self, config: ConnectionConfig, loop: Optional[Any] = None)
+    async def connect(self) -> "AsyncSSHClient"
+    async def disconnect(self) -> None
+    def is_connected(self) -> bool
+    async def execute(self, command: str, timeout: Optional[int] = None,
+                      environment: Optional[Dict[str, str]] = None) -> CommandResult
+    async def execute_sudo(self, command: str, password: Optional[str] = None,
+                           timeout: Optional[int] = None) -> CommandResult
+    async def upload_file(self, local_path: str, remote_path: str) -> None
+    async def download_file(self, remote_path: str, local_path: str) -> None
+    async def list_remote_directory(self, remote_path: str = ".") -> List[Dict[str, Any]]
+```
+
+#### 构造函数
+
+##### `__init__(config: ConnectionConfig, loop: Optional[Any] = None)`
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `config` | `ConnectionConfig` | 必填 | SSH 连接配置（与同步版一致） |
+| `loop` | `Optional[Any]` | None | 已忽略；asyncssh 自行从当前事件循环取用，保留仅为向后兼容 |
+
+#### 使用示例
+
+```python
+import asyncio
+from remote_cmd.core.async_ssh_client import AsyncSSHClient
+from remote_cmd.core.ssh_client import ConnectionConfig
+
+async def main():
+    config = ConnectionConfig(
+        hostname="192.168.1.100",
+        username="admin",
+        key_filename="~/.ssh/id_rsa",
+    )
+    async with AsyncSSHClient(config) as client:
+        result = await client.execute("uptime")
+        print(result.stdout)
+
+asyncio.run(main())
+```
+
+#### 与同步 SSHClient 的差异
+
+| 特性 | `SSHClient` | `AsyncSSHClient` |
+|------|-------------|------------------|
+| 底层 | paramiko | asyncssh |
+| 调用方式 | 同步阻塞 | `async`/`await` |
+| 上下文管理器 | 同步 | 异步（`async with`） |
+| 适用场景 | 简单脚本、CLI | 高并发批量执行 |
+| 返回类型 | `CommandResult` | `CommandResult`（一致） |
+
+#### 异常
+
+- `SSHConnectionError`: 连接/认证失败（含超时与密钥文件不存在）
+- `SSHCommandError`: 命令执行失败
+- `SSHFileTransferError`: 文件传输失败
+
+---
+
+### AsyncConnectionPool
+
+原生异步 SSH 连接池，复用连接并带空闲/生命周期回收与健康检查。
+
+#### 类定义
+
+```python
+class AsyncConnectionPool:
+    def __init__(self, config: ConnectionConfig, max_connections: int = 10,
+                 max_lifetime: int = 3600, idle_timeout: int = 300,
+                 health_check_interval: int = 60)
+    async def acquire(self) -> AsyncSSHClient
+    async def release(self, conn: Optional[AsyncSSHClient]) -> None
+    def acquire_context(self) -> "_AcquireContext"
+    def get_metrics(self) -> Dict[str, Any]
+    def stop_monitor(self) -> None
+    async def close_all(self) -> None
+```
+
+#### 参数说明
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `config` | `ConnectionConfig` | 必填 | 用于建立 SSH 连接的配置 |
+| `max_connections` | `int` | 10 | 最大连接数 |
+| `max_lifetime` | `int` | 3600 | 连接最大生命周期（秒），超过自动关闭 |
+| `idle_timeout` | `int` | 300 | 空闲超时（秒），超过自动关闭 |
+| `health_check_interval` | `int` | 60 | 后台清理任务周期（秒） |
+
+#### 使用示例
+
+```python
+import asyncio
+from remote_cmd.core.async_connection_pool import AsyncConnectionPool
+from remote_cmd.core.ssh_client import ConnectionConfig
+
+async def main():
+    pool = AsyncConnectionPool(
+        ConnectionConfig(hostname="192.168.1.100", username="admin",
+                         key_filename="~/.ssh/id_rsa"),
+        max_connections=5,
+    )
+    async with pool:
+        async with pool.acquire_context() as client:
+            result = await client.execute("uptime")
+            print(result.stdout)
+    # 也可手动管理：
+    # client = await pool.acquire()
+    # await pool.release(client)
+
+asyncio.run(main())
+```
+
+#### `get_metrics()` 返回的指标
+
+| 键 | 说明 |
+|----|------|
+| `active` | 当前活跃连接数 |
+| `idle` | 空闲连接数 |
+| `total_connections` | 连接池持有的总连接数 |
+| `total_created` | 累计创建数 |
+| `reconnects` | 累计重连数 |
+| `failed` | 累计失败数 |
+
+---
+
+### AsyncBatchExecutor
+
+原生异步批量命令执行器，基于 `asyncio.Semaphore` 控制并发。
+
+#### 类定义
+
+```python
+class AsyncBatchExecutor:
+    def __init__(self, host_service: HostService, max_concurrency: int = 10,
+                 command_timeout: int = 30)
+    async def execute(self, host_names: List[str], command: str,
+                      retry_count: int = 0, retry_delay: float = 1.0,
+                      progress_callback: Optional[ProgressCallback] = None) -> BatchResult
+```
+
+#### 参数说明
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `host_service` | `HostService` | 必填 | 主机服务（提供主机配置与凭据解析） |
+| `max_concurrency` | `int` | 10 | 最大并发主机数 |
+| `command_timeout` | `int` | 30 | 单条命令超时（秒） |
+
+`execute` 参数与同步 `BatchExecutor.execute` 一致：`retry_count` 失败重试次数、
+`retry_delay` 重试间隔（秒）、`progress_callback` 进度回调
+`(completed, total, host_name)`（可为同步或 async 函数）。
+
+#### 使用示例
+
+```python
+import asyncio
+from remote_cmd.service.async_batch_executor import AsyncBatchExecutor
+from remote_cmd.service.host_service import HostService
+from remote_cmd.repository.json_host_repository import JsonHostRepository
+
+async def main():
+    service = HostService(repository=JsonHostRepository("hosts.json"))
+    executor = AsyncBatchExecutor(service, max_concurrency=5)
+
+    async def progress(completed, total, host_name):
+        print(f"[{completed}/{total}] {host_name}")
+
+    result = await executor.execute(
+        ["web-01", "web-02", "db-01"],
+        "uptime",
+        retry_count=1,
+        progress_callback=progress,
+    )
+    print(result.summary())
+
+asyncio.run(main())
+```
+
+#### 返回值
+
+`BatchResult`，与同步 `BatchExecutor` 完全一致（`total` / `success` / `failed` /
+`duration` / `results`，以及 `success_rate` / `failed_hosts` / `summary()`）。
+
+#### 异常
+
+- `ValueError`: `host_names` 为空
+
+#### 与同步 BatchExecutor 的关系
+
+`BatchExecutor(host_service, use_async=True)` 在内部委托给 `AsyncBatchExecutor`，
+对外保持同步接口。两者数据契约（`BatchResult` / `BatchHostResult`）完全一致，
+可无差别切换。
+
+---
+
 ## CLI 模块
 
 ### 命令行接口
@@ -932,9 +1144,13 @@ except SSHFileTransferError as e:
 | API | 版本 | 状态 |
 |-----|------|------|
 | SSHClient | 1.0.0+ | ✅ 稳定 |
-| HostManager | 1.0.0+ | ✅ 稳定 |
 | ConnectionConfig | 1.0.0+ | ✅ 稳定 |
 | CommandResult | 1.0.0+ | ✅ 稳定 |
+| HostManager | 1.0.0+ | ⚠️ 已弃用（v2.0 移除，改用 HostService） |
+| AsyncSSHClient | 1.1.0+ | ✅ 稳定（需 `[async]` extra） |
+| AsyncConnectionPool | 1.1.0+ | ✅ 稳定（需 `[async]` extra） |
+| AsyncBatchExecutor | 1.1.0+ | ✅ 稳定（需 `[async]` extra） |
+| HostService | 1.0.0+ | ✅ 稳定（推荐架构） |
 | CLI | 1.0.0+ | ✅ 稳定 |
 
 ---
@@ -945,4 +1161,4 @@ except SSHFileTransferError as e:
 
 ---
 
-**最后更新：** 2024年
+**最后更新：** 2026-08-01（v1.1.0 起新增异步模块文档）

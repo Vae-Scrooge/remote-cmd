@@ -448,7 +448,7 @@ Closes #(issue 编号)
 
 1. 查看 [文档](README.md)
 2. 搜索 [Issues](https://github.com/Vae-Scrooge/remote-cmd/issues)
-3. 查看 [故障排查指南](TROUBLESHOOTING.md)
+3. 查看 [故障排查指南](docs/TROUBLESHOOTING.md)
 
 如果仍有问题，欢迎创建 Issue 或使用 GitHub Discussions。
 

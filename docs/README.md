@@ -10,7 +10,8 @@
 
 ### 进阶学习
 - [高级使用教程](./tutorial-advanced.md) - 高级功能和最佳实践
-- [API 文档](./API.md) - 详细的 API 参考
+- [API 参考（自动生成）](./api/remote_cmd.html) - 完整 API 参考（pdoc 自动生成）
+- [API 使用指南](./API.md) - 类/方法使用示例与说明
 - [架构文档](./architecture.md) - 系统架构和设计决策
 
 ### 开发和贡献
@@ -31,8 +32,9 @@ docs/
 ├── tutorial-quickstart.md    # 快速入门教程
 ├── tutorial-advanced.md      # 高级使用教程
 ├── DEVELOPMENT.md            # 开发指南
-├── API.md                    # API 参考文档
-└── TROUBLESHOOTING.md        # 故障排查指南
+├── API.md                    # API 使用指南（示例 + 说明）
+├── TROUBLESHOOTING.md        # 故障排查指南
+└── api/                      # pdoc 自动生成的完整 API 参考
 ```
 
 ## 推荐阅读顺序
@@ -40,12 +42,12 @@ docs/
 ### 对于新用户
 1. [README.md](../README.md) - 了解项目
 2. [快速入门教程](./tutorial-quickstart.md) - 快速上手
-3. [API 文档](./API.md) - 了解 API
+3. [API 使用指南](./API.md) - 了解 API
 
 ### 对于开发者
 1. [开发指南](./DEVELOPMENT.md) - 设置开发环境
 2. [架构文档](./architecture.md) - 理解架构
-3. [API 文档](./API.md) - 了解 API 细节
+3. [API 参考（自动生成）](./api/remote_cmd.html) - 了解 API 细节
 
 ### 对于高级用户
 1. [高级使用教程](./tutorial-advanced.md) - 掌握高级功能

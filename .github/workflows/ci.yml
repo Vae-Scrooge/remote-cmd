@@ -46,6 +46,9 @@ jobs:
       - name: Test with pytest
         run: uv run pytest -v --tb=short --cov=remote_cmd --cov-report=xml --cov-report=term-missing
 
+      - name: Verify API docs generation
+        run: uv run pdoc remote_cmd -o /tmp/pdoc-check
+
       - name: Upload coverage
         uses: codecov/codecov-action@v6
         with:

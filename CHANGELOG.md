@@ -7,6 +7,13 @@
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-08-01
+
+### Fixed
+- 修复 `import remote_cmd` 在未安装 asyncssh（`[async]` extra）时直接失败的问题：
+  `__init__.py` 顶层无条件导入原生异步模块导致基础安装崩溃，改为 try/except
+  优雅降级——未装 asyncssh 时异步符号不导出，同步 API 不受影响
+
 ## [1.1.0] - 2026-07-31
 
 ### Added

@@ -5,7 +5,7 @@ with open("README.md", encoding="utf-8") as fh:
 
 setup(
     name="remote_cmd_manager",
-    version="1.1.0",
+    version="1.1.1",
     author="Vae-Scrooge",
     author_email="vaescrooge@gmail.com",
     description="A Python-based SSH remote server management tool",

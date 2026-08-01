@@ -794,6 +794,60 @@ asyncio.run(main())
 
 ---
 
+### SyncConnectionPool
+
+同步 SSH 连接池，为反复执行的短命令场景（批量执行、连接测试）复用连接，
+避免每次操作都重新握手。与 `AsyncConnectionPool` 对称设计。
+
+#### 类定义
+
+```python
+class SyncConnectionPool:
+    def __init__(self, config: ConnectionConfig, max_connections: int = 10,
+                 max_lifetime: int = 3600, idle_timeout: int = 300,
+                 health_check_interval: int = 60)
+    def acquire(self) -> SSHClient
+    def release(self, conn: Optional[SSHClient]) -> None
+    def acquire_context(self) -> SyncConnectionPool._AcquireContext
+    def get_metrics(self) -> Dict[str, Any]
+    def close_all(self) -> None
+```
+
+#### 使用示例
+
+```python
+from remote_cmd.core.ssh_client import ConnectionConfig
+from remote_cmd.core.sync_connection_pool import SyncConnectionPool
+
+config = ConnectionConfig(hostname="192.168.1.100", username="admin")
+pool = SyncConnectionPool(config, max_connections=5)
+
+with pool.acquire_context() as client:
+    result = client.execute("uptime")
+
+pool.close_all()
+```
+
+#### 参数说明
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `config` | `ConnectionConfig` | 必填 | 连接配置 |
+| `max_connections` | `int` | 10 | 最大连接数 |
+| `max_lifetime` | `int` | 3600 | 连接最大生命周期（秒） |
+| `idle_timeout` | `int` | 300 | 空闲超时（秒） |
+| `health_check_interval` | `int` | 60 | 后台清理线程周期（秒） |
+
+#### 指标（get_metrics）
+
+与 `AsyncConnectionPool` 相同的键：`active` / `idle` / `total_connections` /
+`total_created` / `reconnects` / `failed`。
+
+> **Note**: `BatchExecutor`（同步内核）在批处理期间自动按主机复用连接，
+> 单个批次结束后统一关闭。无需手动创建连接池。
+
+---
+
 ### AsyncBatchExecutor
 
 原生异步批量命令执行器，基于 `asyncio.Semaphore` 控制并发。
@@ -1153,6 +1207,7 @@ except SSHFileTransferError as e:
 | AsyncSSHClient | 1.1.0+ | ✅ 稳定（需 `[async]` extra） |
 | AsyncConnectionPool | 1.1.0+ | ✅ 稳定（需 `[async]` extra） |
 | AsyncBatchExecutor | 1.1.0+ | ✅ 稳定（需 `[async]` extra） |
+| SyncConnectionPool | 1.1.1+ | ✅ 稳定 |
 | HostService | 1.0.0+ | ✅ 稳定（推荐架构） |
 | CLI | 1.0.0+ | ✅ 稳定 |
 
@@ -1164,4 +1219,4 @@ except SSHFileTransferError as e:
 
 ---
 
-**最后更新：** 2026-08-01（v1.1.0 起新增异步模块文档）
+**最后更新：** 2026-08-01（v1.1.0 起新增异步模块文档，v1.1.1 新增 SyncConnectionPool）

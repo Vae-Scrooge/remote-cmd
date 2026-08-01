@@ -75,6 +75,7 @@ except ImportError:  # pragma: no cover - 依赖 asyncssh，未安装时不导�
 from remote_cmd.core.host import Host
 from remote_cmd.core.host_manager import HostManager
 from remote_cmd.core.ssh_client import SSHClient
+from remote_cmd.core.sync_connection_pool import SyncConnectionPool
 
 if _HAS_ASYNC:
     # 兼容别名（历史名称）
@@ -131,6 +132,7 @@ if _HAS_ASYNC:
         "BatchExecutor",
         "BatchResult",
         "BatchHostResult",
+        "SyncConnectionPool",
         "TaskRunner",
         "Task",
         "TaskStatus",
@@ -163,6 +165,7 @@ else:
         "BatchExecutor",
         "BatchResult",
         "BatchHostResult",
+        "SyncConnectionPool",
         "TaskRunner",
         "Task",
         "TaskStatus",

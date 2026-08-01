@@ -28,6 +28,7 @@ from typing import Callable, Optional
 
 from remote_cmd.core.host import Host
 from remote_cmd.core.ssh_client import ConnectionConfig, SSHClient
+from remote_cmd.core.sync_connection_pool import SyncConnectionPool
 from remote_cmd.service.host_service import HostService
 
 logger = logging.getLogger(__name__)
@@ -201,20 +202,46 @@ class BatchExecutor:
         start_time = time.time()
 
         logger.info(
-            f"批量执行开始: {total} 台主机, 并发数={self._max_concurrency}, 命令='{command}'"
+            f"batch execution started: {total} hosts, concurrency={self._max_concurrency}, command='{command}'"
         )
 
-        with ThreadPoolExecutor(max_workers=self._max_concurrency) as executor:
-            future_map = {
-                executor.submit(
-                    self._execute_on_host,
-                    host_name,
-                    command,
-                    retry_count,
-                    retry_delay,
-                ): host_name
-                for host_name in host_names
-            }
+        # 同步路径连接池：每台主机一个池，批处理期间复用连接，结束后统一关闭。
+        # 单命令批次（常见场景）下连接被复用多次（含重试），避免重复握手。
+        pools: dict[str, SyncConnectionPool] = {}
+
+        def _get_pool(host_name: str) -> SyncConnectionPool:
+            pool = pools.get(host_name)
+            if pool is None:
+                host = self._host_service.resolve_host(host_name)
+                config = ConnectionConfig(
+                    hostname=host.hostname,
+                    username=host.username,
+                    port=host.port,
+                    password=host.password,
+                    key_filename=host.key_filename,
+                    timeout=self._command_timeout,
+                )
+                pool = SyncConnectionPool(
+                    config,
+                    max_connections=max(1, self._max_concurrency),
+                    client_factory=SSHClient,
+                )
+                pools[host_name] = pool
+            return pool
+
+        try:
+            with ThreadPoolExecutor(max_workers=self._max_concurrency) as executor:
+                future_map = {
+                    executor.submit(
+                        self._execute_on_host,
+                        host_name,
+                        command,
+                        retry_count,
+                        retry_delay,
+                        _get_pool(host_name) if retry_count > 0 or total > 1 else None,
+                    ): host_name
+                    for host_name in host_names
+                }
 
             try:
                 for future in as_completed(future_map):
@@ -259,6 +286,10 @@ class BatchExecutor:
                             error="user interrupted",
                         )
                         completed += 1
+        finally:
+            # 关闭本批次创建的连接池（含连接复用期间的连接）
+            for pool in pools.values():
+                pool.close_all()
 
         duration = time.time() - start_time
         success_count = sum(1 for r in results.values() if r.success)
@@ -280,6 +311,7 @@ class BatchExecutor:
         command: str,
         retry_count: int,
         retry_delay: float,
+        pool: Optional[SyncConnectionPool] = None,
     ) -> BatchHostResult:
         """
         在单台主机上执行命令（包含重试逻辑）
@@ -324,6 +356,21 @@ class BatchExecutor:
                     key_filename=host.key_filename,
                     timeout=self._command_timeout,
                 )
+
+                if pool is not None:
+                    # 连接池模式：复用主机连接，避免每次操作握手
+                    with pool.acquire_context() as client:
+                        cmd_result = client.execute(command, timeout=self._command_timeout)
+                    duration = time.time() - start
+                    return BatchHostResult(
+                        host=host_name,
+                        success=cmd_result.success,
+                        command=command,
+                        stdout=cmd_result.stdout,
+                        stderr=cmd_result.stderr,
+                        exit_code=cmd_result.exit_code,
+                        duration=duration,
+                    )
 
                 client = SSHClient(config)
                 client.connect()

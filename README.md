@@ -175,6 +175,8 @@ still works — async symbols are simply not exported.
 
 ## Documentation
 
+📚 **[完整文档中心](./docs/README.md)** — 教程、API 参考、架构设计、故障排查
+
 | Document | Contents |
 |---|---|
 | [API Reference](./docs/API.md) | Full API docs: SSHClient, AsyncSSHClient, HostService, and more |

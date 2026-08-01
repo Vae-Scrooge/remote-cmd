@@ -105,6 +105,8 @@ ignore = [
 # 测试中 pytest fixture 参数未直接引用属于正常模式（如 patch 装饰器触发副作用）
 "tests/test_async_ssh_client.py" = ["ARG002"]
 "tests/test_async_batch_executor.py" = ["ARG001", "ARG002"]
+# 连接池测试中 patched_client fixture 触发 patch 副作用，factory 保留 cfg 参数以匹配真实签名
+"tests/test_sync_connection_pool.py" = ["ARG001", "ARG002"]
 # 性能测试中 mock stub 方法需保留与真实方法一致的签名（self/timeout 等）
 "tests/performance/conftest.py" = ["ARG001"]
 # 示例脚本中桩函数保留参数以展示 API 用法（函数体为注释占位）

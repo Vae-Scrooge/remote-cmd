@@ -230,6 +230,8 @@ class HostService:
                     description=host.description,
                 )
             except Exception as e:  # noqa: BLE001
+                # 解密失败不应阻塞整批主机返回：保留加密 token，
+                # 让 SSH 层在真正连接时报告认证失败
                 logger.warning(f"failed to decrypt password for {host.name}: {e}")
         return host
 

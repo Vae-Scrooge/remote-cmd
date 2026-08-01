@@ -95,7 +95,7 @@ remote-cmd/
 ├── CONTRIBUTING.md             # 贡献指南
 ├── CHANGELOG.md               # 更新日志
 ├── LICENSE                    # 许可证
-├── setup.py                   # 安装配置
+├── pyproject.toml             # 安装与打包配置
 ├── requirements.txt           # 依赖列表
 └── config.example.yaml        # 配置示例
 ```
@@ -423,11 +423,8 @@ with SSHClient(config) as client:
 # remote_cmd/__init__.py
 __version__ = "1.1.0"
 
-# setup.py
-setup(
-    version="1.1.0",
-    ...
-)
+# pyproject.toml
+version = "1.1.0"
 ```
 
 2. **更新 CHANGELOG**

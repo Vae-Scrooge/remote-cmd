@@ -65,7 +65,7 @@ class SSHConnectionError(SSHError):
     - 密钥文件不存在
 
     Example:
-        >>> raise SSHConnectionError("无法连接到主机: connection refused")
+        >>> raise SSHConnectionError("could not connect to host: connection refused")
     """
 
     pass
@@ -80,7 +80,7 @@ class SSHCommandError(SSHError):
     此异常主要用于命令执行本身出现问题的情况（如网络中断）。
 
     Example:
-        >>> raise SSHCommandError("命令执行超时: timeout after 30 seconds")
+        >>> raise SSHCommandError("command execution timed out: timeout after 30 seconds")
     """
 
     pass
@@ -96,7 +96,7 @@ class SSHFileTransferError(SSHError):
     - 传输中断
 
     Example:
-        >>> raise SSHFileTransferError("文件上传失败: disk full")
+        >>> raise SSHFileTransferError("file upload failed: disk full")
     """
 
     pass
@@ -114,7 +114,7 @@ class ConfigError(RemoteCmdError):
     当配置文件无效或配置项缺失时抛出。
 
     Example:
-        >>> raise ConfigError("配置文件格式错误: invalid YAML")
+        >>> raise ConfigError("invalid config file format: invalid YAML")
     """
 
     pass
@@ -127,7 +127,7 @@ class ValidationError(RemoteCmdError):
     当用户输入或参数验证失败时抛出。
 
     Example:
-        >>> raise ValidationError("端口号必须在 1-65535 之间")
+        >>> raise ValidationError("port must be between 1 and 65535")
     """
 
     pass

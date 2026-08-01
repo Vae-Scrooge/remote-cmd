@@ -37,7 +37,7 @@ class CredentialProvider(ABC):
 
     @abstractmethod
     def get_password(self, host: Host) -> Optional[str]:
-        """获取指定主机的密码，无可返回 None"""
+        """get a host by name, or None if not found"""
         ...
 
 
@@ -147,13 +147,13 @@ class KeyringCredentialProvider(CredentialProvider):
 
             password = keyring.get_password(self._service_name, host.name)
             if password:
-                logger.debug(f"从 Keyring 获取到 {host.name} 的密码")
+                logger.debug(f"retrieved password for {host.name} ")
             return password
         except ImportError:
-            logger.debug("keyring 库未安装，跳过 KeyringCredentialProvider")
+            logger.debug("keyring not installed, skipping KeyringCredentialProvider")
             return None
         except Exception as e:  # noqa: BLE001
-            logger.debug(f"Keyring 访问失败: {e}")
+            logger.debug(f"keyring access failed: {e}")
             return None
 
     def set_password(self, host: Host, password: str) -> bool:
@@ -162,10 +162,10 @@ class KeyringCredentialProvider(CredentialProvider):
 
         Args:
             host: 主机配置对象
-            password: 要存储的密码
+            password: to store
 
         Returns:
-            bool: 存储成功返回 True
+            bool: True if the store succeeded
         """
         try:
             import keyring
@@ -173,7 +173,7 @@ class KeyringCredentialProvider(CredentialProvider):
             keyring.set_password(self._service_name, host.name, password)
             return True
         except Exception as e:  # noqa: BLE001
-            logger.debug(f"Keyring 存储失败: {e}")
+            logger.debug(f"keyring store failed: {e}")
             return False
 
     def delete_password(self, host: Host) -> bool:
@@ -184,7 +184,7 @@ class KeyringCredentialProvider(CredentialProvider):
             host: 主机配置对象
 
         Returns:
-            bool: 删除成功返回 True
+            bool: True if the delete succeeded
         """
         try:
             import keyring
@@ -192,5 +192,5 @@ class KeyringCredentialProvider(CredentialProvider):
             keyring.delete_password(self._service_name, host.name)
             return True
         except Exception as e:  # noqa: BLE001
-            logger.debug(f"Keyring 删除失败: {e}")
+            logger.debug(f"keyring delete failed: {e}")
             return False

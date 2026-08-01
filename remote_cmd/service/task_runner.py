@@ -119,7 +119,7 @@ class TaskRunner:
             ValueError: 任务名称不能为空
         """
         if not name:
-            raise ValueError("任务名称不能为空")
+            raise ValueError("task name must not be empty")
 
         task_id = uuid.uuid4().hex
         task = Task(
@@ -143,7 +143,7 @@ class TaskRunner:
         #  submit.acquire() ↔ 本处 release 或 _execute_wrapper.finally）
         if self._cancel_flags.get(task_id, threading.Event()).is_set():
             self._semaphore.release()
-            logger.info(f"任务在调度前已取消: [{task_id[:8]}] {task.name}")
+            logger.info(f"task cancelled before scheduling: [{task_id[:8]}] {task.name}")
             return task_id
 
         thread = threading.Thread(
@@ -154,7 +154,7 @@ class TaskRunner:
         )
         thread.start()
 
-        logger.info(f"任务已提交: [{task_id[:8]}] {name}")
+        logger.info(f"task submitted: [{task_id[:8]}] {name}")
         return task_id
 
     def cancel(self, task_id: str) -> bool:
@@ -168,7 +168,7 @@ class TaskRunner:
             task_id: 任务 ID
 
         Returns:
-            bool: 取消成功返回 True
+            bool: True if the cancel succeeded
         """
         with self._lock:
             task = self._tasks.get(task_id)
@@ -187,14 +187,14 @@ class TaskRunner:
                     self._cancel_flags[task_id].set()
                 if task_id in self._events:
                     self._events[task_id].set()
-                logger.info(f"任务已取消: [{task_id[:8]}] {task.name}")
+                logger.info(f"task cancelled: [{task_id[:8]}] {task.name}")
                 return True
 
             if task.status == TaskStatus.RUNNING:
                 # 设置取消标志
                 if task_id in self._cancel_flags:
                     self._cancel_flags[task_id].set()
-                logger.info(f"正在取消任务: [{task_id[:8]}] {task.name}")
+                logger.info(f"cancelling task: [{task_id[:8]}] {task.name}")
                 return True
 
             return False
@@ -276,15 +276,15 @@ class TaskRunner:
         """
         with self._lock:
             if task_id not in self._events:
-                raise KeyError(f"任务 '{task_id[:8]}' 不存在")
+                raise KeyError(f"Task '{task_id[:8]}' not found")
             event = self._events[task_id]
 
         if not event.wait(timeout=timeout):
-            raise TimeoutError(f"等待任务 '{task_id[:8]}' 超时")
+            raise TimeoutError(f"Timeout waiting for task '{task_id[:8]}'")
 
         task = self.get_task(task_id)
         if task is None:
-            raise KeyError(f"任务 '{task_id[:8]}' 不存在")
+            raise KeyError(f"Task '{task_id[:8]}' not found")
         return task
 
     def cancel_all(self) -> int:
@@ -310,7 +310,7 @@ class TaskRunner:
                     count += 1
 
         if count > 0:
-            logger.info(f"已取消 {count} 个待处理任务")
+            logger.info(f"cancelled {count} pending tasks")
         return count
 
     def cleanup_old(self, max_age_seconds: int = 3600) -> int:
@@ -347,7 +347,7 @@ class TaskRunner:
                 self._cancel_flags.pop(task_id, None)
 
         if to_remove:
-            logger.debug(f"已清理 {len(to_remove)} 个过期任务")
+            logger.debug(f"cleaned up {len(to_remove)} expired tasks")
         return len(to_remove)
 
     # ========================================================================
@@ -406,7 +406,7 @@ class TaskRunner:
                 task.started_at = datetime.now()
 
         try:
-            logger.debug(f"任务开始: [{task_id[:8]}] 执行中...")
+            logger.debug(f"task started: [{task_id[:8]}] running...")
 
             # 执行任务函数
             result = fn(*args, **kwargs)
@@ -418,7 +418,7 @@ class TaskRunner:
                     if task:
                         task.status = TaskStatus.CANCELLED
                         task.completed_at = datetime.now()
-                logger.info(f"任务被取消: [{task_id[:8]}]")
+                logger.info(f"task was cancelled: [{task_id[:8]}]")
             else:
                 with self._lock:
                     task = self._tasks.get(task_id)
@@ -426,7 +426,7 @@ class TaskRunner:
                         task.result = result
                         task.status = TaskStatus.SUCCESS
                         task.completed_at = datetime.now()
-                logger.info(f"任务完成: [{task_id[:8]}]")
+                logger.info(f"task finished: [{task_id[:8]}]")
 
         except Exception as e:  # noqa: BLE001
             with self._lock:
@@ -435,7 +435,7 @@ class TaskRunner:
                     task.error = str(e)
                     task.status = TaskStatus.FAILED
                     task.completed_at = datetime.now()
-            logger.error(f"任务失败: [{task_id[:8]}] {e}")
+            logger.error(f"task failed: [{task_id[:8]}] {e}")
 
         finally:
             self._semaphore.release()

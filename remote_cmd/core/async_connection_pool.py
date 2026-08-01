@@ -179,7 +179,7 @@ class AsyncConnectionPool:
             return True
         age = time.time() - meta["created_at"]
         if age > self._max_lifetime:
-            logger.debug("连接 %s 已超过最大生命周期", meta.get("conn_id", "?")[:8])
+            logger.debug("connection %s exceeded max lifetime", meta.get("conn_id", "?")[:8])
             return False
         # 触发轻量探活：发出一个无害命令
         try:
@@ -187,7 +187,7 @@ class AsyncConnectionPool:
             return result.success
         except Exception as e:  # noqa: BLE001
             self._total_reconnects += 1
-            logger.debug("连接探活失败: %s", e)
+            logger.debug("connection liveness check failed: %s", e)
             return False
 
     async def _close_connection(self, conn: AsyncSSHClient) -> None:
@@ -216,7 +216,7 @@ class AsyncConnectionPool:
             except asyncio.CancelledError:
                 break
             except Exception:  # noqa: BLE001
-                logger.warning("连接池监控异常")
+                logger.warning("connection pool monitor error")
 
     async def _cleanup_expired(self) -> None:
         now = time.time()

@@ -26,7 +26,7 @@ class TestCredentialEncryption:
         """测试：解密错误格式的密文应抛出异常"""
         crypto = CredentialEncryption(key_path=tmp_path / ".key")
 
-        with pytest.raises(CredentialEncryptionError, match="错误的密文格式"):
+        with pytest.raises(CredentialEncryptionError, match="invalid ciphertext format"):
             crypto.decrypt("not_encrypted")
 
     def test_decrypt_tampered_ciphertext(self, tmp_path):
@@ -36,7 +36,7 @@ class TestCredentialEncryption:
 
         tampered = encrypted[:-1] + "X"
 
-        with pytest.raises(CredentialEncryptionError, match="解密失败"):
+        with pytest.raises(CredentialEncryptionError, match="decryption failed"):
             crypto.decrypt(tampered)
 
     def test_is_encrypted(self, tmp_path):

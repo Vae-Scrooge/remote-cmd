@@ -92,7 +92,7 @@ class HostService:
             ValueError: 同名主机已存在
         """
         if self._repo.contains(host.name):
-            raise ValueError(f"主机 '{host.name}' 已存在")
+            raise ValueError(f"Host '{host.name}' already exists")
 
         # 加密密码（如果明文）
         if host.password and not self._encryption.is_encrypted(host.password):
@@ -100,7 +100,7 @@ class HostService:
 
         self._repo.save(host)
         self._repo.flush()
-        logger.info(f"已添加主机: {host.name}")
+        logger.info(f"host added: {host.name}")
         return host
 
     def get_host(self, name: str) -> Host:
@@ -134,14 +134,14 @@ class HostService:
 
         self._repo.save(host)
         self._repo.flush()
-        logger.info(f"已更新主机: {name}")
+        logger.info(f"host updated: {name}")
         return host
 
     def remove_host(self, name: str) -> None:
         """删除主机"""
         self._repo.delete(name)
         self._repo.flush()
-        logger.info(f"已删除主机: {name}")
+        logger.info(f"host removed: {name}")
 
     def list_hosts(self, tag: Optional[str] = None) -> list[Host]:
         """列出主机（密码自动解密）"""
@@ -184,7 +184,7 @@ class HostService:
             name: 主机名
 
         Returns:
-            bool: 连接成功返回 True
+            bool: True if connected
         """
         host = self.resolve_host(name)
         return self._ssh.test_connection(
@@ -209,7 +209,7 @@ class HostService:
                 try:
                     results[name] = future.result()
                 except Exception as e:  # noqa: BLE001
-                    logger.error(f"主机 {name} 连接测试异常: {e}")
+                    logger.error(f"connection test error for host {name}: {e}")
                     results[name] = False
 
         return results
@@ -230,7 +230,7 @@ class HostService:
                     description=host.description,
                 )
             except Exception as e:  # noqa: BLE001
-                logger.warning(f"密码解密失败 ({host.name}): {e}")
+                logger.warning(f"failed to decrypt password for {host.name}: {e}")
         return host
 
     def resolve_host(self, name: str) -> Host:
@@ -257,7 +257,7 @@ class HostService:
                 try:
                     host.password = self._encryption.decrypt(host.password)
                 except Exception as e:  # noqa: BLE001
-                    logger.warning(f"密码解密失败 ({host.name}): {e}")
+                    logger.warning(f"failed to decrypt password for {host.name}: {e}")
                     # 保留加密 token，留给 SSH 层报认证失败
 
         # 尝试解析密钥路径

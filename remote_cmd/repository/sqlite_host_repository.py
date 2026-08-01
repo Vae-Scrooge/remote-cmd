@@ -105,7 +105,7 @@ class SqliteHostRepository(HostRepository):
                 ("db_version", str(DB_VERSION)),
             )
             conn.commit()
-        logger.debug(f"SQLite 数据库已初始化: {self._db_path}")
+        logger.debug(f"SQLite database initialized: {self._db_path}")
 
     def _get_conn(self) -> sqlite3.Connection:
         """获取数据库连接（线程安全）"""
@@ -143,7 +143,7 @@ class SqliteHostRepository(HostRepository):
 
     def _maybe_migrate_from_json(self, json_path: str) -> None:
         """
-        如果数据库为空且 JSON 文件存在，执行迁移
+        if database is empty and JSON file exists, run migration
 
         Args:
             json_path: JSON 文件路径
@@ -151,7 +151,7 @@ class SqliteHostRepository(HostRepository):
         with self._lock, self._txn() as conn:
             count = conn.execute("SELECT COUNT(*) as cnt FROM hosts").fetchone()["cnt"]
             if count > 0:
-                logger.info("数据库非空，跳过 JSON 迁移")
+                logger.info("database not empty, skipping JSON migration")
                 return
 
         # 尝试加载 JSON 文件
@@ -160,7 +160,7 @@ class SqliteHostRepository(HostRepository):
 
             path = Path(json_path)
             if not path.exists():
-                logger.info(f"JSON 文件不存在，跳过迁移: {json_path}")
+                logger.info(f"JSON file not found, skipping migration: {json_path}")
                 return
 
             with open(path, encoding="utf-8") as f:
@@ -171,7 +171,7 @@ class SqliteHostRepository(HostRepository):
             hosts_data = raw_data.get("hosts", raw_data if version == 1 else {})
 
             if not isinstance(hosts_data, dict):
-                logger.warning(f"无法识别的 JSON 格式: {json_path}")
+                logger.warning(f"unrecognized JSON format: {json_path}")
                 return
 
             imported = 0
@@ -181,13 +181,13 @@ class SqliteHostRepository(HostRepository):
                     self.save(host)
                     imported += 1
                 except (ValueError, TypeError, KeyError) as e:
-                    logger.warning(f"跳过无效主机 '{name}': {e}")
+                    logger.warning(f"skipping invalid host '{name}': {e}")
 
             if imported > 0:
-                logger.info(f"从 JSON 迁移了 {imported} 台主机到 SQLite")
+                logger.info(f"migrated {imported} hosts to SQLite")
 
         except (OSError, json.JSONDecodeError, ValueError) as e:
-            logger.warning(f"JSON 迁移失败: {e}")
+            logger.warning(f"JSON migration failed: {e}")
 
     # ========================================================================
     # Repository 接口实现
@@ -231,7 +231,7 @@ class SqliteHostRepository(HostRepository):
             row = conn.execute("SELECT * FROM hosts WHERE name = ?", (name,)).fetchone()
 
         if row is None:
-            raise KeyError(f"主机 '{name}' 不存在")
+            raise KeyError(f"Host '{name}' not found")
 
         return self._row_to_host(row)
 
@@ -242,7 +242,7 @@ class SqliteHostRepository(HostRepository):
             conn.commit()
 
         if cursor.rowcount == 0:
-            raise KeyError(f"主机 '{name}' 不存在")
+            raise KeyError(f"Host '{name}' not found")
 
     def list(self, tag: Optional[str] = None) -> list[Host]:
         """列出主机，可选按标签筛选"""

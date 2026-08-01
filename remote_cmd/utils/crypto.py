@@ -82,7 +82,7 @@ class CredentialEncryption:
             token = self._cipher.encrypt(plaintext.encode("utf-8"))
             return self._PREFIX + token.decode("utf-8")
         except Exception as e:
-            raise CredentialEncryptionError(f"加密失败: {e}") from e
+            raise CredentialEncryptionError(f"encryption failed: {e}") from e
 
     def decrypt(self, ciphertext: str) -> str:
         """
@@ -98,13 +98,13 @@ class CredentialEncryption:
             CredentialEncryptionError: 解密失败或格式错误
         """
         if not ciphertext.startswith(self._PREFIX):
-            raise CredentialEncryptionError("错误的密文格式")
+            raise CredentialEncryptionError("invalid ciphertext format")
 
         try:
             token = ciphertext[len(self._PREFIX) :].encode("utf-8")
             return self._cipher.decrypt(token).decode("utf-8")
         except Exception as e:
-            raise CredentialEncryptionError(f"解密失败: {e}") from e
+            raise CredentialEncryptionError(f"decryption failed: {e}") from e
 
     def is_encrypted(self, value: str) -> bool:
         """
@@ -163,5 +163,5 @@ class CredentialEncryption:
         with contextlib.suppress(OSError):
             self._key_path.chmod(0o600)
 
-        logger.info(f"已生成加密密钥: {self._key_path}")
+        logger.info(f"generated encryption key: {self._key_path}")
         return key

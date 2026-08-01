@@ -76,13 +76,13 @@ class ConnectionConfig:
         """初始化后验证：校验端口、主机名等"""
         # 验证端口号
         if not (1 <= self.port <= 65535):
-            raise ValueError(f"端口号必须在 1-65535 之间，当前值: {self.port}")
+            raise ValueError(f"Port must be between 1 and 65535, got: {self.port}")
 
         # 验证主机名/IP 不为空
         if not self.hostname or not self.hostname.strip():
-            raise ValueError("主机名不能为空")
+            raise ValueError("hostname must not be empty")
         if not self.username or not self.username.strip():
-            raise ValueError("用户名不能为空")
+            raise ValueError("username must not be empty")
 
 
 @dataclass
@@ -96,7 +96,7 @@ class CommandResult:
         command: 执行的命令字符串
         stdout: 标准输出内容
         stderr: 标准错误内容
-        exit_code: 命令退出码（0 表示成功）
+        exit_code: command exit code (0 means success)
     """
 
     command: str
@@ -107,7 +107,7 @@ class CommandResult:
     @property
     def success(self) -> bool:
         """
-        判断命令是否执行成功
+        whether the command executed successfully
 
         Returns:
             bool: 退出码为 0 时返回 True，否则返回 False
@@ -209,9 +209,9 @@ class SSHClient:
                 known_hosts_path = Path(known_hosts).expanduser()
                 if known_hosts_path.exists():
                     self._client.load_host_keys(str(known_hosts_path))
-                    logger.debug(f"已加载 known_hosts: {known_hosts_path}")
+                    logger.debug(f"loaded known_hosts: {known_hosts_path}")
                 else:
-                    logger.warning(f"known_hosts 文件不存在: {known_hosts_path}")
+                    logger.warning(f"known_hosts file not found: {known_hosts_path}")
 
             # 构建连接参数字典
             connect_kwargs = {
@@ -230,26 +230,26 @@ class SSHClient:
                 # 密钥认证：展开 ~ 并验证文件存在
                 key_path = Path(self.config.key_filename).expanduser()
                 if not key_path.exists():
-                    raise SSHConnectionError(f"SSH 密钥文件不存在: {key_path}")
+                    raise SSHConnectionError(f"SSH key file not found: {key_path}")
                 connect_kwargs["key_filename"] = str(key_path)
 
             # 记录连接日志
-            logger.info(f"正在连接到 {self.config.hostname}:{self.config.port}")
+            logger.info(f"connecting to {self.config.hostname}:{self.config.port}")
 
             # 建立连接
             self._client.connect(**connect_kwargs)
-            logger.info(f"成功连接到 {self.config.hostname}")
+            logger.info(f"connected to {self.config.hostname}")
 
             return self
 
         except paramiko.AuthenticationException as e:
-            raise SSHConnectionError(f"认证失败: {e}") from e
+            raise SSHConnectionError(f"authentication failed: {e}") from e
         except socket.timeout as e:
-            raise SSHConnectionError(f"连接超时: {self.config.hostname}") from e
+            raise SSHConnectionError(f"connection timeout: {self.config.hostname}") from e
         except socket.gaierror as e:
-            raise SSHConnectionError(f"无法解析主机名: {self.config.hostname}") from e
+            raise SSHConnectionError(f"could not resolve hostname: {self.config.hostname}") from e
         except (OSError, paramiko.SSHException) as e:
-            raise SSHConnectionError(f"连接错误: {e}") from e
+            raise SSHConnectionError(f"connection error: {e}") from e
 
     def disconnect(self) -> None:
         """
@@ -262,9 +262,9 @@ class SSHClient:
         if self._sftp:
             try:
                 self._sftp.close()
-                logger.debug("SFTP 连接已关闭")
+                logger.debug("SFTP connection closed")
             except (OSError, paramiko.SSHException) as e:
-                logger.warning(f"关闭 SFTP 连接时出错: {e}")
+                logger.warning(f"error closing SFTP connection: {e}")
             finally:
                 self._sftp = None
 
@@ -272,9 +272,9 @@ class SSHClient:
         if self._client:
             try:
                 self._client.close()
-                logger.debug("SSH 连接已关闭")
+                logger.debug("SSH connection closed")
             except (OSError, paramiko.SSHException) as e:
-                logger.warning(f"关闭 SSH 连接时出错: {e}")
+                logger.warning(f"error closing SSH connection: {e}")
             finally:
                 self._client = None
 
@@ -297,7 +297,7 @@ class SSHClient:
     def _get_sftp(self) -> paramiko.SFTPClient:
         """获取 SFTP 客户端（延迟初始化）"""
         if not self._client:
-            raise SSHConnectionError("未连接，请先调用 connect() 方法")
+            raise SSHConnectionError("not connected, call connect() first")
         if not self._sftp:
             self._sftp = self._client.open_sftp()
         return self._sftp
@@ -358,10 +358,10 @@ class SSHClient:
         """
         # 检查连接状态
         if not self._client:
-            raise SSHConnectionError("未连接，请先调用 connect() 方法")
+            raise SSHConnectionError("not connected, call connect() first")
 
         try:
-            logger.debug(f"执行命令: {command}")
+            logger.debug(f"executing command: {command}")
 
             # 构建环境变量设置命令
             env_str = ""
@@ -388,11 +388,11 @@ class SSHClient:
                 exit_code=exit_code,
             )
 
-            logger.debug(f"命令执行完成，退出码: {exit_code}")
+            logger.debug(f"command finished, exit code: {exit_code}")
             return result
 
         except (paramiko.SSHException, OSError) as e:
-            raise SSHCommandError(f"执行命令 '{command}' 失败: {e}") from e
+            raise SSHCommandError(f"command execution failed '{command}': {e}") from e
 
     def execute_sudo(
         self,
@@ -420,7 +420,7 @@ class SSHClient:
             >>> result = client.execute_sudo("systemctl restart nginx", password="mypass")
         """
         if not self._client:
-            raise SSHConnectionError("未连接，请先调用 connect() 方法")
+            raise SSHConnectionError("not connected, call connect() first")
 
         if password is None:
             full_command = f"sudo {command}"
@@ -446,7 +446,7 @@ class SSHClient:
                 exit_code=exit_code,
             )
         except paramiko.SSHException as e:
-            raise SSHCommandError(f"执行 sudo 命令 '{command}' 失败: {e}") from e
+            raise SSHCommandError(f"sudo command execution failed '{command}': {e}") from e
 
     # ========================================================================
     # 文件传输方法
@@ -472,15 +472,15 @@ class SSHClient:
         # 验证本地文件存在
         local_file = Path(local_path)
         if not local_file.exists():
-            raise SSHFileTransferError(f"本地文件不存在: {local_path}")
+            raise SSHFileTransferError(f"Local file not found: {local_path}")
 
         # 执行上传
         try:
-            logger.info(f"上传文件: {local_path} -> {remote_path}")
+            logger.info(f"uploading file: {local_path} -> {remote_path}")
             sftp.put(str(local_file), remote_path)
-            logger.info("文件上传完成")
+            logger.info("file upload finished")
         except (paramiko.SSHException, OSError) as e:
-            raise SSHFileTransferError(f"文件上传失败: {e}") from e
+            raise SSHFileTransferError(f"file upload failed: {e}") from e
 
     def download_file(self, remote_path: str, local_path: str) -> None:
         """
@@ -508,11 +508,11 @@ class SSHClient:
 
         # 执行下载
         try:
-            logger.info(f"下载文件: {remote_path} -> {local_path}")
+            logger.info(f"downloading file: {remote_path} -> {local_path}")
             sftp.get(remote_path, str(local_file))
-            logger.info("文件下载完成")
+            logger.info("file download finished")
         except (paramiko.SSHException, OSError) as e:
-            raise SSHFileTransferError(f"文件下载失败: {e}") from e
+            raise SSHFileTransferError(f"file download failed: {e}") from e
 
     def list_remote_directory(self, remote_path: str = ".") -> list[dict[str, Any]]:
         """
@@ -555,7 +555,7 @@ class SSHClient:
                 )
             return entries
         except (paramiko.SSHException, OSError) as e:
-            raise SSHFileTransferError(f"列出远程目录失败: {e}") from e
+            raise SSHFileTransferError(f"failed to list remote directory: {e}") from e
 
     def create_remote_directory(self, path: str) -> None:
         """创建远程目录（支持递归创建）"""
@@ -572,18 +572,18 @@ class SSHClient:
 
         try:
             _makedirs(sftp, path)
-            logger.info(f"已创建远程目录: {path}")
+            logger.info(f"created remote directory: {path}")
         except (paramiko.SSHException, OSError) as e:
-            raise SSHFileTransferError(f"创建远程目录失败: {e}") from e
+            raise SSHFileTransferError(f"failed to create remote directory: {e}") from e
 
     def remove_remote_file(self, path: str) -> None:
         """删除远程文件"""
         sftp = self._get_sftp()
         try:
             sftp.remove(path)
-            logger.info(f"已删除远程文件: {path}")
+            logger.info(f"deleted remote file: {path}")
         except (paramiko.SSHException, OSError) as e:
-            raise SSHFileTransferError(f"删除远程文件失败: {e}") from e
+            raise SSHFileTransferError(f"failed to delete remote file: {e}") from e
 
     def remove_remote_directory(self, path: str, recursive: bool = False) -> None:
         """删除远程目录"""
@@ -611,9 +611,9 @@ class SSHClient:
                 _rm_recursive(sftp, path)
             else:
                 sftp.rmdir(path)
-            logger.info(f"已删除远程目录: {path}")
+            logger.info(f"deleted remote directory: {path}")
         except (paramiko.SSHException, OSError) as e:
-            raise SSHFileTransferError(f"删除远程目录失败: {e}") from e
+            raise SSHFileTransferError(f"failed to delete remote directory: {e}") from e
 
     def remote_file_exists(self, path: str) -> bool:
         """检查远程文件是否存在"""
@@ -641,4 +641,4 @@ class SSHClient:
                 "is_file": stat.S_ISREG(mode),
             }
         except (paramiko.SSHException, OSError) as e:
-            raise SSHFileTransferError(f"获取文件信息失败: {e}") from e
+            raise SSHFileTransferError(f"failed to get file info: {e}") from e

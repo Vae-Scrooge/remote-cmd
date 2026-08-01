@@ -36,15 +36,15 @@ class TestConnectionConfig:
         assert c.password is None and c.key_filename is None
 
     def test_invalid_port_raises(self):
-        with pytest.raises(ValueError, match="端口"):
+        with pytest.raises(ValueError, match="Port must be between 1 and 65535"):
             ConnectionConfig(hostname="h", username="u", port=99999)
 
     def test_empty_hostname_raises(self):
-        with pytest.raises(ValueError, match="主机名"):
+        with pytest.raises(ValueError, match="hostname must not be empty"):
             ConnectionConfig(hostname="", username="u")
 
     def test_empty_username_raises(self):
-        with pytest.raises(ValueError, match="用户名"):
+        with pytest.raises(ValueError, match="username must not be empty"):
             ConnectionConfig(hostname="h", username="")
 
 
@@ -140,31 +140,31 @@ class TestSSHClientConnect:
 
     def test_connect_key_file_missing(self, mock_paramiko):  # noqa: ARG002
         config = ConnectionConfig(hostname="h", username="u", key_filename="/no/such/key")
-        with pytest.raises(SSHConnectionError, match="密钥文件不存在"):
+        with pytest.raises(SSHConnectionError, match="SSH key file not found"):
             SSHClient(config).connect()
 
     def test_connect_auth_failure(self, mock_paramiko):
         mock_paramiko.connect.side_effect = paramiko.AuthenticationException("bad auth")
         config = ConnectionConfig(hostname="h", username="u", password="p")
-        with pytest.raises(SSHConnectionError, match="认证失败"):
+        with pytest.raises(SSHConnectionError, match="authentication failed"):
             SSHClient(config).connect()
 
     def test_connect_timeout(self, mock_paramiko):
         mock_paramiko.connect.side_effect = socket.timeout("timeout")
         config = ConnectionConfig(hostname="h", username="u", password="p")
-        with pytest.raises(SSHConnectionError, match="连接超时"):
+        with pytest.raises(SSHConnectionError, match="connection timeout"):
             SSHClient(config).connect()
 
     def test_connect_unresolved(self, mock_paramiko):
         mock_paramiko.connect.side_effect = socket.gaierror("unknown host")
         config = ConnectionConfig(hostname="nowhere", username="u")
-        with pytest.raises(SSHConnectionError, match="无法解析主机名"):
+        with pytest.raises(SSHConnectionError, match="could not resolve hostname"):
             SSHClient(config).connect()
 
     def test_connect_os_error(self, mock_paramiko):
         mock_paramiko.connect.side_effect = OSError("connection refused")
         config = ConnectionConfig(hostname="h", username="u")
-        with pytest.raises(SSHConnectionError, match="连接错误"):
+        with pytest.raises(SSHConnectionError, match="connection error"):
             SSHClient(config).connect()
 
     def test_connect_known_hosts_loading(self, mock_paramiko, tmp_path):
@@ -250,19 +250,19 @@ class TestSSHClientExecute:
 
     def test_execute_without_connection_raises(self):
         client = SSHClient(ConnectionConfig(hostname="h", username="u"))
-        with pytest.raises(SSHConnectionError, match="未连接"):
+        with pytest.raises(SSHConnectionError, match="not connected"):
             client.execute("ls")
 
     def test_execute_ssh_exception(self, mock_paramiko):
         mock_paramiko.exec_command.side_effect = paramiko.SSHException("channel error")
         config = ConnectionConfig(hostname="h", username="u")
-        with SSHClient(config) as client, pytest.raises(SSHCommandError, match="执行命令"):
+        with SSHClient(config) as client, pytest.raises(SSHCommandError, match="command execution failed"):
             client.execute("ls")
 
     def test_execute_os_error(self, mock_paramiko):
         mock_paramiko.exec_command.side_effect = OSError("pipe broken")
         config = ConnectionConfig(hostname="h", username="u")
-        with SSHClient(config) as client, pytest.raises(SSHCommandError, match="执行命令"):
+        with SSHClient(config) as client, pytest.raises(SSHCommandError, match="command execution failed"):
             client.execute("ls")
 
     def test_execute_stdout_decoding(self, mock_paramiko):
@@ -324,7 +324,7 @@ class TestSSHClientFileTransfer:
     def test_upload_missing_local(self, mock_paramiko):  # noqa: ARG002
         config = ConnectionConfig(hostname="h", username="u")
         with SSHClient(config) as client, pytest.raises(
-            SSHFileTransferError, match="本地文件不存在"
+            SSHFileTransferError, match="Local file not found"
         ):
             client.upload_file("/no/file", "/remote/x")
 
@@ -335,7 +335,7 @@ class TestSSHClientFileTransfer:
         sftp.put.side_effect = paramiko.SSHException("transfer fail")
         config = ConnectionConfig(hostname="h", username="u")
         with SSHClient(config) as client, pytest.raises(
-            SSHFileTransferError, match="文件上传失败"
+            SSHFileTransferError, match="file upload failed"
         ):
             client.upload_file(str(local), "/remote/x")
 
@@ -353,7 +353,7 @@ class TestSSHClientFileTransfer:
         sftp.get.side_effect = OSError("disk full")
         config = ConnectionConfig(hostname="h", username="u")
         with SSHClient(config) as client, pytest.raises(
-            SSHFileTransferError, match="文件下载失败"
+            SSHFileTransferError, match="file download failed"
         ):
             client.download_file("/remote/x", str(tmp_path / "x.txt"))
 
@@ -378,7 +378,7 @@ class TestSSHClientFileTransfer:
         sftp.listdir_attr.side_effect = paramiko.SSHException("ls fail")
         config = ConnectionConfig(hostname="h", username="u")
         with SSHClient(config) as client, pytest.raises(
-            SSHFileTransferError, match="列出远程目录失败"
+            SSHFileTransferError, match="failed to list remote directory"
         ):
             client.list_remote_directory("/")
 
@@ -401,7 +401,7 @@ class TestSSHClientFileTransfer:
         sftp.remove.side_effect = paramiko.SSHException("rm fail")
         config = ConnectionConfig(hostname="h", username="u")
         with SSHClient(config) as client, pytest.raises(
-            SSHFileTransferError, match="删除远程文件失败"
+            SSHFileTransferError, match="failed to delete remote file"
         ):
             client.remove_remote_file("/remote/x.txt")
 
@@ -458,13 +458,13 @@ class TestSSHClientFileTransfer:
         sftp.stat.side_effect = paramiko.SSHException("stat fail")
         config = ConnectionConfig(hostname="h", username="u")
         with SSHClient(config) as client, pytest.raises(
-            SSHFileTransferError, match="获取文件信息失败"
+            SSHFileTransferError, match="failed to get file info"
         ):
             client.get_remote_file_info("/remote/x.txt")
 
     def test_get_sftp_without_connection_raises(self):
         client = SSHClient(ConnectionConfig(hostname="h", username="u"))
-        with pytest.raises(SSHConnectionError, match="未连接"):
+        with pytest.raises(SSHConnectionError, match="not connected"):
             client._get_sftp()
 
     def test_known_hosts_missing_warning(self, mock_paramiko, tmp_path):  # noqa: ARG002
@@ -502,7 +502,7 @@ class TestSSHClientFileTransfer:
         sftp.mkdir.side_effect = paramiko.SSHException("mkdir fail")
         config = ConnectionConfig(hostname="h", username="u")
         with SSHClient(config) as c, pytest.raises(
-            SSHFileTransferError, match="创建远程目录失败"
+            SSHFileTransferError, match="failed to create remote directory"
         ):
             c.create_remote_directory("/a/b")
 

@@ -86,14 +86,14 @@ class AsyncSSHClient:
         elif self.config.key_filename:
             key_path = Path(self.config.key_filename).expanduser()
             if not key_path.exists():
-                raise SSHConnectionError(f"SSH 密钥文件不存在: {key_path}")
+                raise SSHConnectionError(f"SSH key file not found: {key_path}")
             connect_kwargs["client_keys"] = [str(key_path)]
 
-        logger.info(f"正在连接到 {self.config.hostname}:{self.config.port}")
+        logger.info(f"connecting to {self.config.hostname}:{self.config.port}")
         try:
             self._conn = await asyncssh.connect(**connect_kwargs)
         except asyncssh.PermissionDenied as e:
-            raise SSHConnectionError(f"认证失败: {e}") from e
+            raise SSHConnectionError(f"authentication failed: {e}") from e
         except (OSError, asyncssh.Error) as e:
             msg = str(e).lower()
             if (
@@ -101,10 +101,10 @@ class AsyncSSHClient:
                 or "timeout" in msg
                 or isinstance(e, asyncssh.TimeoutError)
             ):
-                raise SSHConnectionError(f"连接超时: {self.config.hostname}") from e
-            raise SSHConnectionError(f"连接错误: {e}") from e
+                raise SSHConnectionError(f"connection timeout: {self.config.hostname}") from e
+            raise SSHConnectionError(f"connection error: {e}") from e
 
-        logger.info(f"成功连接到 {self.config.hostname}")
+        logger.info(f"connected to {self.config.hostname}")
         return self
 
     def _build_known_hosts(self) -> Any:
@@ -133,7 +133,7 @@ class AsyncSSHClient:
                 # asyncssh SFTPClient.exit() 是同步方法，仅关闭通道资源
                 self._sftp.exit()
             except (OSError, asyncssh.Error) as e:
-                logger.warning(f"关闭 SFTP 连接时出错: {e}")
+                logger.warning(f"error closing SFTP connection: {e}")
             finally:
                 self._sftp = None
 
@@ -143,7 +143,7 @@ class AsyncSSHClient:
                 # await close 完成底层通道清理，但忽略可能抛出的 ConnectionLost / asyncssh.Error
                 await self._conn.wait_closed()
             except (OSError, asyncssh.Error) as e:
-                logger.warning(f"关闭 SSH 连接时出错: {e}")
+                logger.warning(f"error closing SSH connection: {e}")
             finally:
                 self._conn = None
 
@@ -153,7 +153,7 @@ class AsyncSSHClient:
 
     async def _get_conn(self) -> asyncssh.SSHClientConnection:
         if self._conn is None:
-            raise SSHConnectionError("未连接，请先调用 connect() 方法")
+            raise SSHConnectionError("not connected, call connect() first")
         return self._conn
 
     # ------------------------------------------------------------------
@@ -184,7 +184,7 @@ class AsyncSSHClient:
         if environment:
             env_str = "; ".join(f"export {k}={v}" for k, v in environment.items()) + "; "
         full_command = f"{env_str}cd ~ && {command}"
-        logger.debug(f"执行命令: {command}")
+        logger.debug(f"executing command: {command}")
         try:
             result = await conn.run(
                 full_command,
@@ -193,7 +193,7 @@ class AsyncSSHClient:
                 env={k: str(v) for k, v in (environment or {}).items()},
             )
         except (OSError, asyncssh.Error) as e:
-            raise SSHCommandError(f"执行命令 '{command}' 失败: {e}") from e
+            raise SSHCommandError(f"command execution failed '{command}': {e}") from e
 
         stdout_data = result.stdout if isinstance(result.stdout, str) else (
             result.stdout.decode("utf-8", errors="replace") if result.stdout else ""
@@ -227,14 +227,14 @@ class AsyncSSHClient:
                 timeout=timeout,
             )
         except (OSError, asyncssh.Error) as e:
-            raise SSHCommandError(f"执行 sudo 命令 '{command}' 失败: {e}") from e
+            raise SSHCommandError(f"sudo command execution failed '{command}': {e}") from e
 
         try:
             proc.stdin.write(password + "\n")
             proc.stdin.write_eof()
             result = await proc.wait()
         except (OSError, asyncssh.Error) as e:
-            raise SSHCommandError(f"执行 sudo 命令 '{command}' 失败: {e}") from e
+            raise SSHCommandError(f"sudo command execution failed '{command}': {e}") from e
 
         stdout_data = (
             result.stdout if isinstance(result.stdout, str)
@@ -260,7 +260,7 @@ class AsyncSSHClient:
             try:
                 self._sftp = await conn.start_sftp_client()
             except (OSError, asyncssh.Error) as e:
-                raise SSHFileTransferError(f"打开 SFTP 通道失败: {e}") from e
+                raise SSHFileTransferError(f"failed to open SFTP channel: {e}") from e
         return self._sftp
 
     async def upload_file(self, local_path: str, remote_path: str) -> None:
@@ -268,25 +268,25 @@ class AsyncSSHClient:
         sftp = await self._get_sftp()
         local_file = Path(local_path)
         if not local_file.exists():
-            raise SSHFileTransferError(f"本地文件不存在: {local_path}")
-        logger.info(f"上传文件: {local_path} -> {remote_path}")
+            raise SSHFileTransferError(f"Local file not found: {local_path}")
+        logger.info(f"uploading file: {local_path} -> {remote_path}")
         try:
             await sftp.put(str(local_file), remote_path)
         except (OSError, asyncssh.Error) as e:
-            raise SSHFileTransferError(f"文件上传失败: {e}") from e
-        logger.info("文件上传完成")
+            raise SSHFileTransferError(f"file upload failed: {e}") from e
+        logger.info("file upload finished")
 
     async def download_file(self, remote_path: str, local_path: str) -> None:
         """异步从远程服务器下载文件到本地。"""
         sftp = await self._get_sftp()
         local_file = Path(local_path)
         local_file.parent.mkdir(parents=True, exist_ok=True)
-        logger.info(f"下载文件: {remote_path} -> {local_path}")
+        logger.info(f"downloading file: {remote_path} -> {local_path}")
         try:
             await sftp.get(remote_path, str(local_file))
         except (OSError, asyncssh.Error) as e:
-            raise SSHFileTransferError(f"文件下载失败: {e}") from e
-        logger.info("文件下载完成")
+            raise SSHFileTransferError(f"file download failed: {e}") from e
+        logger.info("file download finished")
 
     async def list_remote_directory(self, remote_path: str = ".") -> list[dict[str, Any]]:
         """异步列出远程目录内容（结构与同步 SSHClient 一致）。"""
@@ -294,7 +294,7 @@ class AsyncSSHClient:
         try:
             names = await sftp.readdir(remote_path)
         except (OSError, asyncssh.Error) as e:
-            raise SSHFileTransferError(f"列出远程目录失败: {e}") from e
+            raise SSHFileTransferError(f"failed to list remote directory: {e}") from e
 
         entries: list[dict[str, Any]] = []
         for entry in names:

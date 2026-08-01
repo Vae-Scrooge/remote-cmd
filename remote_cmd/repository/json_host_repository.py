@@ -4,7 +4,7 @@ JSON 文件主机仓库实现
 使用 JSON 文件存储主机配置，支持：
 - 原子写入（先写临时文件再重命名，防止崩溃导致数据丢失）
 - 可选加密（通过 CredentialEncryption 加密 password 字段）
-- 配置版本管理
+- config version management
 - 自动从旧版本迁移
 """
 
@@ -23,7 +23,7 @@ from remote_cmd.utils.crypto import CredentialEncryption, CredentialEncryptionEr
 
 logger = logging.getLogger(__name__)
 
-# 当前配置版本
+# current config version
 CONFIG_VERSION = 2
 
 
@@ -60,12 +60,12 @@ class JsonHostRepository(HostRepository):
 
     def get(self, name: str) -> Host:
         if name not in self._hosts:
-            raise KeyError(f"主机 '{name}' 不存在")
+            raise KeyError(f"Host '{name}' not found")
         return self._hosts[name]
 
     def delete(self, name: str) -> None:
         if name not in self._hosts:
-            raise KeyError(f"主机 '{name}' 不存在")
+            raise KeyError(f"Host '{name}' not found")
         del self._hosts[name]
 
     def list(self, tag: Optional[str] = None) -> list[Host]:
@@ -118,13 +118,13 @@ class JsonHostRepository(HostRepository):
             with open(self._filepath, encoding="utf-8") as f:
                 raw = json.load(f)
         except (json.JSONDecodeError, FileNotFoundError) as e:
-            logger.warning(f"加载配置文件失败: {e}")
+            logger.warning(f"failed to load config file: {e}")
             return
 
         # 检查版本并迁移
         version = raw.get("version", 1)
         if version < CONFIG_VERSION:
-            logger.info(f"配置版本 {version} -> {CONFIG_VERSION}，执行迁移")
+            logger.info(f"config version {version} -> {CONFIG_VERSION}，running migration")
 
         hosts_data = raw.get("hosts", raw if version == 1 else {})
         # 兼容 v1 格式（hosts 直接在最外层）
@@ -138,14 +138,14 @@ class JsonHostRepository(HostRepository):
                 try:
                     host_data["password"] = self._encryption.decrypt(pw)
                 except (ValueError, TypeError, KeyError, CredentialEncryptionError) as e:
-                    logger.error(f"解密主机 '{name}' 密码失败: {e}")
+                    logger.error(f"decrypting password for host '{name}' failed: {e}")
                     host_data["password"] = None
 
             try:
                 host = Host.from_dict(host_data)
                 self._hosts[name] = host
             except (ValueError, TypeError, KeyError) as e:
-                logger.warning(f"跳过无效主机 '{name}': {e}")
+                logger.warning(f"skipping invalid host '{name}': {e}")
 
     def _atomic_write(self, data: dict) -> None:
         """原子写入：写临时文件 → rename 覆盖原文件"""
@@ -166,7 +166,7 @@ class JsonHostRepository(HostRepository):
                 os.unlink(tmp_path)
             raise
 
-        logger.debug(f"已保存 {self.count()} 个主机配置到 {self._filepath}")
+        logger.debug(f"saved {self.count()} host configs to {self._filepath}")
 
     # ========================================================================
     # 批量操作

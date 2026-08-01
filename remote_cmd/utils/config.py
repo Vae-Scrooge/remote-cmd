@@ -91,7 +91,7 @@ def load_config(config_path: str) -> dict[str, Any]:
         elif path.suffix == ".json":
             return json.load(f)
         else:
-            raise ValueError(f"不支持的配置文件格式: {path.suffix}")
+            raise ValueError(f"unsupported config file format: {path.suffix}")
 
 
 def save_config(config: dict[str, Any], config_path: str) -> None:
@@ -126,7 +126,7 @@ def save_config(config: dict[str, Any], config_path: str) -> None:
         elif path.suffix == ".json":
             json.dump(config, f, indent=2, ensure_ascii=False)
         else:
-            raise ValueError(f"不支持的配置文件格式: {path.suffix}")
+            raise ValueError(f"unsupported config file format: {path.suffix}")
 
 
 # ============================================================================

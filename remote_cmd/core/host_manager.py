@@ -10,6 +10,7 @@
 """
 
 import logging
+import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
 
@@ -38,6 +39,12 @@ class HostManager:
         Args:
             hosts_file: 配置文件路径（可选）
         """
+        warnings.warn(
+            "HostManager is deprecated and will be removed in v2.0; "
+            "use HostService + HostRepository instead",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         self.hosts_file = hosts_file
 
         # 不指定文件时使用纯内存模式（保持向后兼容）
@@ -122,7 +129,7 @@ class HostManager:
             with self.connect_to_host(name) as client:
                 return client.is_connected()
         except OSError as e:
-            logger.error(f"主机 {name} 连接测试失败: {e}")
+            logger.error(f"connection test failed for host {name}: {e}")
             return False
 
     def test_all_connections(self, max_workers: int = 10) -> dict[str, bool]:
@@ -137,7 +144,7 @@ class HostManager:
                 try:
                     results[name] = future.result()
                 except Exception as e:  # noqa: BLE001
-                    logger.error(f"主机 {name} 连接测试异常: {e}")
+                    logger.error(f"connection test error for host {name}: {e}")
                     results[name] = False
 
         return results

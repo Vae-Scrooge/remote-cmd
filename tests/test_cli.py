@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from click.testing import CliRunner
 
+from remote_cmd import __version__
 from remote_cmd.cli.main import cli
 from remote_cmd.core.ssh_client import CommandResult
 
@@ -59,7 +60,7 @@ class TestHostAdd:
                 ],
             )
             assert result.exit_code == 0
-            assert "添加成功" in result.output
+            assert "added successfully" in result.output
 
     def test_add_with_env_password(self, runner, config_file):
         """测试：使用环境变量密码添加主机（推荐做法）"""
@@ -79,7 +80,7 @@ class TestHostAdd:
                 env=env,
             )
             assert result.exit_code == 0
-            assert "添加成功" in result.output
+            assert "added successfully" in result.output
 
     def test_add_duplicate_fails(self, runner, config_file):
         """测试：添加同名主机应报错"""
@@ -113,7 +114,7 @@ class TestHostAdd:
                 ],
             )
             assert result.exit_code != 0
-            assert "已存在" in result.output
+            assert "already exists" in result.output
 
 
 # ============================================================================
@@ -129,7 +130,7 @@ class TestHostList:
         with runner.isolated_filesystem():
             result = runner.invoke(cli, ["--config", config_file, "host", "list"])
             assert result.exit_code == 0
-            assert "没有配置任何主机" in result.output
+            assert "No hosts configured" in result.output
 
     def test_list_with_hosts(self, runner, config_file):
         """测试：列出已添加的主机"""
@@ -238,7 +239,7 @@ class TestHostShow:
         with runner.isolated_filesystem():
             result = runner.invoke(cli, ["--config", config_file, "host", "show", "ghost"])
             assert result.exit_code != 0
-            assert "不存在" in result.output
+            assert "not found" in result.output
 
 
 # ============================================================================
@@ -272,7 +273,7 @@ class TestHostRemove:
                 input="y\n",
             )
             assert result.exit_code == 0
-            assert "已移除" in result.output
+            assert "removed" in result.output
 
     def test_remove_nonexistent(self, runner, config_file):
         """测试：移除不存在的主机应报错"""
@@ -283,7 +284,7 @@ class TestHostRemove:
                 input="y\n",
             )
             assert result.exit_code != 0
-            assert "不存在" in result.output
+            assert "not found" in result.output
 
 
 # ============================================================================
@@ -320,7 +321,7 @@ class TestHostTest:
                     ["--config", config_file, "host", "test", "good-host"],
                 )
                 assert result.exit_code == 0
-                assert "连接成功" in result.output
+                assert "connection successful" in result.output
 
     def test_connection_failure(self, runner, config_file):
         """测试：连接失败"""
@@ -348,7 +349,7 @@ class TestHostTest:
                     ["--config", config_file, "host", "test", "bad-host"],
                 )
                 assert result.exit_code != 0
-                assert "连接失败" in result.output
+                assert "connection failed" in result.output
 
 
 # ============================================================================
@@ -363,7 +364,7 @@ class TestCliRoot:
         """测试：--version 显示版本号"""
         result = runner.invoke(cli, ["--version"])
         assert result.exit_code == 0
-        assert "1.0.0" in result.output
+        assert __version__ in result.output
 
     def test_help(self, runner):
         """测试：--help 显示帮助信息"""
@@ -445,7 +446,7 @@ class TestUploadDownload:
                 result = runner.invoke(
                     cli, ["--config", config_file, "upload", "srv", str(local), "/remote/f"]
                 )
-            assert "上传成功" in result.output
+            assert "Uploaded" in result.output
 
     def test_download_failure(self, runner, config_file):
         """测试：下载失败时显示错误"""
@@ -623,9 +624,9 @@ class TestBatchRun:
                     ],
                 )
             assert result.exit_code == 0
-            assert "执行结果汇总" in result.output
-            assert "成功:     2" in result.output
-            assert "失败:     0" in result.output
+            assert "Batch result summary" in result.output
+            assert "Succeeded: 2" in result.output
+            assert "Failed:   0" in result.output
             assert "srv1" in result.output
             assert "srv2" in result.output
 
@@ -647,7 +648,7 @@ class TestBatchRun:
                     ["--config", config_file, "batch-run", "srv1", "srv2", "uptime"],
                 )
             assert result.exit_code == 1
-            assert "失败主机:" in result.output
+            assert "Failed hosts:" in result.output
             assert "boom" in result.output
 
     def test_batch_run_show_failures_only(self, runner, config_file):
@@ -676,8 +677,8 @@ class TestBatchRun:
                     ],
                 )
             assert result.exit_code == 1
-            assert "成功主机:" not in result.output
-            assert "失败主机:" in result.output
+            assert "Successful hosts:" not in result.output
+            assert "Failed hosts:" in result.output
 
     def test_batch_run_passes_options(self, runner, config_file):
         """测试：并发/超时/重试参数传递给 BatchExecutor"""

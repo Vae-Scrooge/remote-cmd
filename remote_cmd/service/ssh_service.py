@@ -70,7 +70,7 @@ class SSHService:
         测试主机连接是否正常
 
         Returns:
-            bool: 连接成功返回 True
+            bool: True if connected
         """
         try:
             with self.create_client(
@@ -82,7 +82,7 @@ class SSHService:
             ) as client:
                 return client.is_connected()
         except (OSError, Exception) as e:  # noqa: BLE001
-            logger.debug(f"连接测试失败 {hostname}:{port}: {e}")
+            logger.debug(f"connection test failed {hostname}:{port}: {e}")
             return False
 
     def execute_command(

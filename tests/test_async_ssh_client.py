@@ -99,7 +99,7 @@ class TestAsyncSSHClientConnect:
             side_effect=patched_asyncssh.PermissionDenied("bad creds")
         )
         client = AsyncSSHClient(config)
-        with pytest.raises(SSHConnectionError, match="认证失败"):
+        with pytest.raises(SSHConnectionError, match="authentication failed"):
             await client.connect()
 
     @pytest.mark.asyncio
@@ -108,7 +108,7 @@ class TestAsyncSSHClientConnect:
             side_effect=OSError("Connection timed out")
         )
         client = AsyncSSHClient(config)
-        with pytest.raises(SSHConnectionError, match="连接超时"):
+        with pytest.raises(SSHConnectionError, match="connection timeout"):
             await client.connect()
 
     @pytest.mark.asyncio
@@ -190,7 +190,7 @@ class TestAsyncSSHClientExecute:
     @pytest.mark.asyncio
     async def test_execute_not_connected_raises(self, config):
         client = AsyncSSHClient(config)
-        with pytest.raises(SSHConnectionError, match="未连接"):
+        with pytest.raises(SSHConnectionError, match="not connected"):
             await client.execute("ls")
 
 
@@ -216,7 +216,7 @@ class TestAsyncSSHClientFileTransfer:
         from remote_cmd.utils.exceptions import SSHFileTransferError
 
         async with AsyncSSHClient(config) as client:
-            with pytest.raises(SSHFileTransferError, match="本地文件不存在"):
+            with pytest.raises(SSHFileTransferError, match="Local file not found"):
                 await client.upload_file("/no/such/file", "/remote/x")
 
     @pytest.mark.asyncio

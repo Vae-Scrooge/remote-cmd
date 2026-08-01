@@ -15,7 +15,7 @@
     ...     retry_count=2,
     ...     retry_delay=1.0,
     ... )
-    >>> print(f"成功: {result.success}/{result.total}")
+    >>> print(f"succeeded: {result.success}/{result.total}")
 """
 
 import inspect
@@ -43,12 +43,12 @@ class BatchHostResult:
 
     Attributes:
         host: 主机名称
-        success: 命令是否成功执行
+        success: whether the command succeeded
         command: 执行的命令
         stdout: 标准输出
         stderr: 标准错误
         exit_code: 退出码
-        duration: 执行耗时（秒）
+        duration: execution took (seconds)
         error: 错误信息（如果有）
     """
 
@@ -69,9 +69,9 @@ class BatchResult:
 
     Attributes:
         total: 总主机数
-        success: 成功主机数
+        success: number of succeeded hosts
         failed: 失败主机数
-        duration: 总耗时（秒）
+        duration: total took (seconds)
         results: 按主机名索引的详细结果
     """
 
@@ -83,7 +83,7 @@ class BatchResult:
 
     @property
     def success_rate(self) -> float:
-        """成功率（0.0 ~ 1.0）"""
+        """success rate (0.0 ~ 1.0)"""
         if self.total == 0:
             return 1.0
         return self.success / self.total
@@ -95,17 +95,17 @@ class BatchResult:
 
     @property
     def success_hosts(self) -> list[str]:
-        """成功主机列表"""
+        """list of succeeded hosts"""
         return [h for h, r in self.results.items() if r.success]
 
     def summary(self) -> str:
         """生成可读的汇总字符串"""
         return (
-            f"总执行: {self.total}, "
-            f"成功: {self.success}, "
-            f"失败: {self.failed}, "
-            f"耗时: {self.duration:.1f}s, "
-            f"成功率: {self.success_rate:.1%}"
+            f"Total: {self.total}, "
+            f"Succeeded: {self.success}, "
+            f"Failed: {self.failed}, "
+            f"Duration: {self.duration:.1f}s, "
+            f"Success rate: {self.success_rate:.1%}"
         )
 
 
@@ -178,7 +178,7 @@ class BatchExecutor:
             ValueError: host_names 为空
         """
         if not host_names:
-            raise ValueError("主机列表不能为空")
+            raise ValueError("host_names must not be empty")
 
         # 异步内核委托路径：同步接口 + asyncio.run(异步实现)
         if self._async_executor is not None:
@@ -226,7 +226,7 @@ class BatchExecutor:
                             host=host_name,
                             success=False,
                             command=command,
-                            error=f"计划异常: {e}",
+                            error=f"scheduling error: {e}",
                         )
                     results[host_name] = result
                     completed += 1
@@ -245,7 +245,7 @@ class BatchExecutor:
                     )
 
             except KeyboardInterrupt:
-                logger.warning("用户中断批量执行")
+                logger.warning("batch execution interrupted by user")
                 # 取消所有未完成的任务
                 for future in future_map:
                     future.cancel()
@@ -256,7 +256,7 @@ class BatchExecutor:
                             host=host_name,
                             success=False,
                             command=command,
-                            error="用户中断",
+                            error="user interrupted",
                         )
                         completed += 1
 
@@ -264,7 +264,7 @@ class BatchExecutor:
         success_count = sum(1 for r in results.values() if r.success)
         failed_count = total - success_count
 
-        logger.info(f"批量执行完成: {success_count}/{total} 成功, 耗时 {duration:.1f}s")
+        logger.info(f"batch execution finished: {success_count}/{total} succeeded, took {duration:.1f}s")
 
         return BatchResult(
             total=total,
@@ -301,14 +301,14 @@ class BatchExecutor:
                 host=host_name,
                 success=False,
                 command=command,
-                error=f"主机不存在: {e}",
+                error=f"host not found: {e}",
             )
         except (RuntimeError, OSError) as e:
             return BatchHostResult(
                 host=host_name,
                 success=False,
                 command=command,
-                error=f"主机解析失败: {e}",
+                error=f"host resolution failed: {e}",
             )
 
         last_error: Optional[str] = None
@@ -345,7 +345,7 @@ class BatchExecutor:
             except Exception as e:  # noqa: BLE001
                 duration = time.time() - start
                 last_error = str(e)
-                logger.debug(f"{host_name} 第 {attempt + 1}/{retry_count + 1} 次尝试失败: {e}")
+                logger.debug(f"attempt {attempt + 1}/{retry_count + 1} failed for {host_name}: {e}")
 
                 # 如果不是最后一次尝试，等待后重试
                 if attempt < retry_count:

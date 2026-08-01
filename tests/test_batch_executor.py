@@ -73,9 +73,9 @@ class TestBatchResult:
         """测试 summary 格式"""
         r = BatchResult(total=5, success=4, failed=1, duration=10.5)
         summary = r.summary()
-        assert "总执行: 5" in summary
-        assert "成功: 4" in summary
-        assert "失败: 1" in summary
+        assert "Total: 5" in summary
+        assert "Succeeded: 4" in summary
+        assert "Failed: 1" in summary
         assert "10.5" in summary
         assert "80.0%" in summary
 
@@ -99,7 +99,7 @@ class TestBatchExecutor:
     def test_empty_host_list_raises(self):
         """测试：空主机列表应报错"""
         executor = BatchExecutor(host_service=MagicMock())
-        with pytest.raises(ValueError, match="主机列表不能为空"):
+        with pytest.raises(ValueError, match="host_names must not be empty"):
             executor.execute([], "uptime")
 
     @patch("remote_cmd.service.batch_executor.SSHClient")
@@ -163,7 +163,7 @@ class TestBatchExecutor:
         assert result.total == 1
         assert result.success == 0
         assert result.failed == 1
-        assert "不存在" in (result.results["ghost"].error or "")
+        assert "not found" in (result.results["ghost"].error or "")
 
     @patch("remote_cmd.service.batch_executor.SSHClient")
     def test_retry_on_failure(self, mock_ssh_class):

@@ -35,7 +35,7 @@ class TestHostService:
     def test_add_duplicate_raises(self, service):
         """测试：添加同名主机应抛出 ValueError"""
         service.add_host(Host(name="dup", hostname="1", username="u"))
-        with pytest.raises(ValueError, match="已存在"):
+        with pytest.raises(ValueError, match="already exists"):
             service.add_host(Host(name="dup", hostname="2", username="u"))
 
     def test_get_host(self, service):

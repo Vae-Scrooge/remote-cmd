@@ -77,7 +77,7 @@ class AsyncBatchExecutor:
             ValueError: host_names 为空
         """
         if not host_names:
-            raise ValueError("主机列表不能为空")
+            raise ValueError("host_names must not be empty")
 
         total = len(host_names)
         semaphore = asyncio.Semaphore(self._max_concurrency)
@@ -117,13 +117,13 @@ class AsyncBatchExecutor:
         try:
             await asyncio.gather(*tasks)
         except KeyboardInterrupt:
-            logger.warning("用户中断批量执行")
+            logger.warning("batch execution interrupted by user")
             await self._cancel_and_mark_interrupted(tasks, host_names, results, command)
 
         duration = time.time() - start
         success_count = sum(1 for r in results.values() if r.success)
         failed_count = total - success_count
-        logger.info("异步批量执行完成: %s/%s 成功, 耗时 %.1fs", success_count, total, duration)
+        logger.info("async batch execution finished: %s/%s succeeded, took %.1fs", success_count, total, duration)
 
         return BatchResult(
             total=total,
@@ -152,7 +152,7 @@ class AsyncBatchExecutor:
                     host=name,
                     success=False,
                     command=command,
-                    error="用户中断",
+                    error="user interrupted",
                 )
 
     async def _execute_on_host(
@@ -169,12 +169,12 @@ class AsyncBatchExecutor:
         except KeyError as e:
             return BatchHostResult(
                 host=host_name, success=False, command=command,
-                error=f"主机不存在: {e}",
+                error=f"host not found: {e}",
             )
         except (RuntimeError, OSError) as e:
             return BatchHostResult(
                 host=host_name, success=False, command=command,
-                error=f"主机解析失败: {e}",
+                error=f"host resolution failed: {e}",
             )
 
         last_error: Optional[str] = None

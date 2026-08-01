@@ -393,7 +393,7 @@ class TestAsyncBatchExecutor:
     @pytest.mark.asyncio
     async def test_empty_raises(self):
         ex = AsyncBatchExecutor(host_service=MagicMock())
-        with pytest.raises(ValueError, match="主机列表不能为空"):
+        with pytest.raises(ValueError, match="host_names must not be empty"):
             await ex.execute([], "uptime")
 
     @pytest.mark.asyncio
@@ -422,7 +422,7 @@ class TestAsyncBatchExecutor:
         ex = AsyncBatchExecutor(host_service=make_mock_service([]))
         result = await ex.execute(["ghost"], "uptime")
         assert result.failed == 1
-        assert "不存在" in (result.results["ghost"].error or "")
+        assert "not found" in (result.results["ghost"].error or "")
 
     @pytest.mark.asyncio
     async def test_retry_on_failure(self, mock_async_client_class):
@@ -476,8 +476,8 @@ class TestAsyncBatchExecutor:
         await ex._cancel_and_mark_interrupted(tasks, ["srv1", "srv2", "srv3"], results, "uptime")
         assert all(t.cancelled() for t in tasks)
         assert results["srv1"].success
-        assert results["srv2"].error == "用户中断"
-        assert results["srv3"].error == "用户中断"
+        assert results["srv2"].error == "user interrupted"
+        assert results["srv3"].error == "user interrupted"
 
 
 # ============================================================================
@@ -505,5 +505,5 @@ class TestBatchExecutorUseAsyncSwitch:
 
     def test_execute_empty_raises_sync(self):
         ex = BatchExecutor(host_service=MagicMock(), use_async=True)
-        with pytest.raises(ValueError, match="主机列表不能为空"):
+        with pytest.raises(ValueError, match="host_names must not be empty"):
             ex.execute([], "uptime")

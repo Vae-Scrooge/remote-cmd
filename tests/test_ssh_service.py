@@ -57,14 +57,14 @@ class TestCreateClient:
         """测试：连接失败时抛出 SSHConnectionError"""
         mock_client = MagicMock()
         mock_ssh_client_cls.return_value = mock_client
-        mock_client.connect.side_effect = SSHConnectionError("认证失败")
+        mock_client.connect.side_effect = SSHConnectionError("authentication failed")
 
         service = SSHService()
         try:
             service.create_client(hostname="h", username="u")
             raise AssertionError("应抛出 SSHConnectionError")
         except SSHConnectionError as e:
-            assert "认证失败" in str(e)
+            assert "authentication failed" in str(e)
 
 
 class TestTestConnection:
@@ -98,7 +98,7 @@ class TestTestConnection:
         with caplog.at_level(logging.DEBUG, logger="remote_cmd.service.ssh_service"):
             service = SSHService()
             assert service.test_connection("h", "u", port=2222) is False
-        assert "连接测试失败" in caplog.text
+        assert "connection test failed" in caplog.text
 
     @patch("remote_cmd.service.ssh_service.SSHService.create_client")
     def test_generic_exception_returns_false(self, mock_create_client):

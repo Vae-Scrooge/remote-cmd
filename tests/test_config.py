@@ -86,7 +86,7 @@ class TestLoadConfig:
             load_config(str(path))
             raise AssertionError("应抛出 ValueError")
         except ValueError as e:
-            assert "不支持的配置文件格式" in str(e)
+            assert "unsupported config file format" in str(e)
 
 
 class TestSaveConfig:
@@ -119,7 +119,7 @@ class TestSaveConfig:
             save_config({"a": 1}, str(path))
             raise AssertionError("应抛出 ValueError")
         except ValueError as e:
-            assert "不支持的配置文件格式" in str(e)
+            assert "unsupported config file format" in str(e)
 
 
 class TestGetDefaultConfig:

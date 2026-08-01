@@ -121,9 +121,7 @@ class TestSyncConnectionPool:
             c.connect.side_effect = SSHConnectionError("authentication failed")
             return c
 
-        with patch(
-            "remote_cmd.core.sync_connection_pool.SSHClient", side_effect=failing_factory
-        ):
+        with patch.object(pool, "_client_factory", side_effect=failing_factory):
             with pytest.raises(SSHConnectionError):
                 pool.acquire()
             assert pool.get_metrics()["failed"] == 1

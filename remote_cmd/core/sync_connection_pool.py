@@ -157,8 +157,8 @@ class SyncConnectionPool:
         try:
             client.connect()
         except Exception:  # noqa: BLE001
+            # 信号量由 acquire() 的 except 统一释放，此处不再释放
             self._total_failed += 1
-            self._semaphore.release()
             raise
         with self._lock:
             self._connections.append(client)

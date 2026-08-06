@@ -12,7 +12,9 @@
   - [SSHClient](#sshclient)
   - [CommandResult](#commandresult)
   - [Host](#host)
-  - [HostManager](#hostmanager)
+- [Service 模块](#service-模块)
+  - [HostService](#hostservice)
+  - [HostRepository](#hostrepository)
 - [CLI 模块](#cli-模块)
 - [Utils 模块](#utils-模块)
 - [Exceptions 异常](#exceptions-异常)
@@ -428,22 +430,23 @@ host = Host.from_dict(data)
 
 ---
 
-### HostManager
+### HostService
 
-主机管理器类，用于管理多台服务器的配置。
+主机服务类，承载主机管理的业务逻辑，委托 `HostRepository` 持久化。
 
 #### 类定义
 
 ```python
-class HostManager:
-    def __init__(self, hosts_file: Optional[str] = None)
-    def add_host(self, host: Host) -> None
+class HostService:
+    def __init__(self, repository: HostRepository, encryption: Optional[CredentialEncryption] = None,
+                 credential_provider: Optional[CredentialProvider] = None)
+    def add_host(self, host: Host) -> Host
+    def update_host(self, name: str, **kwargs) -> Host
     def remove_host(self, name: str) -> None
     def get_host(self, name: str) -> Host
+    def resolve_host(self, name: str) -> Host
     def list_hosts(self, tag: Optional[str] = None) -> List[Host]
     def list_tags(self) -> List[str]
-    def save_to_file(self, filepath: str) -> None
-    def load_from_file(self, filepath: str) -> None
     def connect_to_host(self, name: str) -> SSHClient
     def test_connection(self, name: str) -> bool
     def test_all_connections(self) -> Dict[str, bool]
@@ -451,20 +454,23 @@ class HostManager:
 
 #### 构造函数
 
-##### `__init__(hosts_file: Optional[str] = None)`
+##### `__init__(repository: HostRepository, encryption=None, credential_provider=None)`
 
-初始化主机管理器。
+初始化主机服务。
 
 **参数：**
-- `hosts_file` (Optional[str]): 主机配置文件路径（可选）
+- `repository` (HostRepository): 存储仓库（`JsonHostRepository` / `SqliteHostRepository`）
+- `encryption` (Optional[CredentialEncryption]): 密码加密器（可选）
+- `credential_provider` (Optional[CredentialProvider]): 凭据提供链（可选）
 
 **示例：**
 ```python
-# 空管理器
-manager = HostManager()
+from remote_cmd.repository.json_host_repository import JsonHostRepository
+from remote_cmd.service.host_service import HostService
 
 # 从文件加载
-manager = HostManager("hosts.json")
+repo = JsonHostRepository("hosts.json")
+manager = HostService(repository=repo)
 ```
 
 #### 方法
@@ -489,6 +495,7 @@ host = Host(
     tags=["production", "web"]
 )
 manager.add_host(host)
+repo.flush()
 ```
 
 ##### `remove_host(name: str) -> None`
@@ -504,6 +511,7 @@ manager.add_host(host)
 **示例：**
 ```python
 manager.remove_host("web-server")
+repo.flush()
 ```
 
 ##### `get_host(name: str) -> Host`
@@ -560,30 +568,6 @@ tags = manager.list_tags()
 print(f"可用标签: {', '.join(tags)}")
 ```
 
-##### `save_to_file(filepath: str) -> None`
-
-保存主机配置到文件。
-
-**参数：**
-- `filepath` (str): 文件路径
-
-**示例：**
-```python
-manager.save_to_file("hosts.json")
-```
-
-##### `load_from_file(filepath: str) -> None`
-
-从文件加载主机配置。
-
-**参数：**
-- `filepath` (str): 文件路径
-
-**示例：**
-```python
-manager.load_from_file("hosts.json")
-```
-
 ##### `connect_to_host(name: str) -> SSHClient`
 
 连接到指定主机。
@@ -638,16 +622,44 @@ for name, success in results.items():
     print(f"{status} {name}")
 ```
 
-#### 魔术方法
+---
+
+### HostRepository
+
+主机存储仓库抽象接口，定义主机配置的持久化契约。
+
+#### 类定义
 
 ```python
-# 检查主机是否存在
-if "web-server" in manager:
-    print("主机存在")
+class HostRepository(ABC):
+    def save(self, host: Host) -> None
+    def get(self, name: str) -> Host
+    def delete(self, name: str) -> None
+    def list(self, tag: Optional[str] = None) -> List[Host]
+    def list_tags(self) -> List[str]
+    def contains(self, name: str) -> bool
+    def count(self) -> int
+    def flush(self) -> None
+```
 
-# 获取主机数量
-count = len(manager)
-print(f"共有 {count} 台主机")
+#### 实现
+
+| 类 | 存储格式 | 适用场景 |
+|----|---------|---------|
+| `JsonHostRepository` | JSON 文件（原子写入、可选加密） | 默认、轻量配置 |
+| `SqliteHostRepository` | SQLite 数据库（索引、分页、搜索） | 大批量主机 |
+
+#### 存储引擎自动切换
+
+可通过 `remote_cmd.service.storage_factory.build_repository` 根据文件扩展名
+（`.json` / `.db` / `.sqlite`）自动选择存储引擎，或显式指定 `storage_backend`：
+
+```python
+from remote_cmd.service.storage_factory import build_repository
+
+repo = build_repository("hosts.json")          # JsonHostRepository
+repo = build_repository("hosts.db")            # SqliteHostRepository
+repo = build_repository("hosts.json", storage_backend="sqlite")  # 显式优先
 ```
 
 ---
@@ -1203,7 +1215,7 @@ except SSHFileTransferError as e:
 | SSHClient | 1.0.0+ | ✅ 稳定 |
 | ConnectionConfig | 1.0.0+ | ✅ 稳定 |
 | CommandResult | 1.0.0+ | ✅ 稳定 |
-| HostManager | 1.0.0+ | ⚠️ 已弃用（v2.0 移除，改用 HostService） |
+| HostManager | 1.x（已移除） | ❌ 已移除（改用 HostService + HostRepository） |
 | AsyncSSHClient | 1.1.0+ | ✅ 稳定（需 `[async]` extra） |
 | AsyncConnectionPool | 1.1.0+ | ✅ 稳定（需 `[async]` extra） |
 | AsyncBatchExecutor | 1.1.0+ | ✅ 稳定（需 `[async]` extra） |

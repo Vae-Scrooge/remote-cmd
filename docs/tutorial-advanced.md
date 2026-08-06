@@ -113,10 +113,14 @@ def safe_execute(client, command: str, max_retries: int = 3):
 
 ```python
 import logging
-from remote_cmd.core.host_manager import HostManager
+from remote_cmd.repository.json_host_repository import JsonHostRepository
+from remote_cmd.service.host_service import HostService
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+repo = JsonHostRepository("hosts.json")
+manager = HostService(repository=repo)
 
 def robust_batch_execute(hosts, command):
     """健壮地批量执行命令"""
@@ -205,7 +209,8 @@ def deploy_to_host(host_name):
 
 ```python
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from remote_cmd.core.host_manager import HostManager
+from remote_cmd.repository.json_host_repository import JsonHostRepository
+from remote_cmd.service.host_service import HostService
 
 def execute_on_host(host, command):
     """在单个主机上执行命令"""
@@ -254,7 +259,8 @@ def parallel_execute(hosts, command, max_workers=5):
     return results
 
 # 使用示例
-manager = HostManager("hosts.json")
+repo = JsonHostRepository("hosts.json")
+manager = HostService(repository=repo)
 web_hosts = manager.list_hosts(tag="web")
 
 results = parallel_execute(

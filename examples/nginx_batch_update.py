@@ -16,10 +16,12 @@ Note: Real SSH connections are commented out. Set up your own hosts.json
 and uncomment the connection calls to run against actual servers.
 """
 
-from remote_cmd.core.host_manager import Host, HostManager
+from remote_cmd.core.host import Host
+from remote_cmd.repository.json_host_repository import JsonHostRepository
+from remote_cmd.service.host_service import HostService
 
 
-def add_demo_hosts(manager: HostManager) -> None:
+def add_demo_hosts(repo: JsonHostRepository, manager: HostService) -> None:
     """Add demo hosts with tags."""
     hosts = [
         Host(
@@ -57,11 +59,11 @@ def add_demo_hosts(manager: HostManager) -> None:
     ]
     for host in hosts:
         manager.add_host(host)
-    manager.save_to_file("hosts.json")
+    repo.flush()
     print(f"Added {len(hosts)} hosts to hosts.json")
 
 
-def update_nginx_web(manager: HostManager, host_name: str, config_path: str) -> dict:
+def update_nginx_web(manager: HostService, host_name: str, config_path: str) -> dict:
     """
     Update nginx config on a single web server.
 
@@ -114,7 +116,8 @@ def update_nginx_web(manager: HostManager, host_name: str, config_path: str) -> 
 
 def batch_update_nginx(config_path: str) -> None:
     """Update nginx on all production web servers and print summary."""
-    manager = HostManager("hosts.json")
+    repo = JsonHostRepository(filepath="hosts.json")
+    manager = HostService(repository=repo)
 
     # Find all web servers
     web_servers = list(manager.list_hosts(tag="web"))
@@ -153,8 +156,9 @@ if __name__ == "__main__":
     import sys
 
     if "--setup" in sys.argv:
-        manager = HostManager()
-        add_demo_hosts(manager)
+        repo = JsonHostRepository(filepath="hosts.json")
+        manager = HostService(repository=repo)
+        add_demo_hosts(repo, manager)
     elif len(sys.argv) > 1:
         batch_update_nginx(sys.argv[1])
     else:

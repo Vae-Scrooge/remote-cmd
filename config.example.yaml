@@ -4,6 +4,12 @@
 # Hosts configuration file path
 hosts_file: hosts.json
 
+# Storage backend (optional). Overrides extension-based inference.
+# - auto (default): chosen from hosts_file extension (.json -> JSON, .db/.sqlite -> SQLite)
+# - json: force JsonHostRepository
+# - sqlite: force SqliteHostRepository
+# storage_backend: auto
+
 # Default SSH settings
 default_ssh_port: 22
 default_timeout: 30

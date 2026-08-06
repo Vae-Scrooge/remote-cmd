@@ -1,7 +1,7 @@
 """
 主机数据模型模块
 
-定义 Host 数据类，从 host_manager.py 中分离，职责更单一。
+定义 Host 数据类，与仓储/服务层解耦，职责单一。
 
 包括：
 - Host: 远程主机配置数据类
@@ -10,7 +10,7 @@
 """
 
 from dataclasses import asdict, dataclass
-from typing import Optional
+from typing import Any, Optional
 
 from remote_cmd.core.ssh_client import ConnectionConfig
 
@@ -105,3 +105,29 @@ class Host:
         }
         filtered = {k: v for k, v in data.items() if k in known_fields}
         return cls(**filtered)
+
+    def sanitized_dict(self) -> dict[str, Any]:
+        """
+        返回脱敏后的主机字典，用于日志、显示、API 响应等场景。
+
+        敏感字段（password、key_filename）被替换为安全标识。
+
+        Returns:
+            Dict: 不包含敏感明文的主机信息字典
+        """
+        data = asdict(self)
+        # 脱敏密码：显示加密状态而非明文
+        pw = data.get("password")
+        if pw:
+            data["password"] = "***encrypted***" if isinstance(pw, str) and pw.startswith("$encrypted$") else "***"
+        # 脱敏密钥路径：仅显示文件名
+        if data.get("key_filename"):
+            from pathlib import Path
+            data["key_filename"] = Path(data["key_filename"]).name
+        return data
+
+    def __repr__(self) -> str:
+        """安全的字符串表示：自动脱敏敏感字段"""
+        safe = self.sanitized_dict()
+        fields = ", ".join(f"{k}={v!r}" for k, v in safe.items())
+        return f"Host({fields})"

@@ -66,9 +66,11 @@ remote-cmd batch-run -t web "journalctl -xe -n 50 | grep -i error"
 
 **Deploy Code**
 ```python
-from remote_cmd.core.host_manager import HostManager
+from remote_cmd.repository.json_host_repository import JsonHostRepository
+from remote_cmd.service.host_service import HostService
 
-manager = HostManager("hosts.json")
+repo = JsonHostRepository("hosts.json")
+manager = HostService(repository=repo)
 for host in manager.list_hosts(tag="staging"):
     with manager.connect_to_host(host.name) as client:
         client.execute("cd /app && git pull")

@@ -183,119 +183,211 @@ class BatchExecutor:
 
         # 异步内核委托路径：同步接口 + asyncio.run(异步实现)
         if self._async_executor is not None:
-            import asyncio
-
-            # 保证空列表校验语义一致（已在上方判断）
-            return asyncio.run(
-                self._async_executor.execute(
-                    host_names=host_names,
-                    command=command,
-                    retry_count=retry_count,
-                    retry_delay=retry_delay,
-                    progress_callback=progress_callback,
-                )
+            return self._delegate_to_async(
+                host_names, command, retry_count, retry_delay, progress_callback
             )
 
+        return self._execute_sync(host_names, command, retry_count, retry_delay, progress_callback)
+
+    def _delegate_to_async(
+        self,
+        host_names: list[str],
+        command: str,
+        retry_count: int,
+        retry_delay: float,
+        progress_callback: Optional[ProgressCallback],
+    ) -> BatchResult:
+        """异步内核委托路径：同步接口 + asyncio.run(异步实现)"""
+        import asyncio
+
+        return asyncio.run(
+            self._async_executor.execute(
+                host_names=host_names,
+                command=command,
+                retry_count=retry_count,
+                retry_delay=retry_delay,
+                progress_callback=progress_callback,
+            )
+        )
+
+    def _execute_sync(
+        self,
+        host_names: list[str],
+        command: str,
+        retry_count: int,
+        retry_delay: float,
+        progress_callback: Optional[ProgressCallback],
+    ) -> BatchResult:
+        """同步路径：ThreadPoolExecutor + 连接池复用"""
         total = len(host_names)
         results: dict[str, BatchHostResult] = {}
-        completed = 0
         start_time = time.time()
 
         logger.info(
             f"batch execution started: {total} hosts, concurrency={self._max_concurrency}, command='{command}'"
         )
 
-        # 同步路径连接池：每台主机一个池，批处理期间复用连接，结束后统一关闭。
-        # 单命令批次（常见场景）下连接被复用多次（含重试），避免重复握手。
         pools: dict[str, SyncConnectionPool] = {}
-
-        def _get_pool(host_name: str) -> SyncConnectionPool:
-            pool = pools.get(host_name)
-            if pool is None:
-                host = self._host_service.resolve_host(host_name)
-                config = ConnectionConfig(
-                    hostname=host.hostname,
-                    username=host.username,
-                    port=host.port,
-                    password=host.password,
-                    key_filename=host.key_filename,
-                    timeout=self._command_timeout,
-                )
-                pool = SyncConnectionPool(
-                    config,
-                    max_connections=max(1, self._max_concurrency),
-                    client_factory=SSHClient,
-                )
-                pools[host_name] = pool
-            return pool
 
         try:
             with ThreadPoolExecutor(max_workers=self._max_concurrency) as executor:
-                future_map = {
-                    executor.submit(
-                        self._execute_on_host,
-                        host_name,
-                        command,
-                        retry_count,
-                        retry_delay,
-                        _get_pool(host_name) if retry_count > 0 or total > 1 else None,
-                    ): host_name
-                    for host_name in host_names
-                }
-
-            try:
-                for future in as_completed(future_map):
-                    host_name = future_map[future]
-                    try:
-                        result = future.result()
-                    except Exception as e:  # noqa: BLE001
-                        result = BatchHostResult(
-                            host=host_name,
-                            success=False,
-                            command=command,
-                            error=f"scheduling error: {e}",
-                        )
-                    results[host_name] = result
-                    completed += 1
-
-                    if progress_callback:
-                        rv = progress_callback(completed, total, host_name)
-                        if inspect.isawaitable(rv):
-                            logger.warning(
-                                "同步内核不支持异步进度回调，请使用 use_async=True"
-                            )
-
-                    logger.debug(
-                        f"[{completed}/{total}] {host_name}: "
-                        f"{'✓' if result.success else '✗'} "
-                        f"({result.duration:.1f}s)"
-                    )
-
-            except KeyboardInterrupt:
-                logger.warning("batch execution interrupted by user")
-                # 取消所有未完成的任务
-                for future in future_map:
-                    future.cancel()
-                # 为尚未有结果的主机创建失败记录
-                for host_name in host_names:
-                    if host_name not in results:
-                        results[host_name] = BatchHostResult(
-                            host=host_name,
-                            success=False,
-                            command=command,
-                            error="user interrupted",
-                        )
-                        completed += 1
+                future_map = self._submit_tasks(
+                    executor, host_names, command, retry_count, retry_delay, pools, total
+                )
+                self._collect_results(
+                    future_map, host_names, command, progress_callback, results, total
+                )
         finally:
-            # 关闭本批次创建的连接池（含连接复用期间的连接）
-            for pool in pools.values():
-                pool.close_all()
+            self._cleanup_pools(pools)
 
         duration = time.time() - start_time
+        return self._build_result(total, results, duration)
+
+    def _submit_tasks(
+        self,
+        executor: ThreadPoolExecutor,
+        host_names: list[str],
+        command: str,
+        retry_count: int,
+        retry_delay: float,
+        pools: dict[str, SyncConnectionPool],
+        total: int,
+    ) -> dict:
+        """提交任务到线程池，返回 future_map"""
+        future_map = {}
+        for host_name in host_names:
+            # 连接池：多主机或需重试时创建
+            pool = None
+            if retry_count > 0 or total > 1:
+                pool = self._prepare_pool(host_name, pools)
+            future = executor.submit(
+                self._execute_on_host, host_name, command, retry_count, retry_delay, pool
+            )
+            future_map[future] = host_name
+        return future_map
+
+    def _prepare_pool(
+        self, host_name: str, pools: dict[str, SyncConnectionPool]
+    ) -> SyncConnectionPool:
+        """为指定主机创建或获取连接池"""
+        if host_name in pools:
+            return pools[host_name]
+
+        host = self._host_service.resolve_host(host_name)
+        config = ConnectionConfig(
+            hostname=host.hostname,
+            username=host.username,
+            port=host.port,
+            password=host.password,
+            key_filename=host.key_filename,
+            timeout=self._command_timeout,
+        )
+        pool = SyncConnectionPool(
+            config,
+            max_connections=max(1, self._max_concurrency),
+            client_factory=SSHClient,
+        )
+        pools[host_name] = pool
+        return pool
+
+    def _collect_results(
+        self,
+        future_map: dict,
+        host_names: list[str],
+        command: str,
+        progress_callback: Optional[ProgressCallback],
+        results: dict[str, BatchHostResult],
+        total: int,
+    ) -> int:
+        """收集结果并处理进度回调与中断"""
+        completed = 0
+        try:
+            for future in as_completed(future_map):
+                host_name = future_map[future]
+                result = self._process_future_result(future, host_name, command)
+                results[host_name] = result
+                completed += 1
+                self._invoke_progress_callback(
+                    progress_callback, completed, total, host_name, result
+                )
+        except KeyboardInterrupt:
+            logger.warning("batch execution interrupted by user")
+            self._handle_interrupt(future_map, host_names, command, results)
+            completed = len(results)
+
+        return completed
+
+    def _process_future_result(
+        self, future, host_name: str, command: str
+    ) -> BatchHostResult:
+        """处理单个 future 结果，捕获调度异常"""
+        try:
+            return future.result()
+        except Exception as e:  # noqa: BLE001
+            return BatchHostResult(
+                host=host_name,
+                success=False,
+                command=command,
+                error=f"scheduling error: {e}",
+            )
+
+    def _invoke_progress_callback(
+        self,
+        progress_callback: Optional[ProgressCallback],
+        completed: int,
+        total: int,
+        host_name: str,
+        result: BatchHostResult,
+    ) -> None:
+        """调用进度回调并记录日志"""
+        if progress_callback:
+            rv = progress_callback(completed, total, host_name)
+            if inspect.isawaitable(rv):
+                logger.warning("同步内核不支持异步进度回调，请使用 use_async=True")
+
+        logger.debug(
+            f"[{completed}/{total}] {host_name}: "
+            f"{'✓' if result.success else '✗'} "
+            f"({result.duration:.1f}s)"
+        )
+
+    def _handle_interrupt(
+        self,
+        future_map: dict,
+        host_names: list[str],
+        command: str,
+        results: dict[str, BatchHostResult],
+    ) -> None:
+        """处理键盘中断：取消任务并为未完成主机创建失败记录"""
+        # 取消所有未完成的任务
+        for future in future_map:
+            future.cancel()
+
+        # 为尚未有结果的主机创建失败记录
+        for host_name in host_names:
+            if host_name not in results:
+                results[host_name] = BatchHostResult(
+                    host=host_name,
+                    success=False,
+                    command=command,
+                    error="user interrupted",
+                )
+
+    def _cleanup_pools(self, pools: dict[str, SyncConnectionPool]) -> None:
+        """关闭本批次创建的所有连接池"""
+        for pool in pools.values():
+            pool.close_all()
+
+    def _build_result(
+        self, total: int, results: dict[str, BatchHostResult], duration: float
+    ) -> BatchResult:
+        """构建批量执行汇总结果"""
         success_count = sum(1 for r in results.values() if r.success)
         failed_count = total - success_count
 
-        logger.info(f"batch execution finished: {success_count}/{total} succeeded, took {duration:.1f}s")
+        logger.info(
+            f"batch execution finished: {success_count}/{total} succeeded, took {duration:.1f}s"
+        )
 
         return BatchResult(
             total=total,

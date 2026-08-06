@@ -222,3 +222,148 @@ class TestBatchExecutor:
 
         assert len(progress_data) == 1
         assert progress_data[0] == (1, 1, "srv1")
+
+    @patch("remote_cmd.service.batch_executor.SSHClient")
+    def test_keyboard_interrupt_creates_failure_records(self, mock_ssh_class):
+        """测试：KeyboardInterrupt 时未完成主机被标记为 user interrupted"""
+        hosts = [
+            Host(name=f"srv{i}", hostname=f"10.0.0.{i}", username="admin") for i in range(1, 4)
+        ]
+        service = self.make_mock_service(hosts)
+
+        mock_instance = MagicMock()
+        mock_ssh_class.return_value = mock_instance
+
+        # 模拟成功执行的结果
+        mock_result = MagicMock()
+        mock_result.success = True
+        mock_result.exit_code = 0
+        mock_result.stdout = "OK"
+        mock_result.stderr = ""
+        mock_instance.execute.return_value = mock_result
+
+        executor = BatchExecutor(host_service=service)
+
+        # 直接测试 _handle_interrupt 方法：模拟部分完成状态
+        from remote_cmd.service.batch_executor import BatchHostResult
+
+        # 模拟已有一个结果，两个未完成
+        existing_results = {
+            "srv1": BatchHostResult(host="srv1", success=True, command="uptime", exit_code=0)
+        }
+        future_map = {}
+
+        # 调用 _handle_interrupt
+        executor._handle_interrupt(
+            future_map, ["srv1", "srv2", "srv3"], "uptime", existing_results
+        )
+
+        # 验证：srv1 保留原结果，srv2/srv3 被标记为 user interrupted
+        assert existing_results["srv1"].success is True
+        assert existing_results["srv2"].error == "user interrupted"
+        assert existing_results["srv3"].error == "user interrupted"
+
+    @patch("remote_cmd.service.batch_executor.SSHClient")
+    def test_single_host_no_pool(self, mock_ssh_class):
+        """测试：单主机无连接池模式（不创建 SyncConnectionPool）"""
+        host = Host(name="srv1", hostname="10.0.0.1", username="admin")
+        service = self.make_mock_service([host])
+
+        mock_instance = MagicMock()
+        mock_ssh_class.return_value = mock_instance
+        mock_result = MagicMock()
+        mock_result.success = True
+        mock_result.exit_code = 0
+        mock_result.stdout = "OK"
+        mock_result.stderr = ""
+        mock_instance.execute.return_value = mock_result
+
+        # patch SyncConnectionPool 追踪是否被创建
+        with patch("remote_cmd.service.batch_executor.SyncConnectionPool") as mock_pool_class:
+            executor = BatchExecutor(host_service=service)
+            result = executor.execute(["srv1"], "uptime")
+
+        assert result.success == 1
+        # 单主机无重试时不应创建连接池
+        mock_pool_class.assert_not_called()
+
+    @patch("remote_cmd.service.batch_executor.SSHClient")
+    def test_multi_host_with_pool(self, mock_ssh_class):
+        """测试：多主机有连接池模式（创建 SyncConnectionPool）"""
+        hosts = [
+            Host(name=f"srv{i}", hostname=f"10.0.0.{i}", username="admin") for i in range(1, 3)
+        ]
+        service = self.make_mock_service(hosts)
+
+        mock_instance = MagicMock()
+        mock_ssh_class.return_value = mock_instance
+        mock_result = MagicMock()
+        mock_result.success = True
+        mock_result.exit_code = 0
+        mock_result.stdout = "OK"
+        mock_result.stderr = ""
+        mock_instance.execute.return_value = mock_result
+
+        # patch SyncConnectionPool 追踪创建
+        mock_pool_instance = MagicMock()
+        with patch(
+            "remote_cmd.service.batch_executor.SyncConnectionPool",
+            return_value=mock_pool_instance,
+        ) as mock_pool_class:
+            executor = BatchExecutor(host_service=service)
+            result = executor.execute(["srv1", "srv2"], "uptime")
+
+        assert result.success == 2
+        # 多主机时应创建连接池（每个主机一个）
+        assert mock_pool_class.call_count == 2
+        mock_pool_instance.close_all.assert_called()
+
+    @patch("remote_cmd.service.batch_executor.SSHClient")
+    def test_retry_uses_pool(self, mock_ssh_class):
+        """测试：重试时使用连接池（即使单主机）"""
+        host = Host(name="srv1", hostname="10.0.0.1", username="admin")
+        service = self.make_mock_service([host])
+
+        mock_instance = MagicMock()
+        mock_ssh_class.return_value = mock_instance
+        mock_result = MagicMock()
+        mock_result.success = True
+        mock_result.exit_code = 0
+        mock_result.stdout = "OK"
+        mock_result.stderr = ""
+        mock_instance.execute.return_value = mock_result
+
+        mock_pool_instance = MagicMock()
+        with patch(
+            "remote_cmd.service.batch_executor.SyncConnectionPool",
+            return_value=mock_pool_instance,
+        ) as mock_pool_class:
+            executor = BatchExecutor(host_service=service)
+            result = executor.execute(["srv1"], "uptime", retry_count=2)
+
+        assert result.success == 1
+        # 重试时应创建连接池
+        mock_pool_class.assert_called_once()
+        mock_pool_instance.close_all.assert_called_once()
+
+    @patch("remote_cmd.service.batch_executor.SSHClient")
+    def test_async_progress_callback_logs_warning(self, mock_ssh_class, caplog):
+        """测试：同步内核收到异步进度回调时记录 warning"""
+        host = Host(name="srv1", hostname="10.0.0.1", username="admin")
+        service = self.make_mock_service([host])
+
+        mock_instance = MagicMock()
+        mock_ssh_class.return_value = mock_instance
+        mock_result = MagicMock()
+        mock_result.success = True
+        mock_instance.execute.return_value = mock_result
+
+        async def async_callback(completed, total, host_name):  # noqa: ARG001
+            pass
+
+        import logging
+        with caplog.at_level(logging.WARNING, logger="remote_cmd.service.batch_executor"):
+            executor = BatchExecutor(host_service=service)
+            executor.execute(["srv1"], "uptime", progress_callback=async_callback)
+
+        assert "同步内核不支持异步进度回调" in caplog.text

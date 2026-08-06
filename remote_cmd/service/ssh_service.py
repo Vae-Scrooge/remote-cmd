@@ -2,7 +2,7 @@
 SSH 连接服务
 
 封装 SSHClient 的连接管理和命令执行逻辑。
-与 HostService 配合使用，不直接依赖 HostManager。
+与 HostService 配合使用，不直接依赖上层管理类。
 
 区别于 SSHClient:
     - SSHClient: 底层连接和命令执行

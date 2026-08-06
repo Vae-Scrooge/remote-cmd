@@ -25,7 +25,6 @@ from click.exceptions import Exit
 
 from remote_cmd import __version__
 from remote_cmd.core.host import Host
-from remote_cmd.repository.json_host_repository import JsonHostRepository
 from remote_cmd.service.batch_executor import BatchExecutor
 from remote_cmd.service.credential_provider import (
     ChainCredentialProvider,
@@ -33,10 +32,11 @@ from remote_cmd.service.credential_provider import (
     EnvCredentialProvider,
 )
 from remote_cmd.service.host_service import HostService
+from remote_cmd.service.storage_factory import build_repository
 from remote_cmd.utils.config import get_default_config_path, load_config
 
 
-def _build_service(config_file: str) -> HostService:
+def _build_service(config_file: str, storage_backend: Optional[str] = None) -> HostService:
     """Build a HostService from a config file.
 
     Credential chain order: env var -> encrypted file storage.
@@ -44,8 +44,12 @@ def _build_service(config_file: str) -> HostService:
     encrypted passwords already persisted by add_host; together with the
     _encryption.decrypt fallback in HostService.resolve_host it ensures
     CLI-stored hosts can connect (see P0-A fix).
+
+    The storage engine is selected by `storage_backend` when provided
+    explicitly, otherwise inferred from the config file extension:
+    .json -> JsonHostRepository; .db/.sqlite -> SqliteHostRepository.
     """
-    repo = JsonHostRepository(filepath=config_file, auto_load=True)
+    repo = build_repository(filepath=config_file, storage_backend=storage_backend)
     cred_provider = ChainCredentialProvider(
         [
             EnvCredentialProvider(),
@@ -87,7 +91,8 @@ def cli(ctx, config: Optional[str], verbose: bool):
     ctx.obj["verbose"] = verbose
 
     hosts_file = ctx.obj["config"].get("hosts_file", "hosts.json")
-    ctx.obj["service"] = _build_service(hosts_file)
+    storage_backend = ctx.obj["config"].get("storage_backend")
+    ctx.obj["service"] = _build_service(hosts_file, storage_backend)
 
     if verbose:
         click.echo(f"Using config file: {config_path}")
@@ -272,7 +277,10 @@ def host_show(ctx, name: str):
             auth_type = "SSH agent"
         click.echo(f"  Auth:       {auth_type}")
         if host.key_filename:
-            click.echo(f"  Key path:   {host.key_filename}")
+            # Sanitize key path: show only the filename, not full path
+            from pathlib import Path
+            key_name = Path(host.key_filename).name
+            click.echo(f"  Key file:   {key_name}")
         tags_str = ", ".join(host.tags) if host.tags else "-"
         click.echo(f"  Tags:       {tags_str}")
         click.echo(f"  Desc:       {host.description or '-'}")
@@ -391,6 +399,7 @@ def download(ctx, host_name: str, local_path: str, remote_path: str):
 @click.option("--timeout", "-T", default=30, help="Command timeout in seconds (default: 30)")
 @click.option("--retry", "-r", default=0, help="Failure retry count (default: 0)")
 @click.option("--retry-delay", default=1.0, help="Retry delay in seconds (default: 1.0)")
+@click.option("--async", "use_async", is_flag=True, help="Use async execution engine (asyncssh)")
 @click.option("--show-failures", is_flag=True, help="Show only failed hosts")
 @click.pass_context
 def batch_run(
@@ -401,6 +410,7 @@ def batch_run(
     timeout: int,
     retry: int,
     retry_delay: float,
+    use_async: bool,
     show_failures: bool,
 ):
     """
@@ -414,12 +424,15 @@ def batch_run(
         remote-cmd batch-run web-1 web-2 db-1 "uptime"
 
         remote-cmd batch-run web-1 web-2 "df -h" -C 5 -r 2
+
+        remote-cmd batch-run --async web-1 web-2 db-1 "uptime"
     """
     service: HostService = ctx.obj["service"]
     executor = BatchExecutor(
         host_service=service,
         max_concurrency=concurrency,
         command_timeout=timeout,
+        use_async=use_async,
     )
 
     click.echo(f"Batch running on {len(host_names)} hosts, command='{command}', concurrency={concurrency}")

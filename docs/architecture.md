@@ -34,7 +34,7 @@ Remote CMD 采用分层架构设计，将系统划分为多个职责清晰的层
 ┌─────────────────────────────────────────────────────────────────┐
 │                         业务逻辑层                                │
 │  ┌─────────────────────────────────────────────────────────┐   │
-│  │                   HostManager 主机管理器                  │   │
+│  │            HostService + HostRepository 主机服务          │   │
 │  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐   │   │
 │  │  │   添加主机    │  │   删除主机    │  │   查询主机    │   │   │
 │  │  │   标签管理    │  │   批量操作    │  │   连接测试    │   │   │
@@ -89,17 +89,17 @@ Remote CMD 采用分层架构设计，将系统划分为多个职责清晰的层
 
 ### 2. 业务逻辑层
 
-#### HostManager (`remote_cmd/core/host_manager.py`)
-主机管理器的核心职责：
+#### HostService + HostRepository (`remote_cmd/service/host_service.py` + `remote_cmd/repository/`)
+主机服务的核心职责：
 - 主机配置的 CRUD 操作
 - 标签分类和筛选
 - 批量操作支持
-- 数据持久化（JSON 格式）
+- 数据持久化（JsonHostRepository / SqliteHostRepository / 存储引擎自动切换）
 
 **设计决策：**
-- 使用字典存储主机，O(1) 查找复杂度
-- 延迟加载，只在需要时读取文件
-- 自动保存，避免数据丢失
+- Repository 定义存储接口，Json/SQLite 实现可插拔切换
+- HostService 承载业务逻辑与凭据解析，与存储解耦
+- 存储引擎按文件扩展名自动选择（.json/.db/.sqlite）或显式 storage_backend
 
 ### 3. 核心功能层
 
@@ -166,28 +166,27 @@ SSHClient o-- paramiko.SSHClient
 SSHClient o-- paramiko.SFTPClient
 ```
 
-### HostManager 组件
+### HostService 组件
 
 ```python
-class HostManager:
+class HostService:
     """
-    主机管理器组件
-    
+    主机服务组件
+
     职责：
     1. 管理主机集合
-    2. 持久化配置
+    2. 委托仓库持久化
     3. 提供筛选和查询
     4. 批量操作支持
     """
-    
-    def __init__(self, hosts_file: Optional[str] = None):
-        self.hosts: Dict[str, Host] = {}
-        self.hosts_file = hosts_file
-    
+
+    def __init__(self, repository: HostRepository):
+        self._repository = repository
+
     def add_host(self, host: Host):
         # 添加主机
         pass
-    
+
     def connect_to_host(self, name: str) -> SSHClient:
         # 连接到指定主机
         pass
@@ -195,8 +194,11 @@ class HostManager:
 
 **组件关系：**
 ```
-HostManager *-- "*" Host
-HostManager ..> SSHClient : creates
+HostService o-- HostRepository
+HostService *-- "*" Host
+HostRepository <|.. JsonHostRepository
+HostRepository <|.. SqliteHostRepository
+HostService ..> SSHClient : creates
 Host *-- ConnectionConfig
 ```
 
@@ -216,7 +218,7 @@ Host *-- ConnectionConfig
          │
          ▼
 ┌─────────────────┐
-│   HostManager   │  查找主机配置
+│   HostService   │  查找主机配置
 │   get_host()    │
 └────────┬────────┘
          │
@@ -321,11 +323,15 @@ config2 = ConnectionConfig(
 
 ### 3. 工厂模式
 
-HostManager 作为 SSHClient 的工厂：
+HostService 作为 SSHClient 的工厂：
 
 ```python
-# HostManager 创建 SSHClient
-manager = HostManager("hosts.json")
+# HostService 创建 SSHClient
+from remote_cmd.repository.json_host_repository import JsonHostRepository
+from remote_cmd.service.host_service import HostService
+
+repo = JsonHostRepository("hosts.json")
+manager = HostService(repository=repo)
 client = manager.connect_to_host("web-server")
 # 返回已连接的 SSHClient 实例
 ```

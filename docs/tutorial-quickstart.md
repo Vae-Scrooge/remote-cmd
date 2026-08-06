@@ -217,10 +217,13 @@ remote-cmd host list --tag production
 ### Python API 管理
 
 ```python
-from remote_cmd.core.host_manager import HostManager, Host
+from remote_cmd.core.host import Host
+from remote_cmd.repository.json_host_repository import JsonHostRepository
+from remote_cmd.service.host_service import HostService
 
-# 创建管理器
-manager = HostManager("my-hosts.json")
+# 创建仓库与主机服务
+repo = JsonHostRepository("my-hosts.json")
+manager = HostService(repository=repo)
 
 # 批量添加
 servers = [
@@ -236,7 +239,7 @@ for server in servers:
     manager.add_host(server)
 
 # 保存配置
-manager.save_to_file("my-hosts.json")
+repo.flush()
 
 # 查看所有标签
 print("可用标签:", manager.list_tags())
@@ -318,9 +321,11 @@ with SSHClient(config) as client:
 ### 批量执行命令
 
 ```python
-from remote_cmd.core.host_manager import HostManager
+from remote_cmd.repository.json_host_repository import JsonHostRepository
+from remote_cmd.service.host_service import HostService
 
-manager = HostManager("my-hosts.json")
+repo = JsonHostRepository("my-hosts.json")
+manager = HostService(repository=repo)
 
 # 在所有 Web 服务器上执行
 for host in manager.list_hosts(tag="web"):
@@ -347,7 +352,11 @@ print("\n✨ 批量操作完成")
 
 ```python
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from remote_cmd.core.host_manager import HostManager
+from remote_cmd.repository.json_host_repository import JsonHostRepository
+from remote_cmd.service.host_service import HostService
+
+repo = JsonHostRepository("my-hosts.json")
+manager = HostService(repository=repo)
 
 def check_host(host):
     """检查单个主机的状态"""
@@ -358,7 +367,6 @@ def check_host(host):
     except Exception as e:
         return host.name, False, str(e)
 
-manager = HostManager("my-hosts.json")
 hosts = manager.list_hosts()
 
 print(f"🚀 并行检查 {len(hosts)} 台服务器...\n")
@@ -394,11 +402,13 @@ deploy.py - 简单的自动化部署脚本
 
 import sys
 import argparse
-from remote_cmd.core.host_manager import HostManager
+from remote_cmd.repository.json_host_repository import JsonHostRepository
+from remote_cmd.service.host_service import HostService
 
 def deploy(host_name: str):
     """部署应用到指定服务器"""
-    manager = HostManager("my-hosts.json")
+    repo = JsonHostRepository("my-hosts.json")
+    manager = HostService(repository=repo)
     
     print(f"🚀 开始部署到 {host_name}...")
     print("=" * 50)

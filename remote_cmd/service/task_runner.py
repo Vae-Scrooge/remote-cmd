@@ -385,62 +385,84 @@ class TaskRunner:
 
         负责状态转换、取消检查、异常处理和资源释放。
         """
-        # 检查是否在启动前已被取消（竞态窗口：cancel 发生在 submit 检查之后、
-        # 本线程启动之前）。已获取的槽位必须归还，否则信号量泄漏。
-        if self._cancel_flags.get(task_id, threading.Event()).is_set():
-            self._semaphore.release()
-            with self._lock:
-                task = self._tasks.get(task_id)
-                if task and task.status == TaskStatus.PENDING:
-                    task.status = TaskStatus.CANCELLED
-                    task.completed_at = datetime.now()
-            if task_id in self._events:
-                self._events[task_id].set()
+        if self._check_cancelled_before_start(task_id):
             return
 
-        # 设置为运行中
+        self._mark_running(task_id)
+
+        try:
+            result = self._run_task_function(task_id, fn, args, kwargs)
+            self._handle_completion(task_id, result)
+        except Exception as e:  # noqa: BLE001
+            self._handle_exception(task_id, e)
+        finally:
+            self._cleanup_resources(task_id)
+
+    def _check_cancelled_before_start(self, task_id: str) -> bool:
+        """检查任务在启动前是否已被取消（竞态窗口处理）。
+
+        Returns:
+            bool: True if task was cancelled and cleanup done, False to continue
+        """
+        if not self._cancel_flags.get(task_id, threading.Event()).is_set():
+            return False
+
+        self._semaphore.release()
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if task and task.status == TaskStatus.PENDING:
+                task.status = TaskStatus.CANCELLED
+                task.completed_at = datetime.now()
+        if task_id in self._events:
+            self._events[task_id].set()
+        return True
+
+    def _mark_running(self, task_id: str) -> None:
+        """将任务标记为运行中状态"""
         with self._lock:
             task = self._tasks.get(task_id)
             if task:
                 task.status = TaskStatus.RUNNING
                 task.started_at = datetime.now()
 
-        try:
-            logger.debug(f"task started: [{task_id[:8]}] running...")
+    def _run_task_function(self, task_id: str, fn: Callable, args: tuple, kwargs: dict) -> Any:
+        """执行任务函数，返回结果"""
+        logger.debug(f"task started: [{task_id[:8]}] running...")
+        return fn(*args, **kwargs)
 
-            # 执行任务函数
-            result = fn(*args, **kwargs)
-
-            # 检查是否在执行期间被取消
-            if self._cancel_flags.get(task_id, threading.Event()).is_set():
-                with self._lock:
-                    task = self._tasks.get(task_id)
-                    if task:
-                        task.status = TaskStatus.CANCELLED
-                        task.completed_at = datetime.now()
-                logger.info(f"task was cancelled: [{task_id[:8]}]")
-            else:
-                with self._lock:
-                    task = self._tasks.get(task_id)
-                    if task:
-                        task.result = result
-                        task.status = TaskStatus.SUCCESS
-                        task.completed_at = datetime.now()
-                logger.info(f"task finished: [{task_id[:8]}]")
-
-        except Exception as e:  # noqa: BLE001
+    def _handle_completion(self, task_id: str, result: Any) -> None:
+        """处理任务正常完成（成功或被取消）"""
+        if self._cancel_flags.get(task_id, threading.Event()).is_set():
             with self._lock:
                 task = self._tasks.get(task_id)
-                if task and task.status != TaskStatus.CANCELLED:
-                    task.error = str(e)
-                    task.status = TaskStatus.FAILED
+                if task:
+                    task.status = TaskStatus.CANCELLED
                     task.completed_at = datetime.now()
-            logger.error(f"task failed: [{task_id[:8]}] {e}")
+            logger.info(f"task was cancelled: [{task_id[:8]}]")
+        else:
+            with self._lock:
+                task = self._tasks.get(task_id)
+                if task:
+                    task.result = result
+                    task.status = TaskStatus.SUCCESS
+                    task.completed_at = datetime.now()
+            logger.info(f"task finished: [{task_id[:8]}]")
 
-        finally:
-            self._semaphore.release()
-            if task_id in self._events:
-                self._events[task_id].set()
+    def _handle_exception(self, task_id: str, exc: Exception) -> None:
+        """处理任务执行异常"""
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if task and task.status != TaskStatus.CANCELLED:
+                task.error = str(exc)
+                task.status = TaskStatus.FAILED
+                task.completed_at = datetime.now()
+        logger.error(f"task failed: [{task_id[:8]}] {exc}")
+
+    def _cleanup_resources(self, task_id: str) -> None:
+        """清理资源：释放信号量、触发完成事件"""
+        self._semaphore.release()
+        if task_id in self._events:
+            self._events[task_id].set()
 
 
 __all__ = ["TaskRunner", "Task", "TaskStatus"]

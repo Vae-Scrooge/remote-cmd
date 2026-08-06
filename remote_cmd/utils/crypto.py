@@ -17,6 +17,7 @@
     - 首次使用时自动生成密钥
 """
 
+import base64
 import contextlib
 import logging
 import stat as stat_module
@@ -143,6 +144,7 @@ class CredentialEncryption:
         加载现有密钥或生成新密钥
 
         密钥文件权限设为 0600，防止其他用户读取。
+        校验密钥格式：必须是合法的 Fernet key（32 字节 base64 编码）。
         """
         from cryptography.fernet import Fernet
 
@@ -154,7 +156,21 @@ class CredentialEncryption:
                     self._key_path.chmod(0o600)
             except OSError:
                 pass  # Windows 或权限不足时忽略
-            return self._key_path.read_bytes()
+
+            key = self._key_path.read_bytes()
+            # 校验密钥格式：Fernet key 必须是 32 字节 base64 编码（44 字符，含 padding）
+            try:
+                decoded = base64.urlsafe_b64decode(key)
+                if len(decoded) != 32:
+                    raise ValueError(f"Invalid key length: {len(decoded)} bytes, expected 32")
+            except (ValueError, base64.binascii.Error) as e:
+                logger.error(f"Invalid encryption key format at {self._key_path}: {e}")
+                raise CredentialEncryptionError(
+                    f"Corrupted or invalid key file: {self._key_path}. "
+                    f"Delete it to regenerate, or check permissions."
+                ) from e
+
+            return key
 
         # 生成新密钥
         key = Fernet.generate_key()

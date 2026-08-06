@@ -4,8 +4,10 @@
 展示如何使用 remote_cmd 进行基本的 SSH 操作
 """
 
-from remote_cmd.core.host_manager import Host, HostManager
+from remote_cmd.core.host import Host
 from remote_cmd.core.ssh_client import ConnectionConfig, SSHClient
+from remote_cmd.repository.json_host_repository import JsonHostRepository
+from remote_cmd.service.host_service import HostService
 
 
 def example_basic_connection():
@@ -41,8 +43,9 @@ def example_key_auth():
 
 def example_host_management():
     """示例：主机管理"""
-    # 创建主机管理器
-    manager = HostManager("my_hosts.json")
+    # 创建仓库与主机服务（Repository + Service 架构）
+    repo = JsonHostRepository(filepath="my_hosts.json")
+    manager = HostService(repository=repo)
 
     # 添加主机
     manager.add_host(
@@ -68,7 +71,7 @@ def example_host_management():
     )
 
     # 保存配置
-    manager.save_to_file("my_hosts.json")
+    repo.flush()
 
     # 列出所有主机
     print("\n所有主机:")
@@ -125,7 +128,8 @@ def example_sudo_command():
 
 def example_connection_test():
     """示例：连接测试"""
-    manager = HostManager("hosts.json")
+    repo = JsonHostRepository(filepath="hosts.json")
+    manager = HostService(repository=repo)
 
     # 测试单个主机连接
     host_name = "web-server"

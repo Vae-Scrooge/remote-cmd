@@ -15,7 +15,7 @@ Remote CMD - SSH 远程服务器管理工具
     - 结构化日志系统
 
 快速开始：
-    >>> from remote_cmd import SSHClient, HostManager
+    >>> from remote_cmd import SSHClient
     >>> from remote_cmd.core.ssh_client import ConnectionConfig
     >>>
     >>> # 创建连接配置
@@ -73,7 +73,6 @@ except ImportError:  # pragma: no cover - 依赖 asyncssh，未安装时不导�
     _HAS_ASYNC = False
 
 from remote_cmd.core.host import Host
-from remote_cmd.core.host_manager import HostManager
 from remote_cmd.core.ssh_client import SSHClient
 from remote_cmd.core.sync_connection_pool import SyncConnectionPool
 
@@ -113,7 +112,6 @@ if _HAS_ASYNC:
         "NativeAsyncSSHClient",
         "AsyncConnectionPool",
         "AsyncBatchExecutor",
-        "HostManager",
         "Host",
         # 新架构导出
         "HostRepository",
@@ -146,7 +144,6 @@ else:
     __all__ = [
         # 原有导出（向后兼容，不含异步符号）
         "SSHClient",
-        "HostManager",
         "Host",
         # 新架构导出
         "HostRepository",

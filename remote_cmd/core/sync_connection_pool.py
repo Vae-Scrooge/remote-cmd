@@ -77,7 +77,10 @@ class SyncConnectionPool:
     def get_metrics(self) -> dict[str, Any]:
         """获取连接池指标快照。"""
         return {
-            "active": self._total_created - self._total_released,
+            # 当前在用的连接数 = 存活连接总数 - 空闲连接数。
+            # 不能用 total_created - total_released：复用连接时
+            # total_released 会超过 total_created，导致 active 为负。
+            "active": len(self._connections) - self._free.qsize(),
             "idle": self._free.qsize(),
             "total_connections": len(self._connections),
             "total_created": self._total_created,

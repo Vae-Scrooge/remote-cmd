@@ -71,7 +71,17 @@ remote-cmd/
 │   ├── core/                  # 核心功能
 │   │   ├── __init__.py
 │   │   ├── ssh_client.py      # SSH 客户端
-│   │   └── host_manager.py    # 主机管理器
+│   │   └── host.py            # 主机数据模型
+│   ├── repository/            # 存储仓库
+│   │   ├── host_repository.py # 仓库抽象接口
+│   │   ├── json_host_repository.py
+│   │   ├── sqlite_host_repository.py
+│   │   └── storage_factory.py
+│   ├── service/                   # 业务服务
+│   │   ├── host_service.py    # 主机服务
+│   │   ├── batch_executor.py
+│   │   ├── async_batch_executor.py
+│   │   └── storage_factory.py
 │   ├── cli/                   # 命令行接口
 │   │   ├── __init__.py
 │   │   └── main.py            # CLI 入口
@@ -81,7 +91,10 @@ remote-cmd/
 │       └── exceptions.py      # 异常定义
 ├── tests/                      # 测试代码
 │   ├── test_ssh_client.py
-│   └── test_host_manager.py
+│   ├── test_host_service.py
+│   ├── test_repository.py
+│   ├── test_sqlite_repository.py
+│   └── test_storage_factory.py
 ├── examples/                   # 示例代码
 │   └── basic_usage.py
 ├── docs/                       # 文档
@@ -109,9 +122,25 @@ remote-cmd/
 - `ConnectionConfig` 类：连接配置
 - `CommandResult` 类：命令执行结果
 
-**host_manager.py**
-- `HostManager` 类：管理主机集合
+**host.py**
 - `Host` 类：主机配置数据类
+
+**host_service.py**
+- `HostService` 类：主机业务逻辑（CRUD、凭据解析、连接测试）
+
+#### Repository 模块
+
+**host_repository.py**
+- `HostRepository` 抽象接口：定义主机持久化契约
+
+**json_host_repository.py**
+- `JsonHostRepository` 类：JSON 文件存储（原子写入、可选加密）
+
+**sqlite_host_repository.py**
+- `SqliteHostRepository` 类：SQLite 数据库存储（索引、分页、搜索）
+
+**storage_factory.py**
+- `build_repository` 函数：按扩展名/显式配置自动选择存储引擎
 
 #### CLI 模块
 
@@ -485,10 +514,10 @@ python -m twine upload dist/*
 @click.pass_context
 def new_command(ctx, host_name, option):
     """新命令描述"""
-    manager = HostManager(ctx.obj["config"].get("hosts_file", "hosts.json"))
-    
+    service: HostService = ctx.obj["service"]
+
     try:
-        with manager.connect_to_host(host_name) as client:
+        with service.connect_to_host(host_name) as client:
             # 实现命令逻辑
             result = client.execute("some command")
             click.echo(result.stdout)

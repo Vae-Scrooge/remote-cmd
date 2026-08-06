@@ -35,6 +35,69 @@ def config_file(tmp_path):
 
 
 # ============================================================================
+# 存储引擎自动切换测试
+# ============================================================================
+
+
+class TestStorageBackend:
+    """测试：基于扩展名/显式配置的存储引擎自动切换"""
+
+    def _make_config(self, tmp_path, hosts_file_name, backend=None):
+        """生成指向指定 hosts 文件的配置，可选显式 storage_backend"""
+        cfg = {"hosts_file": str(tmp_path / hosts_file_name)}
+        if backend is not None:
+            cfg["storage_backend"] = backend
+        path = tmp_path / f"cfg_{hosts_file_name.replace('.', '_')}.yaml"
+        path.write_text(
+            "\n".join(f"{k}: {v}" for k, v in cfg.items()),
+            encoding="utf-8",
+        )
+        return str(path)
+
+    def test_json_extension_uses_json(self, runner, tmp_path):
+        """测试：hosts 文件为 .json 时使用 JSON 存储"""
+        config_file = self._make_config(tmp_path, "hosts.json")
+        with runner.isolated_filesystem():
+            with patch("remote_cmd.cli.main.build_repository") as mock_build:
+                runner.invoke(cli, ["--config", config_file, "host", "list"])
+            _, kwargs = mock_build.call_args
+            assert kwargs["storage_backend"] is None
+            assert str(tmp_path / "hosts.json") in kwargs["filepath"]
+
+    def test_explicit_sqlite_backend_passed(self, runner, tmp_path):
+        """测试：显式 storage_backend 透传给仓库构建"""
+        config_file = self._make_config(tmp_path, "hosts.json", backend="sqlite")
+        with runner.isolated_filesystem():
+            with patch("remote_cmd.cli.main.build_repository") as mock_build:
+                runner.invoke(cli, ["--config", config_file, "host", "list"])
+            _, kwargs = mock_build.call_args
+            assert kwargs["storage_backend"] == "sqlite"
+
+    def test_sqlite_round_trip_add_and_list(self, runner, tmp_path):
+        """测试：使用 .db 文件添加并列出主机（真实 SQLite 端到端）"""
+        config_file = self._make_config(tmp_path, "hosts.db")
+        with runner.isolated_filesystem():
+            add = runner.invoke(
+                cli,
+                [
+                    "--config",
+                    config_file,
+                    "host",
+                    "add",
+                    "srv1",
+                    "10.0.0.1",
+                    "admin",
+                    "-k",
+                    "~/.ssh/id_rsa",
+                ],
+            )
+            assert add.exit_code == 0, add.output
+            result = runner.invoke(cli, ["--config", config_file, "host", "list"])
+            assert result.exit_code == 0
+            assert "srv1" in result.output
+
+
+# ============================================================================
 # host add 命令测试
 # ============================================================================
 
@@ -240,6 +303,37 @@ class TestHostShow:
             result = runner.invoke(cli, ["--config", config_file, "host", "show", "ghost"])
             assert result.exit_code != 0
             assert "not found" in result.output
+
+    def test_show_masks_secrets(self, runner, config_file):
+        """回归测试：host show 不泄露密码明文和私钥完整路径"""
+        with runner.isolated_filesystem():
+            # 通过环境变量添加带密码的主机
+            env = {"REMOTE_CMD_PASSWORD": "supersecret"}
+            runner.invoke(
+                cli,
+                [
+                    "--config",
+                    config_file,
+                    "host",
+                    "add",
+                    "prod-host",
+                    "10.0.0.1",
+                    "root",
+                    "-k",
+                    "/home/user/.ssh/production_key",
+                ],
+                env=env,
+            )
+            result = runner.invoke(cli, ["--config", config_file, "host", "show", "prod-host"])
+            assert result.exit_code == 0
+            # 密码不应以明文出现
+            assert "supersecret" not in result.output
+            # 私钥路径仅显示文件名
+            assert "/home/user/.ssh/production_key" not in result.output
+            assert "production_key" in result.output
+            # 认证类型显示
+            assert "Auth:" in result.output
+            assert "SSH key" in result.output or "Password" in result.output
 
 
 # ============================================================================
@@ -710,9 +804,78 @@ class TestBatchRun:
             _, kwargs = mock_executor_cls.call_args
             assert kwargs["max_concurrency"] == 3
             assert kwargs["command_timeout"] == 15
+            assert kwargs["use_async"] is False
             call_kwargs = mock_executor.execute.call_args.kwargs
             assert call_kwargs["host_names"] == ["srv1"]
             assert call_kwargs["command"] == "uptime"
             assert call_kwargs["retry_count"] == 4
             assert call_kwargs["retry_delay"] == 2.5
             assert callable(call_kwargs["progress_callback"])
+
+    def test_batch_run_async_flag_passed(self, runner, config_file):
+        """测试：--async 时 use_async=True 透传给 BatchExecutor"""
+        with runner.isolated_filesystem():
+            with patch("remote_cmd.cli.main.BatchExecutor") as mock_executor_cls:
+                mock_executor = MagicMock()
+                mock_executor.execute.return_value = make_batch_result(
+                    success_hosts=["srv1", "srv2"]
+                )
+                mock_executor_cls.return_value = mock_executor
+                result = runner.invoke(
+                    cli,
+                    [
+                        "--config",
+                        config_file,
+                        "batch-run",
+                        "srv1",
+                        "srv2",
+                        "uptime",
+                        "--async",
+                    ],
+                )
+            assert result.exit_code == 0
+            assert "Batch result summary" in result.output
+            assert "Succeeded: 2" in result.output
+            _, kwargs = mock_executor_cls.call_args
+            assert kwargs["use_async"] is True
+
+    def test_batch_run_async_executes_same_result(self, runner, config_file):
+        """测试：--async 与默认模式返回码/输出一致"""
+        with runner.isolated_filesystem():
+            runner.invoke(
+                cli,
+                ["--config", config_file, "host", "add", "srv1", "1.2.3.4", "admin", "-k", "key"],
+            )
+            with patch("remote_cmd.cli.main.BatchExecutor") as mock_executor_cls:
+                mock_executor = MagicMock()
+                mock_executor.execute.return_value = make_batch_result(
+                    success_hosts=["srv1"], failed_hosts=["srv2"]
+                )
+                mock_executor_cls.return_value = mock_executor
+                result = runner.invoke(
+                    cli,
+                    ["--config", config_file, "batch-run", "srv1", "srv2", "uptime", "--async"],
+                )
+            assert result.exit_code == 1
+            assert "Failed hosts:" in result.output
+            assert "boom" in result.output
+
+    def test_batch_run_missing_command_usage_error(self, runner, config_file):
+        """测试：缺少 COMMAND 参数时返回 usage error（异步/同步同一解析错误）"""
+        with runner.isolated_filesystem():
+            result = runner.invoke(
+                cli,
+                ["--config", config_file, "batch-run", "srv1", "--async"],
+            )
+            assert result.exit_code != 0
+            assert "Error" in result.output or "Usage" in result.output
+
+    def test_batch_run_invalid_concurrency_usage_error(self, runner, config_file):
+        """测试：--concurrency 非整数时返回 usage 错误"""
+        with runner.isolated_filesystem():
+            result = runner.invoke(
+                cli,
+                ["--config", config_file, "batch-run", "srv1", "uptime", "-C", "abc"],
+            )
+            assert result.exit_code != 0
+            assert "Invalid value" in result.output

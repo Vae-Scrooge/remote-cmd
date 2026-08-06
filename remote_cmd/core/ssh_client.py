@@ -30,6 +30,13 @@ from remote_cmd.utils.exceptions import (
 # 模块日志记录器
 logger = logging.getLogger(__name__)
 
+# 安全警告常量
+_SECURITY_WARNING_AUTOADD = (
+    "SECURITY WARNING: AutoAddPolicy automatically accepts unknown host keys, "
+    "making connections vulnerable to MITM attacks. "
+    "Use RejectPolicy (default) or pre-load known_hosts in production."
+)
+
 
 # ============================================================================
 # 数据类定义
@@ -83,6 +90,10 @@ class ConnectionConfig:
             raise ValueError("hostname must not be empty")
         if not self.username or not self.username.strip():
             raise ValueError("username must not be empty")
+
+        # 安全提示：AutoAddPolicy 存在 MITM 风险
+        if isinstance(self.host_key_policy, paramiko.AutoAddPolicy):
+            logger.warning(_SECURITY_WARNING_AUTOADD)
 
 
 @dataclass
@@ -201,6 +212,8 @@ class SSHClient:
 
             # 设置主机密钥策略
             policy = self.config.host_key_policy or paramiko.RejectPolicy()
+            if isinstance(policy, paramiko.AutoAddPolicy):
+                logger.warning(_SECURITY_WARNING_AUTOADD)
             self._client.set_missing_host_key_policy(policy)
 
             # 加载 known_hosts 文件（可选）

@@ -18,11 +18,12 @@ Note: Real SSH connections are commented out — uncomment to run against
 your own servers configured in hosts.json.
 """
 
-from remote_cmd.core.host_manager import HostManager
+from remote_cmd.repository.json_host_repository import JsonHostRepository
+from remote_cmd.service.host_service import HostService
 
 
 def deploy_to_server(
-    manager: HostManager,
+    manager: "HostService",
     host_name: str,
     app_dir: str = "/var/www/app",
     service_name: str = "app",
@@ -97,7 +98,8 @@ def deploy_to_server(
 
 def deploy_staging(config_file: str = "hosts.json") -> None:
     """Deploy to all staging servers."""
-    manager = HostManager(config_file)
+    repo = JsonHostRepository(filepath=config_file)
+    manager = HostService(repository=repo)
 
     servers = list(manager.list_hosts(tag="staging"))
     if not servers:

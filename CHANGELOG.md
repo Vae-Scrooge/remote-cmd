@@ -7,6 +7,12 @@
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-08-06
+
+### Fixed
+- 恢复被 v1.2.0 意外移除的 `HostManager` 公共 API（作为向后兼容层重新导出，内部委托给 `HostService` + `JsonHostRepository`），避免破坏 `from remote_cmd import HostManager` 的既有兼容性
+- 恢复 `tests/test_host_manager.py` 测试覆盖
+
 ## [1.1.1] - 2026-08-01
 
 ### Fixed

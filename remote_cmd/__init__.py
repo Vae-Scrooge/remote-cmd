@@ -48,11 +48,11 @@ Remote CMD - SSH 远程服务器管理工具
     - 文档: 参见 docs/ 目录
 
 Author: Vae-Scrooge
-Version: 1.0.0
+Version: 1.2.1
 License: MIT
 """
 
-__version__ = "1.2.0"
+__version__ = "1.2.1"
 __author__ = "Vae-Scrooge"
 __email__ = "vae-scrooge@example.com"
 __license__ = "MIT"
@@ -73,6 +73,7 @@ except ImportError:  # pragma: no cover - 依赖 asyncssh，未安装时不导�
     _HAS_ASYNC = False
 
 from remote_cmd.core.host import Host
+from remote_cmd.core.host_manager import HostManager
 from remote_cmd.core.ssh_client import SSHClient
 from remote_cmd.core.sync_connection_pool import SyncConnectionPool
 
@@ -113,6 +114,7 @@ if _HAS_ASYNC:
         "AsyncConnectionPool",
         "AsyncBatchExecutor",
         "Host",
+        "HostManager",
         # 新架构导出
         "HostRepository",
         "JsonHostRepository",
@@ -145,6 +147,7 @@ else:
         # 原有导出（向后兼容，不含异步符号）
         "SSHClient",
         "Host",
+        "HostManager",
         # 新架构导出
         "HostRepository",
         "JsonHostRepository",

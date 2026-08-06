@@ -1215,7 +1215,7 @@ except SSHFileTransferError as e:
 | SSHClient | 1.0.0+ | ✅ 稳定 |
 | ConnectionConfig | 1.0.0+ | ✅ 稳定 |
 | CommandResult | 1.0.0+ | ✅ 稳定 |
-| HostManager | 1.x（已移除） | ❌ 已移除（改用 HostService + HostRepository） |
+| HostManager | 1.0.0+ | ⚠️ 弃用（向后兼容层，委托 HostService + JsonHostRepository；新代码用 HostService） |
 | AsyncSSHClient | 1.1.0+ | ✅ 稳定（需 `[async]` extra） |
 | AsyncConnectionPool | 1.1.0+ | ✅ 稳定（需 `[async]` extra） |
 | AsyncBatchExecutor | 1.1.0+ | ✅ 稳定（需 `[async]` extra） |
@@ -1231,4 +1231,4 @@ except SSHFileTransferError as e:
 
 ---
 
-**最后更新：** 2026-08-01（v1.1.0 起新增异步模块文档，v1.1.1 新增 SyncConnectionPool）
+**最后更新：** 2026-08-06（v1.2.1 恢复 HostManager 向后兼容层）

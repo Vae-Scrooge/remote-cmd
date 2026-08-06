@@ -75,13 +75,14 @@ remote-cmd/
 │   ├── repository/            # 存储仓库
 │   │   ├── host_repository.py # 仓库抽象接口
 │   │   ├── json_host_repository.py
-│   │   ├── sqlite_host_repository.py
-│   │   └── storage_factory.py
+│   │   └── sqlite_host_repository.py
 │   ├── service/                   # 业务服务
 │   │   ├── host_service.py    # 主机服务
 │   │   ├── batch_executor.py
 │   │   ├── async_batch_executor.py
-│   │   └── storage_factory.py
+│   │   ├── storage_factory.py
+│   │   ├── credential_provider.py
+│   │   └── ssh_service.py
 │   ├── cli/                   # 命令行接口
 │   │   ├── __init__.py
 │   │   └── main.py            # CLI 入口

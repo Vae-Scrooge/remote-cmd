@@ -1,18 +1,21 @@
-# Remote CMD 文档中心
+# 📚 Remote CMD 文档中心
 
-欢迎来到 Remote CMD 文档中心！这里包含了所有你需要的文档。
+欢迎来到 Remote CMD 文档中心！这里收录了使用、开发与维护所需的全部文档。
+
+> 🌐 **语言切换**：本文档中心以中文为主。英文版项目概览请见
+> [README.md (English)](../README.md)，中文版请见 [README.zh-CN.md](../README.zh-CN.md)。
 
 ## 快速导航
 
 ### 入门指南
 - [快速入门教程](./tutorial-quickstart.md) - 15 分钟快速上手
-- [README.md](../README.md) - 项目概览和基本使用
+- [README.zh-CN.md](../README.zh-CN.md) - 项目概览与基本使用（中文）
 
 ### 进阶学习
-- [高级使用教程](./tutorial-advanced.md) - 高级功能和最佳实践
+- [高级使用教程](./tutorial-advanced.md) - 高级功能与最佳实践
 - [API 参考（自动生成）](./api/remote_cmd.html) - 完整 API 参考（pdoc 自动生成）
 - [API 使用指南](./API.md) - 类/方法使用示例与说明
-- [架构文档](./architecture.md) - 系统架构和设计决策
+- [架构文档](./architecture.md) - 系统架构与设计决策
 
 ### 开发和贡献
 - [开发指南](./DEVELOPMENT.md) - 如何参与开发
@@ -39,23 +42,23 @@ docs/
 
 ## 推荐阅读顺序
 
-### 对于新用户
-1. [README.md](../README.md) - 了解项目
+### 新用户
+1. [README.zh-CN.md](../README.zh-CN.md) - 了解项目
 2. [快速入门教程](./tutorial-quickstart.md) - 快速上手
 3. [API 使用指南](./API.md) - 了解 API
 
-### 对于开发者
-1. [开发指南](./DEVELOPMENT.md) - 设置开发环境
+### 开发者
+1. [开发指南](./DEVELOPMENT.md) - 搭建开发环境
 2. [架构文档](./architecture.md) - 理解架构
 3. [API 参考（自动生成）](./api/remote_cmd.html) - 了解 API 细节
 
-### 对于高级用户
+### 高级用户
 1. [高级使用教程](./tutorial-advanced.md) - 掌握高级功能
 2. [故障排查指南](./TROUBLESHOOTING.md) - 解决常见问题
 
 ## 获取帮助
 
-如果在阅读文档后仍有疑问：
+阅读文档后仍有疑问，可按照以下顺序：
 
 1. 查看 [故障排查指南](./TROUBLESHOOTING.md)
 2. 搜索 [GitHub Issues](https://github.com/Vae-Scrooge/remote-cmd/issues)
@@ -65,7 +68,7 @@ docs/
 
 发现文档有误或想补充内容？欢迎提交 PR！
 
-详见 [贡献指南](../CONTRIBUTING.md) 中的"改进文档"部分。
+详见 [贡献指南](../CONTRIBUTING.md) 中的「改进文档」章节。
 
 ---
 

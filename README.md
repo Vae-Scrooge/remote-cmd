@@ -5,10 +5,14 @@
   <img src="https://img.shields.io/badge/python-3.9%2B-blue?style=for-the-badge&logo=python" alt="Python">
   <img src="https://img.shields.io/github/license/Vae-Scrooge/remote-cmd?style=for-the-badge" alt="License">
   <img src="https://img.shields.io/github/actions/workflow/status/Vae-Scrooge/remote-cmd/ci.yml?style=for-the-badge&logo=githubactions&label=CI" alt="CI">
-  <img src="https://img.shields.io/badge/code%20style-black-black?style=for-the-badge" alt="Code Style">
 </p>
 
 <h1 align="center">Remote CMD — SSH Server Management<br><small>Without the Overhead</small></h1>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/English-blue?style=flat-square" alt="English"> ·
+  <a href="./README.zh-CN.md"><img src="https://img.shields.io/badge/中文-gray?style=flat-square" alt="中文"></a>
+</p>
 
 <p align="center">
   <b><code>pip install remote_cmd_manager</code></b> &nbsp;·&nbsp;
@@ -16,9 +20,8 @@
   <a href="#use-cases">Use Cases</a> &nbsp;·&nbsp;
   <a href="#cli-reference">CLI Reference</a> &nbsp;·&nbsp;
   <a href="#python-api">Python API</a> &nbsp;·&nbsp;
-  <a href="./docs">Docs</a> &nbsp;·&nbsp;
-  <a href="#maintainership">Maintainership</a> &nbsp;·&nbsp;
-  <a href="./CONTRIBUTING.md">Contributing</a>
+  <a href="#documentation">Documentation</a> &nbsp;·&nbsp;
+  <a href="#contributing">Contributing</a>
 </p>
 
 <p align="center">
@@ -38,6 +41,23 @@ pip install remote_cmd_manager && remote-cmd host add web-01 192.168.1.10 ubuntu
 
 ---
 
+## Table of Contents
+
+- [Why Remote CMD?](#why-remote-cmd)
+- [Quick Start](#quick-start)
+- [Use Cases](#use-cases)
+- [CLI Reference](#cli-reference)
+- [Python API](#python-api)
+- [Features](#features)
+- [Installation](#installation)
+- [Documentation](#documentation)
+- [Project Status](#project-status)
+- [Maintainership](#maintainership)
+- [Contributing](#contributing)
+- [License](#license)
+
+---
+
 ## Why Remote CMD?
 
 | Feature | `remote-cmd` | `ssh` + shell | Ansible | Fabric |
@@ -46,7 +66,7 @@ pip install remote_cmd_manager && remote-cmd host add web-01 192.168.1.10 ubuntu
 | Batch commands across hosts | ✅ `batch-run` | ❌ Write a loop | ✅ Playbook | ✅ |
 | File transfer (upload/download) | ✅ Built-in | ✅ scp | ✅ copy module | ✅ |
 | Python API | ✅ `from remote_cmd import ...` | ❌ | ❌ YAML-only | ✅ |
-| Zero setup | ✅ `pip install → go` | ❌ Config SSH | ❌ `ansible.cfg` | ❌ |
+| Zero setup | ✅ `pip install → go` | ❌ Configure SSH | ❌ `ansible.cfg` | ❌ |
 | Learning curve | **Low** | Low | **High** | Medium |
 
 **Use `remote-cmd` when** you need a CLI that works immediately for ad-hoc SSH tasks. **Use Ansible when** you need full configuration management and idempotent playbooks.
@@ -73,7 +93,8 @@ remote-cmd batch-run -t production "df -h /"
 
 ## Use Cases
 
-### 🖥️ System Admin — Check disk across 20 servers in one command
+### 🖥️ System Administrators — Check disk across 20 servers in one command
+
 ```bash
 remote-cmd batch-run -t production "df -h / | tail -1"
 # Output:
@@ -82,7 +103,8 @@ remote-cmd batch-run -t production "df -h / | tail -1"
 #   ✗ db-01   → Connection refused
 ```
 
-### 🚀 Deploy — Pull code and restart service
+### 🚀 Deploy — Pull code and restart a service
+
 ```python
 from remote_cmd.service.host_service import HostService
 from remote_cmd.repository import JsonHostRepository
@@ -96,14 +118,15 @@ for host in service.list_hosts(tag="staging"):
 ```
 
 ### 🔥 Incident Response — Check logs across all servers
+
 ```bash
 remote-cmd batch-run -t web "journalctl -xe -n 50 | grep -i error"
 ```
 
 ### 🔧 Config Update — Upload and reload nginx across tagged hosts
+
 ```bash
-# Upload new config
-scp nginx.conf user@server:/tmp/nginx.conf  # or use the upload command
+# Upload new config, reload across web servers
 remote-cmd run web-01 "sudo cp /tmp/nginx.conf /etc/nginx/nginx.conf && sudo nginx -t && sudo systemctl reload nginx"
 ```
 
@@ -115,7 +138,7 @@ All operations are available from the terminal:
 
 | Command | Description |
 |---|---|
-| `remote-cmd host add <name> <host> <user>` | Register a server (`-k/--key`, `-p/--port`, `-t/--tag` can repeat) |
+| `remote-cmd host add <name> <host> <user>` | Register a server (`-k/--key`, `-p/--port`, `-t/--tag`, repeatable) |
 | `remote-cmd host list [-t TAG]` | List hosts, optionally filtered by tag |
 | `remote-cmd host show <name>` | Show one host's details |
 | `remote-cmd host test <name>` | Test connectivity to a host |
@@ -161,13 +184,13 @@ with SSHClient(config) as client:
 | Category | Details |
 |---|---|
 | **SSH Auth** | Password + key file + ssh-agent, with pluggable credential providers |
-| **Credential Chain** | Source passwords from env, keyring, or arbitrary providers in priority order |
+| **Credential Chain** | Source passwords from environment, keyring, or arbitrary providers, in priority order |
 | **Credential Encryption** | AES-encrypt secrets at rest (`CredentialEncryption`) |
 | **Commands** | Single, multi-line, sudo with password |
 | **File Transfer** | Upload/download via SFTP (`remote-cmd upload/download`) |
 | **Host Management** | CRUD with pluggable JSON or **SQLite** persistence |
 | **Tag System** | Filter hosts by tag (e.g., `production`, `web`, `db`) |
-| **Batch Ops** | Run commands across any host group, sync or async |
+| **Batch Ops** | Run commands across any host group, synchronously or asynchronously |
 | **Async Kernel** | `AsyncSSHClient` / `AsyncConnectionPool` / `AsyncBatchExecutor` via the `[async]` extra |
 | **Task Runner** | Track and schedule long-running remote tasks with statuses (`TaskRunner`) |
 | **Connection Test** | Ping all hosts and report status |
@@ -179,10 +202,10 @@ with SSHClient(config) as client:
 ## Installation
 
 ```bash
-# From PyPI (recommended) — 同步 API 与 CLI
+# From PyPI (recommended) — keeps API and CLI in sync
 pip install remote_cmd_manager
 
-# With async native support (AsyncSSHClient / AsyncConnectionPool / AsyncBatchExecutor)
+# With native async support (AsyncSSHClient / AsyncConnectionPool / AsyncBatchExecutor)
 pip install "remote_cmd_manager[async]"
 
 # From source
@@ -194,13 +217,13 @@ pip install -e ".[dev]"
 The `[async]` extra installs `asyncssh` and enables the native async execution
 kernel: `AsyncSSHClient`, `AsyncConnectionPool` and `AsyncBatchExecutor`
 (also available via `BatchExecutor(use_async=True)`). Without it, `import remote_cmd`
-still works — async symbols are simply not exported.
+still works — the async symbols are simply not exported.
 
 ---
 
 ## Documentation
 
-📚 **[完整文档中心](./docs/README.md)** — 教程、API 参考、架构设计、故障排查
+📚 **[Full Documentation Center](./docs/README.md)** — tutorials, API reference, architecture, and troubleshooting
 
 | Document | Contents |
 |---|---|
@@ -208,10 +231,14 @@ still works — async symbols are simply not exported.
 | [API Docs (auto-generated)](./docs/api/remote_cmd.html) | Complete API reference generated by pdoc |
 | [Quickstart Tutorial](./docs/tutorial-quickstart.md) | Step-by-step walkthrough |
 | [Advanced Tutorial](./docs/tutorial-advanced.md) | Batch ops, error handling, production patterns |
-| [Development Guide](./docs/DEVELOPMENT.md) | Setup dev environment, contributing |
+| [Architecture](./docs/architecture.md) | System architecture and design decisions |
+| [Development Guide](./docs/DEVELOPMENT.md) | Set up the dev environment, contributing |
 | [Troubleshooting](./docs/TROUBLESHOOTING.md) | Common issues and solutions |
 | [Changelog](./CHANGELOG.md) | Release history |
 | [Mobile Remote Guide](./MOBILE-REMOTE-GUIDE.md) | Manage servers from your phone |
+
+> **Note:** The documentation center and tutorials are maintained in **Chinese**. See
+> [README.zh-CN.md](./README.zh-CN.md) for the Chinese version of this page.
 
 ---
 
@@ -258,7 +285,7 @@ Before contributing, please read our [Code of Conduct](./CODE_OF_CONDUCT.md).
 
 ## License
 
-MIT © [Vae-Scrooge](https://github.com/Vae-Scrooge)
+MIT © [Vae-Scrooge](https://github.com/Vae-Scrooge/remote-cmd)
 
 ---
 

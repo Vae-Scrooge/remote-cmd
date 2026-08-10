@@ -59,12 +59,12 @@
 ## [1.0.0] - 2026-05-31
 
 ### Added
-- 发布到 PyPI，支持 `pip install remote-cmd`
+- 发布到 PyPI，支持 `pip install remote_cmd_manager`
 - 添加 PyPI 版本和下载量 badge
 - README 添加英文简介，方便海外用户
 - setup.py 添加 PyPI 下载链接和项目 URL
 
-## [1.0.0] - 2024-01-15
+## [0.1.0] - 2024-01-15 (初始开发版)
 
 ### Added
 - 初始版本发布

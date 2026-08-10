@@ -515,7 +515,7 @@ SyntaxError: invalid syntax
 
 ```bash
 # 检查 Python 版本
-python --version  # 需要 3.8+
+python --version  # 需要 3.9+
 
 # 使用特定版本
 python3.9 -m remote_cmd --version
@@ -686,7 +686,7 @@ python -m remote_cmd --verbose host test my-server 2>&1 | tee error.log
 3. ✅ 用户名和密码/密钥正确
 4. ✅ 文件路径正确
 5. ✅ 权限足够
-6. ✅ Python 版本兼容（3.8+）
+6. ✅ Python 版本兼容（3.9+）
 7. ✅ 依赖已安装
 
 ---

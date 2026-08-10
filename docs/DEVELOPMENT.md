@@ -43,7 +43,7 @@ pip install -e ".[dev]"
 
 # 或者手动安装
 pip install -r requirements.txt
-pip install pytest pytest-cov black flake8 mypy
+pip install pytest pytest-cov ruff mypy
 ```
 
 ### 4. 验证环境
@@ -53,8 +53,8 @@ pip install pytest pytest-cov black flake8 mypy
 pytest tests/ -v
 
 # 检查代码风格
-black --check remote_cmd/ tests/
-flake8 remote_cmd/ tests/
+ruff format --check remote_cmd/ tests/
+ruff check remote_cmd/ tests/
 
 # 类型检查
 mypy remote_cmd/
@@ -168,28 +168,28 @@ remote-cmd/
 
 我们使用以下工具保持代码风格一致：
 
-#### Black - 代码格式化
+#### Ruff - 代码格式化
 
 ```bash
 # 格式化代码
-black remote_cmd/ tests/
+ruff format remote_cmd/ tests/
 
 # 检查代码格式
 black --check remote_cmd/ tests/
 ```
 
-#### isort - 导入排序
+#### Ruff - 导入排序检查
 
 ```bash
 # 排序导入
-isort remote_cmd/ tests/
+ruff check --select I remote_cmd/ tests/
 ```
 
-#### Flake8 - 代码检查
+#### Ruff - 代码检查
 
 ```bash
 # 检查代码
-flake8 remote_cmd/ tests/ --max-line-length=100
+ruff check remote_cmd/ tests/ --max-line-length=100
 ```
 
 #### MyPy - 类型检查
@@ -559,11 +559,11 @@ class SSHClient:
 
 ```bash
 # 格式化代码
-black remote_cmd/ tests/
-isort remote_cmd/ tests/
+ruff format remote_cmd/ tests/
+ruff check --select I remote_cmd/ tests/
 
 # 代码检查
-flake8 remote_cmd/ tests/
+ruff check remote_cmd/ tests/
 mypy remote_cmd/
 
 # 运行测试

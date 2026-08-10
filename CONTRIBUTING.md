@@ -108,7 +108,7 @@
 
 ### 前置要求
 
-- Python 3.8+
+- Python 3.9
 - Git
 - （可选）虚拟环境工具
 
@@ -164,28 +164,17 @@ git push origin main
 
 我们使用以下工具保持代码风格一致：
 
-#### 1. Black - 代码格式化
+#### 1. Ruff - 代码格式化与 Lint
 
 ```bash
 # 格式化代码
-black remote_cmd/ tests/
+ruff format remote_cmd/ tests/
 
 # 检查代码格式
-black --check remote_cmd/ tests/
-```
+ruff format --check remote_cmd/ tests/
 
-#### 2. isort - 导入排序
-
-```bash
-# 排序导入
-isort remote_cmd/ tests/
-```
-
-#### 3. Flake8 - 代码检查
-
-```bash
-# 检查代码
-flake8 remote_cmd/ tests/ --max-line-length=100
+# Lint 检查
+ruff check remote_cmd/ tests/
 ```
 
 #### 4. MyPy - 类型检查
@@ -365,12 +354,11 @@ git rebase upstream/main
 在提交 PR 前，请确保：
 
 ```bash
-# 1. 代码格式化
-black remote_cmd/ tests/
-isort remote_cmd/ tests/
+# 1. 代码格式化与 Lint
+ruff format remote_cmd/ tests/
+ruff check remote_cmd/ tests/
 
-# 2. 代码检查
-flake8 remote_cmd/ tests/
+# 2. 类型检查
 mypy remote_cmd/
 
 # 3. 运行测试
@@ -438,7 +426,7 @@ Closes #(issue 编号)
 
 如果您发现了安全漏洞，请**不要**在公共 Issue 中报告。请发送邮件到：
 
-📧 security@example.com
+📧 `scroogevae@gmail.com`
 
 我们会尽快处理。
 
@@ -446,7 +434,7 @@ Closes #(issue 编号)
 
 对于使用问题，请先：
 
-1. 查看 [文档](README.md)
+1. 查看 [文档](./README.zh-CN.md)
 2. 搜索 [Issues](https://github.com/Vae-Scrooge/remote-cmd/issues)
 3. 查看 [故障排查指南](docs/TROUBLESHOOTING.md)
 
@@ -477,7 +465,7 @@ pytest tests/test_ssh_client.py::TestSSHClient::test_connect -v
 pytest --cov=remote_cmd --cov-report=html
 
 # 自动格式化
-black remote_cmd/ && isort remote_cmd/
+ruff format remote_cmd/ && ruff check --select I remote_cmd/
 ```
 
 ---

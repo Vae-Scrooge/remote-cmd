@@ -14,8 +14,10 @@
   <b><code>pip install remote_cmd_manager</code></b> &nbsp;·&nbsp;
   <a href="#quick-start">Quick Start</a> &nbsp;·&nbsp;
   <a href="#use-cases">Use Cases</a> &nbsp;·&nbsp;
+  <a href="#cli-reference">CLI Reference</a> &nbsp;·&nbsp;
   <a href="#python-api">Python API</a> &nbsp;·&nbsp;
   <a href="./docs">Docs</a> &nbsp;·&nbsp;
+  <a href="#maintainership">Maintainership</a> &nbsp;·&nbsp;
   <a href="./CONTRIBUTING.md">Contributing</a>
 </p>
 
@@ -83,7 +85,7 @@ remote-cmd batch-run -t production "df -h / | tail -1"
 ### 🚀 Deploy — Pull code and restart service
 ```python
 from remote_cmd.service.host_service import HostService
-from remote_cmd.repository.json_host_repository import JsonHostRepository
+from remote_cmd.repository import JsonHostRepository
 
 service = HostService(repository=JsonHostRepository("hosts.json"))
 for host in service.list_hosts(tag="staging"):
@@ -104,6 +106,24 @@ remote-cmd batch-run -t web "journalctl -xe -n 50 | grep -i error"
 scp nginx.conf user@server:/tmp/nginx.conf  # or use the upload command
 remote-cmd run web-01 "sudo cp /tmp/nginx.conf /etc/nginx/nginx.conf && sudo nginx -t && sudo systemctl reload nginx"
 ```
+
+---
+
+## CLI Reference
+
+All operations are available from the terminal:
+
+| Command | Description |
+|---|---|
+| `remote-cmd host add <name> <host> <user>` | Register a server (`-k/--key`, `-p/--port`, `-t/--tag` can repeat) |
+| `remote-cmd host list [-t TAG]` | List hosts, optionally filtered by tag |
+| `remote-cmd host show <name>` | Show one host's details |
+| `remote-cmd host test <name>` | Test connectivity to a host |
+| `remote-cmd host remove <name>` | Remove a host |
+| `remote-cmd run <name> "<cmd>"` | Run a command on one host |
+| `remote-cmd upload <name> <local> <remote>` | Upload a file via SFTP |
+| `remote-cmd download <name> <remote> <local>` | Download a file via SFTP |
+| `remote-cmd batch-run -t <tag> "<cmd>"` | Run across all hosts in a tag (`-C` concurrency, `-T` timeout, `--async`, `--show-failures`) |
 
 ---
 
@@ -140,13 +160,18 @@ with SSHClient(config) as client:
 
 | Category | Details |
 |---|---|
-| **SSH Auth** | Password + key file + ssh-agent |
+| **SSH Auth** | Password + key file + ssh-agent, with pluggable credential providers |
+| **Credential Chain** | Source passwords from env, keyring, or arbitrary providers in priority order |
+| **Credential Encryption** | AES-encrypt secrets at rest (`CredentialEncryption`) |
 | **Commands** | Single, multi-line, sudo with password |
-| **File Transfer** | Upload/download via SFTP |
-| **Host Management** | CRUD with JSON/YAML persistence |
+| **File Transfer** | Upload/download via SFTP (`remote-cmd upload/download`) |
+| **Host Management** | CRUD with pluggable JSON or **SQLite** persistence |
 | **Tag System** | Filter hosts by tag (e.g., `production`, `web`, `db`) |
-| **Batch Ops** | Run commands across any host group |
+| **Batch Ops** | Run commands across any host group, sync or async |
+| **Async Kernel** | `AsyncSSHClient` / `AsyncConnectionPool` / `AsyncBatchExecutor` via the `[async]` extra |
+| **Task Runner** | Track and schedule long-running remote tasks with statuses (`TaskRunner`) |
 | **Connection Test** | Ping all hosts and report status |
+| **Secure Logging** | Structured logging that filters sensitive data (`SensitiveDataFilter`) |
 | **Type Safety** | Full type annotations + mypy strict |
 
 ---
@@ -196,8 +221,30 @@ still works — async symbols are simply not exported.
 
 **Roadmap:**
 - [x] Async SSH operations (parallel execution) — v1.1.0
+- [x] Pluggable storage backends (JSON + SQLite) — v1.2.x
+- [x] Chainable credential providers + at-rest encryption — v1.2.x
 - [ ] Configuration profiles (AWS, GCP, custom)
 - [ ] Output formatting (JSON, table)
+- [ ] Templated command recipes
+
+Good first issues are labelled `good first issue` in the
+[issue tracker](https://github.com/Vae-Scrooge/remote-cmd/issues) — contributions welcome.
+
+---
+
+## Maintainership
+
+**Remote CMD is an actively maintained open-source project.** It is designed and
+developed independently as a focused alternative to heavyweight tools for the
+ad-hoc SSH tasks that come up in day-to-day server work.
+
+- **Project health:** CI runs on every PR, Python 3.9+ is supported, and the
+  public API is versioned under [semantic versioning](https://semver.org/).
+- **Your code, your servers:** usage stays open under the MIT license — nothing
+  is telemetry-driven or locked behind a service.
+- **Why open source?** The tooling around ad-hoc SSH administration was either
+  too heavy (Ansible) or too bare (raw shell loops). Remote CMD exists so that
+  a single command can cover the common 90% of remote admin.
 
 ---
 

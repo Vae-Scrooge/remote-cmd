@@ -15,6 +15,7 @@
 """
 
 import logging
+import shlex
 import stat
 from pathlib import Path
 from typing import Any, Optional
@@ -122,7 +123,17 @@ class AsyncSSHClient:
         policy = self.config.host_key_policy
         # 约定：传入字符串 "auto" 视为自动添加（受控场景）
         if isinstance(policy, str) and policy.lower() == "auto":
-            return None
+            # 安全：asyncssh 中 known_hosts=None 会完全跳过主机密钥校验
+            # （比 paramiko AutoAddPolicy 更危险，连密钥都不落盘）。
+            # asyncssh 不提供等价的 AutoAddPolicy，此处回退到默认 known_hosts
+            # 校验并发出警告，避免静默禁用所有 MITM 防护。
+            logger.warning(
+                "SECURITY WARNING: 'auto' host key policy requested for asyncssh, "
+                "but asyncssh has no AutoAddPolicy equivalent. Falling back to "
+                "default known_hosts verification (~/.ssh/known_hosts). "
+                "Pre-load host keys or set known_hosts_file to trust specific hosts."
+            )
+            return ()
         # 默认交由 asyncssh 处理用户 ~/.ssh/known_hosts
         return ()
 
@@ -180,9 +191,13 @@ class AsyncSSHClient:
             SSHConnectionError: 未连接时抛出
         """
         conn = await self._get_conn()
+        # 安全：对 value 做 shlex.quote 转义，防止 shell 元字符注入
         env_str = ""
         if environment:
-            env_str = "; ".join(f"export {k}={v}" for k, v in environment.items()) + "; "
+            env_str = (
+                "; ".join(f"export {k}={shlex.quote(str(v))}" for k, v in environment.items())
+                + "; "
+            )
         full_command = f"{env_str}cd ~ && {command}"
         logger.debug(f"executing command: {command}")
         try:

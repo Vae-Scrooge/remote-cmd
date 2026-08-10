@@ -62,9 +62,17 @@ def _build_service(config_file: str, storage_backend: Optional[str] = None) -> H
 @click.group()
 @click.version_option(version=__version__, prog_name="remote-cmd")
 @click.option("--config", "-c", type=click.Path(), help="Path to config file")
+@click.option(
+    "--hosts-file",
+    "hosts_file_override",
+    type=click.Path(),
+    help="Override hosts storage file (e.g. hosts.db for SQLite). "
+    "Takes precedence over the config's hosts_file; backend is inferred "
+    "from the extension (.json/.db/.sqlite) unless storage_backend is set.",
+)
 @click.option("--verbose", "-v", is_flag=True, help="Enable verbose output mode")
 @click.pass_context
-def cli(ctx, config: Optional[str], verbose: bool):
+def cli(ctx, config: Optional[str], hosts_file_override: Optional[str], verbose: bool):
     """
     Remote CMD - SSH remote server management tool
 
@@ -90,12 +98,15 @@ def cli(ctx, config: Optional[str], verbose: bool):
     ctx.obj["config"] = load_config(config_path)
     ctx.obj["verbose"] = verbose
 
-    hosts_file = ctx.obj["config"].get("hosts_file", "hosts.json")
+    # CLI --hosts-file 优先于配置文件中的 hosts_file；storage_backend 仍由配置提供
+    # （扩展名推断覆盖 .json/.db/.sqlite 常见场景）
+    hosts_file = hosts_file_override or ctx.obj["config"].get("hosts_file", "hosts.json")
     storage_backend = ctx.obj["config"].get("storage_backend")
     ctx.obj["service"] = _build_service(hosts_file, storage_backend)
 
     if verbose:
         click.echo(f"Using config file: {config_path}")
+        click.echo(f"Using hosts file: {hosts_file}")
 
 
 @cli.group()
@@ -120,16 +131,6 @@ def host():
 @click.argument("hostname", required=True)
 @click.argument("username", required=True)
 @click.option("--port", "-p", default=22, help="SSH port (default: 22)")
-@click.option(
-    "--password",
-    "-P",
-    default=None,
-    help=(
-        "Login password (INSECURE: visible in shell history and process list). "
-        "Prefer the REMOTE_CMD_PASSWORD environment variable, or omit this "
-        "option to be prompted interactively."
-    ),
-)
 @click.option("--key", "-k", help="Path to SSH private key file")
 @click.option("--tag", "-t", multiple=True, help="Host tag (may be repeated)")
 @click.option("--description", "-d", default="", help="Host description")
@@ -140,7 +141,6 @@ def host_add(
     hostname: str,
     username: str,
     port: int,
-    password: Optional[str],
     key: Optional[str],
     tag: tuple,
     description: str,
@@ -151,15 +151,20 @@ def host_add(
     NAME: host name (unique identifier)
     HOSTNAME: host address (IP or domain)
     USERNAME: SSH login username
+
+    Password input (in order of security):
+
+      1. REMOTE_CMD_PASSWORD environment variable (safest: not in shell
+         history or process list).
+      2. Interactive prompt via getpass (no echo, not recorded).
+
+    The insecure ``--password`` option has been removed to prevent passwords
+    from leaking via shell history and ``ps``/``/proc``. Use one of the above.
     """
     service: HostService = ctx.obj["service"]
 
     # Resolve password: priority REMOTE_CMD_PASSWORD env var > interactive
-    # getpass > --password argument.
-    # Security order: env var is safest (not in command line/history); getpass
-    # is interactive without echo and is not recorded.
-    # --password appears in shell history and process list, so it is the lowest
-    # priority and triggers a warning.
+    # getpass. Both are secure (not visible in command line/history).
     env_password = os.environ.get("REMOTE_CMD_PASSWORD")
     resolved_password: Optional[str] = None
 
@@ -172,22 +177,6 @@ def host_add(
         except (EOFError, KeyboardInterrupt):
             click.echo(click.style("\n✗ cancelled", fg="red"), err=True)
             ctx.exit(1)
-
-    if password and not env_password:
-        # Only warn when the user explicitly used --password (not env var)
-        click.echo(
-            click.style(
-                "⚠ Warning: passing the password via --password is insecure "
-                "(visible in shell history and process list). "
-                "Use the REMOTE_CMD_PASSWORD environment variable or "
-                "interactive input instead.",
-                fg="yellow",
-            ),
-            err=True,
-        )
-        # --password as the last-resort fallback
-        if not resolved_password:
-            resolved_password = password
 
     host = Host(
         name=name,

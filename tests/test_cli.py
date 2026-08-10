@@ -4,6 +4,7 @@
 SSH 连接部分使用 mock 避免真实连接。
 """
 
+import os
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -95,6 +96,59 @@ class TestStorageBackend:
             result = runner.invoke(cli, ["--config", config_file, "host", "list"])
             assert result.exit_code == 0
             assert "srv1" in result.output
+
+    def test_hosts_file_override_takes_precedence(self, runner, tmp_path):
+        """测试：--hosts-file 覆盖配置文件中的 hosts_file，扩展名推断后端"""
+        # 配置指向 .json，CLI 用 --hosts-file 覆盖为 .db
+        config_file = self._make_config(tmp_path, "hosts.json")
+        override_path = str(tmp_path / "override.db")
+        with runner.isolated_filesystem():
+            with patch("remote_cmd.cli.main.build_repository") as mock_build:
+                runner.invoke(
+                    cli,
+                    ["--config", config_file, "--hosts-file", override_path, "host", "list"],
+                )
+            assert mock_build.called
+            _, kwargs = mock_build.call_args
+            assert kwargs["filepath"] == override_path
+            # 未显式指定 storage_backend，交给工厂按 .db 扩展名推断
+            assert kwargs["storage_backend"] is None
+
+    def test_hosts_file_override_json_inferred(self, runner, tmp_path):
+        """测试：--hosts-file 指向 .json 且无配置文件时使用 JSON 后端"""
+        override_path = str(tmp_path / "runtime.json")
+        with runner.isolated_filesystem():
+            with patch("remote_cmd.cli.main.build_repository") as mock_build:
+                runner.invoke(cli, ["--hosts-file", override_path, "host", "list"])
+            assert mock_build.called
+            _, kwargs = mock_build.call_args
+            assert kwargs["filepath"] == override_path
+            assert kwargs["storage_backend"] is None
+
+    def test_hosts_file_override_sqlite_round_trip(self, runner, tmp_path):
+        """测试：仅凭 --hosts-file hosts.db 即可运行时切换到 SQLite（端到端）"""
+        db_path = str(tmp_path / "runtime_hosts.db")
+        with runner.isolated_filesystem():
+            add = runner.invoke(
+                cli,
+                [
+                    "--hosts-file",
+                    db_path,
+                    "host",
+                    "add",
+                    "srv1",
+                    "10.0.0.1",
+                    "admin",
+                    "-k",
+                    "~/.ssh/id_rsa",
+                ],
+            )
+            assert add.exit_code == 0, add.output
+            result = runner.invoke(cli, ["--hosts-file", db_path, "host", "list"])
+            assert result.exit_code == 0, result.output
+            assert "srv1" in result.output
+            # 确实生成了 SQLite 数据库文件而非 JSON
+            assert os.path.exists(db_path)
 
 
 # ============================================================================

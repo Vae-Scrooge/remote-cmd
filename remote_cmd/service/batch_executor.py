@@ -18,10 +18,9 @@
     >>> print(f"succeeded: {result.success}/{result.total}")
 """
 
-import inspect
 import logging
 import time
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Coroutine
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Callable, Optional
@@ -198,6 +197,9 @@ class BatchExecutor:
         progress_callback: Optional[ProgressCallback],
     ) -> BatchResult:
         """异步内核委托路径：同步接口 + asyncio.run(异步实现)"""
+        # 仅当 _async_executor 已初始化时才进入此路径（见 execute() 的窄化判断）
+        assert self._async_executor is not None
+
         import asyncio
 
         return asyncio.run(
@@ -342,8 +344,10 @@ class BatchExecutor:
         """调用进度回调并记录日志"""
         if progress_callback:
             rv = progress_callback(completed, total, host_name)
-            if inspect.isawaitable(rv):
+            if isinstance(rv, Coroutine):
                 logger.warning("同步内核不支持异步进度回调，请使用 use_async=True")
+                # 显式关闭未 await 的协程，避免 RuntimeWarning 与资源泄漏
+                rv.close()
 
         logger.debug(
             f"[{completed}/{total}] {host_name}: "
@@ -464,10 +468,14 @@ class BatchExecutor:
                         duration=duration,
                     )
 
+                # 非连接池路径：try/finally 确保即使 execute() 抛异常，
+                # disconnect() 也会执行，避免 SSH 连接泄漏
                 client = SSHClient(config)
-                client.connect()
-                cmd_result = client.execute(command, timeout=self._command_timeout)
-                client.disconnect()
+                try:
+                    client.connect()
+                    cmd_result = client.execute(command, timeout=self._command_timeout)
+                finally:
+                    client.disconnect()
 
                 duration = time.time() - start
 

@@ -246,26 +246,44 @@ class HostService:
         这一层兜底是必需的：CLI 的默认凭据链可能不包含
         EncryptedFileCredentialProvider，但主机密码已被 add_host 加密落盘，
         若不兜底解密则 connect_to_host 会拿到加密 token 当密码使用，必然认证失败。
+
+        Note:
+            本方法返回一个新的 Host 副本，绝不就地修改仓库内存中存储的对象。
+            若直接修改 repo.get() 返回的原始引用，解密后的明文密码会污染内存
+            中的加密 token，后续任意 add_host/update_host/remove_host 触发
+            flush() 时明文密码会被写入磁盘，造成凭据泄露。
         """
         host = self._repo.get(name)
 
-        # 尝试通过凭据链解密密码
+        # 解析密码：始终写入新变量，不修改 host 原对象
+        resolved_password = host.password
         if host.password and self._encryption.is_encrypted(host.password):
             resolved = self._cred_provider.get_password(host)
             if resolved:
-                host.password = resolved
+                resolved_password = resolved
             else:
                 # 凭据链未命中，回退到本地加密器解密
                 try:
-                    host.password = self._encryption.decrypt(host.password)
+                    resolved_password = self._encryption.decrypt(host.password)
                 except Exception as e:  # noqa: BLE001
                     logger.warning(f"failed to decrypt password for {host.name}: {e}")
                     # 保留加密 token，留给 SSH 层报认证失败
 
-        # 尝试解析密钥路径
-        if host.key_filename:
+        # 解析密钥路径
+        resolved_key_filename = host.key_filename
+        if resolved_key_filename:
             from pathlib import Path
 
-            host.key_filename = str(Path(host.key_filename).expanduser())
+            resolved_key_filename = str(Path(resolved_key_filename).expanduser())
 
-        return host
+        # 返回新对象，保持仓库内存中的加密 token 不被污染
+        return Host(
+            name=host.name,
+            hostname=host.hostname,
+            username=host.username,
+            port=host.port,
+            password=resolved_password,
+            key_filename=resolved_key_filename,
+            tags=host.tags,
+            description=host.description,
+        )

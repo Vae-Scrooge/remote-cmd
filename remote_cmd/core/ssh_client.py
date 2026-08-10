@@ -13,6 +13,7 @@ Author: Vae-Scrooge
 """
 
 import logging
+import shlex
 import socket
 import stat
 from dataclasses import dataclass
@@ -377,9 +378,11 @@ class SSHClient:
             logger.debug(f"executing command: {command}")
 
             # 构建环境变量设置命令
+            # 安全：对 value 做 shlex.quote 转义，防止包含 shell 元字符
+            # （如 ;、$()、反引号）的值触发命令注入或带空格的值静默失败
             env_str = ""
             if environment:
-                env_vars = [f"export {k}={v}" for k, v in environment.items()]
+                env_vars = [f"export {k}={shlex.quote(str(v))}" for k, v in environment.items()]
                 env_str = "; ".join(env_vars) + "; "
 
             # 组合完整命令（切换到用户主目录执行）
@@ -442,8 +445,10 @@ class SSHClient:
         # 使用 exec_command + sudo -S 从 stdin 传入密码，保持 stdout/stderr 分离
         try:
             full_command = f"sudo -S {command}"
+            # get_pty=False：避免 PTY 合并 stdout/stderr（与文档"独立分离"一致），
+            # 同时关闭 PTY echo 防止 sudo 密码被回显到 stdout 造成凭据泄露
             stdin, stdout, stderr = self._client.exec_command(
-                full_command, timeout=timeout, get_pty=True
+                full_command, timeout=timeout, get_pty=False
             )
             stdin.write(password + "\n")
             stdin.flush()
@@ -458,7 +463,7 @@ class SSHClient:
                 stderr=stderr_data,
                 exit_code=exit_code,
             )
-        except paramiko.SSHException as e:
+        except (paramiko.SSHException, OSError) as e:
             raise SSHCommandError(f"sudo command execution failed '{command}': {e}") from e
 
     # ========================================================================

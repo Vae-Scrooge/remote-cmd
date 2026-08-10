@@ -18,8 +18,9 @@
 """
 
 import base64
-import contextlib
+import binascii
 import logging
+import os
 import stat as stat_module
 from pathlib import Path
 from typing import Optional
@@ -163,7 +164,7 @@ class CredentialEncryption:
                 decoded = base64.urlsafe_b64decode(key)
                 if len(decoded) != 32:
                     raise ValueError(f"Invalid key length: {len(decoded)} bytes, expected 32")
-            except (ValueError, base64.binascii.Error) as e:
+            except (ValueError, binascii.Error) as e:
                 logger.error(f"Invalid encryption key format at {self._key_path}: {e}")
                 raise CredentialEncryptionError(
                     f"Corrupted or invalid key file: {self._key_path}. "
@@ -175,9 +176,23 @@ class CredentialEncryption:
         # 生成新密钥
         key = Fernet.generate_key()
         self._key_path.parent.mkdir(parents=True, exist_ok=True)
-        self._key_path.write_bytes(key)
-        with contextlib.suppress(OSError):
-            self._key_path.chmod(0o600)
+        # 安全：原子创建密钥文件并直接设置 0600 权限，避免 write_bytes（受 umask
+        # 影响，默认可能为 0644）与 chmod(0600) 之间的 TOCTOU 窗口——在此窗口内
+        # 同机其他用户可读取主加密密钥，进而解密所有凭据。
+        # O_EXCL 同时消除多进程并发首次创建时互相覆盖密钥的竞态。
+        try:
+            fd = os.open(
+                str(self._key_path),
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                0o600,
+            )
+        except FileExistsError:
+            # 并发首次创建：另一进程已生成密钥，重新加载
+            return self._load_or_create_key()
+        try:
+            os.write(fd, key)
+        finally:
+            os.close(fd)
 
         logger.info(f"generated encryption key: {self._key_path}")
         return key

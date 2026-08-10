@@ -16,21 +16,21 @@
 """
 
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from remote_cmd.repository.host_repository import HostRepository
 from remote_cmd.repository.json_host_repository import JsonHostRepository
 from remote_cmd.repository.sqlite_host_repository import SqliteHostRepository
 
 # 显式 storage_backend 取值 -> 仓库工厂
-BACKEND_FACTORIES: dict[str, callable] = {
+BACKEND_FACTORIES: dict[str, Callable[[str], HostRepository]] = {
     "json": lambda path: JsonHostRepository(filepath=path, auto_load=True),
     "sqlite": lambda path: SqliteHostRepository(db_path=path),
     "sqlite3": lambda path: SqliteHostRepository(db_path=path),
 }
 
 # 扩展名 -> 仓库工厂
-EXTENSION_FACTORIES: dict[str, callable] = {
+EXTENSION_FACTORIES: dict[str, Callable[[str], HostRepository]] = {
     ".json": lambda path: JsonHostRepository(filepath=path, auto_load=True),
     ".db": lambda path: SqliteHostRepository(db_path=path),
     ".sqlite": lambda path: SqliteHostRepository(db_path=path),

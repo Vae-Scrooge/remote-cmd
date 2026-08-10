@@ -18,6 +18,7 @@ from remote_cmd.core.host import Host
 from remote_cmd.core.ssh_client import SSHClient
 from remote_cmd.repository.json_host_repository import JsonHostRepository
 from remote_cmd.service.host_service import HostService
+from remote_cmd.utils.exceptions import SSHConnectionError
 
 logger = logging.getLogger(__name__)
 
@@ -97,9 +98,14 @@ class HostManager:
 
         current_path = str(self._repo._filepath)
         if Path(current_path) != Path(filepath):
+            # 关键安全：使用 repo.list() 获取原始（已加密）主机数据，
+            # 而非 service.list_hosts()（会解密为明文）。
+            # 否则新建的未配置 encryption 的 JsonHostRepository 在 flush() 时
+            # 会将明文密码直接写入磁盘，造成凭据泄露。
+            encrypted_hosts = {h.name: h for h in self._repo.list()}
             # 重新初始化 repo
             self._repo = JsonHostRepository(filepath=filepath, auto_load=False)
-            self._repo.load_from_dict({h.name: h for h in self._service.list_hosts()})
+            self._repo.load_from_dict(encrypted_hosts)
         self._repo.flush()
         self._sync_hosts()
 
@@ -121,7 +127,7 @@ class HostManager:
         try:
             with self.connect_to_host(name) as client:
                 return client.is_connected()
-        except OSError as e:
+        except (OSError, SSHConnectionError) as e:
             logger.error(f"主机 {name} 连接测试失败: {e}")
             return False
 

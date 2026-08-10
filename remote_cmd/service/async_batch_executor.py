@@ -102,9 +102,15 @@ class AsyncBatchExecutor:
                 completed_counter = completed
 
                 if progress_callback is not None:
-                    rv = progress_callback(completed, total, name)
-                    if asyncio.iscoroutine(rv):
-                        await rv
+                    # 包裹回调：用户提供的 progress_callback 抛异常时不应中断整个批次，
+                    # 否则 gather 会向上抛出首异常、BatchResult 永不构建、
+                    # 已完成结果丢失且其余 task 沦为孤儿。
+                    try:
+                        rv = progress_callback(completed, total, name)
+                        if asyncio.iscoroutine(rv):
+                            await rv
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning("progress_callback for %s raised: %s", name, e)
 
                 logger.debug(
                     "[%s/%s] %s: %s (%.1fs)",
@@ -115,7 +121,10 @@ class AsyncBatchExecutor:
 
         tasks = [asyncio.create_task(_per_host(n)) for n in host_names]
         try:
-            await asyncio.gather(*tasks)
+            # return_exceptions=True 作为兜底：即使 _per_host 意外抛出异常，
+            # 也不会中断其他任务或使 BatchResult 构建被跳过。
+            # KeyboardInterrupt 属于 BaseException，仍会被下方 except 捕获。
+            await asyncio.gather(*tasks, return_exceptions=True)
         except KeyboardInterrupt:
             logger.warning("batch execution interrupted by user")
             await self._cancel_and_mark_interrupted(tasks, host_names, results, command)

@@ -73,7 +73,10 @@ class AsyncConnectionPool:
     def get_metrics(self) -> dict[str, Any]:
         """获取连接池指标快照。"""
         return {
-            "active": self._total_created - self._total_released,
+            # 当前在用的连接数 = 存活连接总数 - 空闲连接数。
+            # 不能用 total_created - total_released：复用连接时
+            # total_released 会超过 total_created，导致 active 为负。
+            "active": len(self._connections) - self._free.qsize(),
             "idle": self._free.qsize(),
             "total_connections": len(self._connections),
             "total_created": self._total_created,
@@ -135,7 +138,8 @@ class AsyncConnectionPool:
             return
 
         try:
-            self._free.put_nowait(conn)
+            async with self._lock:
+                self._free.put_nowait(conn)
             # 放回 free 后释放许可：free 中的连接不再占用并发槽位，
             # 后续 acquire 会从 free 直接复用（无需再次获取许可）
             self._semaphore.release()
@@ -220,9 +224,15 @@ class AsyncConnectionPool:
 
     async def _cleanup_expired(self) -> None:
         now = time.time()
-        kept: asyncio.Queue[AsyncSSHClient] = asyncio.Queue()
-        while not self._free.empty():
-            conn = self._free.get_nowait()
+        # 在锁保护下排空 _free 快照，绝不替换队列对象。
+        # 旧实现 self._free = kept 会替换队列对象，在 await 让出点 release()
+        # 可能 put 到旧队列导致连接泄漏（asyncio 协程交错使竞态比同步版更易触发）。
+        async with self._lock:
+            snapshot: list[AsyncSSHClient] = []
+            while not self._free.empty():
+                snapshot.append(self._free.get_nowait())
+        keep: list[AsyncSSHClient] = []
+        for conn in snapshot:
             meta = self._meta.get(id(conn))
             if meta is None:
                 await self._close_connection(conn)
@@ -230,10 +240,13 @@ class AsyncConnectionPool:
             age = now - meta["created_at"]
             idle = now - meta["last_used"]
             if age < self._max_lifetime and idle < self._idle_timeout and conn.is_connected():
-                await kept.put(conn)
+                keep.append(conn)
             else:
                 await self._close_connection(conn)
-        self._free = kept
+        # 将存活连接放回同一队列对象
+        async with self._lock:
+            for conn in keep:
+                self._free.put_nowait(conn)
 
     # ------------------------------------------------------------------
     # 上下文管理

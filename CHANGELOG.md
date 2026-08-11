@@ -7,6 +7,8 @@
 
 ## [Unreleased]
 
+## [1.2.2] - 2026-08-06
+
 ### Added
 - `EnvCredentialProvider` 支持主机专属环境变量（`REMOTE_CMD_PASSWORD_<HOST>`，优先于全局 `REMOTE_CMD_PASSWORD`），避免全局变量被误应用到所有主机
 - `SqliteHostRepository` 支持 `encryption` 参数：配置后密码自动加密落库、读取时自动解密

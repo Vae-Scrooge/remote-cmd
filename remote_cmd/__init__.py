@@ -48,11 +48,11 @@ Remote CMD - SSH 远程服务器管理工具
     - 文档: 参见 docs/ 目录
 
 Author: Vae-Scrooge
-Version: 1.2.1
+Version: 1.2.2
 License: MIT
 """
 
-__version__ = "1.2.1"
+__version__ = "1.2.2"
 __author__ = "Vae-Scrooge"
 __email__ = "vae-scrooge@example.com"
 __license__ = "MIT"

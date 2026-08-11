@@ -119,10 +119,13 @@ class Host:
         # 脱敏密码：显示加密状态而非明文
         pw = data.get("password")
         if pw:
-            data["password"] = "***encrypted***" if isinstance(pw, str) and pw.startswith("$encrypted$") else "***"
+            data["password"] = (
+                "***encrypted***" if isinstance(pw, str) and pw.startswith("$encrypted$") else "***"
+            )
         # 脱敏密钥路径：仅显示文件名
         if data.get("key_filename"):
             from pathlib import Path
+
             data["key_filename"] = Path(data["key_filename"]).name
         return data
 

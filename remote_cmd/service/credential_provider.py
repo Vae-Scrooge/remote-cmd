@@ -48,6 +48,14 @@ class EnvCredentialProvider(CredentialProvider):
     适用于 CI/CD 或容器环境。
     优先级低于交互式输入但高于默认值。
 
+    支持两种查找方式（按优先级）：
+    1. 主机专属变量 ``<env_var>_<HOST>``（主机名大写，非字母数字替换为 ``_``）
+    2. 全局变量 ``<env_var>``
+
+    示例：
+        - 全局：``REMOTE_CMD_PASSWORD=secret`` 对所有主机生效
+        - 专属：``REMOTE_CMD_PASSWORD_WEB1=secret`` 仅对名为 ``web1`` 的主机生效
+
     Args:
         env_var: 环境变量名（默认 REMOTE_CMD_PASSWORD）
     """
@@ -55,9 +63,20 @@ class EnvCredentialProvider(CredentialProvider):
     def __init__(self, env_var: str = "REMOTE_CMD_PASSWORD"):
         self._env_var = env_var
 
-    def get_password(self, _host: Host) -> Optional[str]:
-        password = os.environ.get(self._env_var)
-        return password
+    @staticmethod
+    def _host_env_suffix(host_name: str) -> str:
+        """将主机名转换为环境变量后缀：web1 -> WEB1，my-host -> MY_HOST"""
+        normalized = "".join(c if c.isalnum() else "_" for c in host_name).upper()
+        return normalized
+
+    def get_password(self, host: Host) -> Optional[str]:
+        # 优先主机专属变量，避免全局变量被应用到所有主机
+        if host and host.name:
+            host_var = f"{self._env_var}_{self._host_env_suffix(host.name)}"
+            host_password = os.environ.get(host_var)
+            if host_password is not None:
+                return host_password
+        return os.environ.get(self._env_var)
 
 
 class EncryptedFileCredentialProvider(CredentialProvider):

@@ -141,6 +141,10 @@ class TestAsyncConnectionPool:
         try:
             c1 = await pool.acquire()
             await pool.release(c1)
+            # 让连接空闲超过 idle_timeout，强制触发探活路径
+            import time as _time
+
+            pool._meta[id(c1)]["last_used"] = _time.time() - pool._idle_timeout - 1
             # 让探活失败：execute 抛异常
             c1.execute = AsyncMock(side_effect=OSError("connection dead"))
             c2 = await pool.acquire()

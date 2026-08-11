@@ -85,7 +85,9 @@ class AsyncBatchExecutor:
 
         logger.info(
             "异步批量执行开始: %s 台主机, 并发=%s, 命令='%s'",
-            total, self._max_concurrency, command,
+            total,
+            self._max_concurrency,
+            command,
         )
 
         completed_counter = 0
@@ -114,7 +116,9 @@ class AsyncBatchExecutor:
 
                 logger.debug(
                     "[%s/%s] %s: %s (%.1fs)",
-                    completed, total, name,
+                    completed,
+                    total,
+                    name,
                     "✓" if result.success else "✗",
                     result.duration,
                 )
@@ -132,7 +136,12 @@ class AsyncBatchExecutor:
         duration = time.time() - start
         success_count = sum(1 for r in results.values() if r.success)
         failed_count = total - success_count
-        logger.info("async batch execution finished: %s/%s succeeded, took %.1fs", success_count, total, duration)
+        logger.info(
+            "async batch execution finished: %s/%s succeeded, took %.1fs",
+            success_count,
+            total,
+            duration,
+        )
 
         return BatchResult(
             total=total,
@@ -177,16 +186,21 @@ class AsyncBatchExecutor:
             host: Host = self._host_service.resolve_host(host_name)
         except KeyError as e:
             return BatchHostResult(
-                host=host_name, success=False, command=command,
+                host=host_name,
+                success=False,
+                command=command,
                 error=f"host not found: {e}",
             )
         except (RuntimeError, OSError) as e:
             return BatchHostResult(
-                host=host_name, success=False, command=command,
+                host=host_name,
+                success=False,
+                command=command,
                 error=f"host resolution failed: {e}",
             )
 
         last_error: Optional[str] = None
+        last_duration = 0.0
         for attempt in range(retry_count + 1):
             start = time.time()
             try:
@@ -200,7 +214,8 @@ class AsyncBatchExecutor:
                 )
                 async with AsyncSSHClient(config) as client:
                     cmd_result = await client.execute(
-                        command, timeout=self._command_timeout,
+                        command,
+                        timeout=self._command_timeout,
                     )
                 duration = time.time() - start
                 return BatchHostResult(
@@ -214,16 +229,23 @@ class AsyncBatchExecutor:
                 )
             except Exception as e:  # noqa: BLE001
                 last_error = str(e)
+                last_duration = time.time() - start
                 logger.debug(
                     "%s 第 %s/%s 次尝试失败: %s",
-                    host_name, attempt + 1, retry_count + 1, e,
+                    host_name,
+                    attempt + 1,
+                    retry_count + 1,
+                    e,
                 )
                 if attempt < retry_count:
                     await asyncio.sleep(retry_delay)
 
         return BatchHostResult(
-            host=host_name, success=False, command=command,
-            error=last_error, duration=0.0,
+            host=host_name,
+            success=False,
+            command=command,
+            error=last_error,
+            duration=last_duration,
         )
 
 

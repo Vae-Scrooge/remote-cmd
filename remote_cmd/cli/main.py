@@ -268,6 +268,7 @@ def host_show(ctx, name: str):
         if host.key_filename:
             # Sanitize key path: show only the filename, not full path
             from pathlib import Path
+
             key_name = Path(host.key_filename).name
             click.echo(f"  Key file:   {key_name}")
         tags_str = ", ".join(host.tags) if host.tags else "-"
@@ -424,7 +425,9 @@ def batch_run(
         use_async=use_async,
     )
 
-    click.echo(f"Batch running on {len(host_names)} hosts, command='{command}', concurrency={concurrency}")
+    click.echo(
+        f"Batch running on {len(host_names)} hosts, command='{command}', concurrency={concurrency}"
+    )
     click.echo()
 
     bar: Any

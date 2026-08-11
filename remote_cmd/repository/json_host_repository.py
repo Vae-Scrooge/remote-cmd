@@ -55,7 +55,13 @@ class JsonHostRepository(HostRepository):
     # ========================================================================
 
     def save(self, host: Host) -> None:
-        """保存主机到内存，随后需要调用 flush() 写入文件"""
+        """
+        保存主机到内存，随后需要调用 flush() 写入文件
+
+        注意: 本方法不会加密密码。password 的加密发生在 flush() 序列化阶段
+        （仅当构造时传入了 encryption）。请勿绕过 HostService 直接以明文
+        密码调用 save() 后再 flush() 落盘——确保传入了 encryption。
+        """
         self._hosts[host.name] = host
 
     def get(self, name: str) -> Host:

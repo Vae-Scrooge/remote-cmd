@@ -319,9 +319,7 @@ class BatchExecutor:
 
         return completed
 
-    def _process_future_result(
-        self, future, host_name: str, command: str
-    ) -> BatchHostResult:
+    def _process_future_result(self, future, host_name: str, command: str) -> BatchHostResult:
         """处理单个 future 结果，捕获调度异常"""
         try:
             return future.result()
@@ -440,6 +438,7 @@ class BatchExecutor:
             )
 
         last_error: Optional[str] = None
+        last_duration = 0.0
 
         for attempt in range(retry_count + 1):
             start = time.time()
@@ -492,6 +491,7 @@ class BatchExecutor:
             except Exception as e:  # noqa: BLE001
                 duration = time.time() - start
                 last_error = str(e)
+                last_duration = duration
                 logger.debug(f"attempt {attempt + 1}/{retry_count + 1} failed for {host_name}: {e}")
 
                 # 如果不是最后一次尝试，等待后重试
@@ -504,7 +504,7 @@ class BatchExecutor:
             success=False,
             command=command,
             error=last_error,
-            duration=0.0,
+            duration=last_duration,
         )
 
 

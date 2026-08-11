@@ -39,6 +39,43 @@ class TestEnvCredentialProvider:
         finally:
             del os.environ["TEST_CREDENTIAL_EMPTY"]
 
+    def test_per_host_env_var_takes_precedence(self):
+        """测试：主机专属变量优先于全局变量"""
+        os.environ["TEST_CREDENTIAL"] = "global"
+        os.environ["TEST_CREDENTIAL_WEB1"] = "web1_secret"
+        try:
+            provider = EnvCredentialProvider("TEST_CREDENTIAL")
+            web1 = Host(name="web1", hostname="1", username="u")
+            assert provider.get_password(web1) == "web1_secret"
+            # 其他主机仍回退到全局变量
+            other = Host(name="db1", hostname="2", username="u")
+            assert provider.get_password(other) == "global"
+        finally:
+            del os.environ["TEST_CREDENTIAL"]
+            del os.environ["TEST_CREDENTIAL_WEB1"]
+
+    def test_per_host_env_var_hostname_normalization(self):
+        """测试：主机名中的非字母数字字符替换为下划线"""
+        os.environ["TEST_CREDENTIAL_MY_HOST"] = "secret"
+        try:
+            provider = EnvCredentialProvider("TEST_CREDENTIAL")
+            host = Host(name="my-host", hostname="1", username="u")
+            assert provider.get_password(host) == "secret"
+        finally:
+            del os.environ["TEST_CREDENTIAL_MY_HOST"]
+
+    def test_per_host_env_var_only(self):
+        """测试：仅设主机专属变量时，其他主机回退到全局（None）"""
+        os.environ["TEST_CREDENTIAL_DB1"] = "db_secret"
+        try:
+            provider = EnvCredentialProvider("TEST_CREDENTIAL")
+            db1 = Host(name="db1", hostname="1", username="u")
+            assert provider.get_password(db1) == "db_secret"
+            other = Host(name="web1", hostname="2", username="u")
+            assert provider.get_password(other) is None
+        finally:
+            del os.environ["TEST_CREDENTIAL_DB1"]
+
 
 class TestChainCredentialProvider:
     """链式凭据提供者测试"""

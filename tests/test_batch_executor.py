@@ -200,6 +200,34 @@ class TestBatchExecutor:
         assert result.success == 1
         assert mock_instance.execute.call_count == 2
 
+    @patch("remote_cmd.service.batch_executor.SSHClient")
+    def test_retry_exhausted_preserves_duration(self, mock_ssh_class):
+        """测试：所有重试失败时，结果保留最后一次尝试的耗时"""
+        host = Host(name="srv1", hostname="10.0.0.1", username="admin")
+        service = self.make_mock_service([host])
+
+        mock_instance = MagicMock()
+        mock_ssh_class.return_value = mock_instance
+
+        def execute_always_fail(command, timeout=None):  # noqa: ARG001
+            raise Exception("Connection reset")
+
+        mock_instance.execute.side_effect = execute_always_fail
+
+        from remote_cmd.service.batch_executor import BatchExecutor
+
+        executor = BatchExecutor(host_service=service)
+        result = executor.execute(["srv1"], "uptime", retry_count=2, retry_delay=0.01)
+
+        assert result.total == 1
+        assert result.success == 0
+        host_result = result.results["srv1"]
+        assert host_result.success is False
+        assert host_result.error == "Connection reset"
+        # duration 应为正数（记录了尝试耗时），而非恒为 0
+        assert host_result.duration > 0.0
+        assert mock_instance.execute.call_count == 3
+
     def test_progress_callback(self):
         """测试：进度回调"""
         host = Host(name="srv1", hostname="10.0.0.1", username="admin")

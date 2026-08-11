@@ -7,6 +7,17 @@
 
 ## [Unreleased]
 
+### Added
+- `EnvCredentialProvider` 支持主机专属环境变量（`REMOTE_CMD_PASSWORD_<HOST>`，优先于全局 `REMOTE_CMD_PASSWORD`），避免全局变量被误应用到所有主机
+- `SqliteHostRepository` 支持 `encryption` 参数：配置后密码自动加密落库、读取时自动解密
+
+### Changed
+- `AsyncConnectionPool._check_connection` 增加空闲 fast-path：连接刚使用过（空闲未超时）时跳过探活，与 `SyncConnectionPool` 行为对齐，减少高并发下的多余往返
+
+### Fixed
+- `BatchExecutor` / `AsyncBatchExecutor` 重试全部失败时 `BatchHostResult.duration` 恒为 0，现在保留最后一次尝试的实际耗时
+- `JsonHostRepository` / `SqliteHostRepository` 的 `save()` 补充文档警告：不加密直接持久化明文密码须由调用方负责
+
 ## [1.2.1] - 2026-08-06
 
 ### Fixed

@@ -1,11 +1,48 @@
 """SqliteHostRepository 主机存储测试"""
 
+import sqlite3
+
 from remote_cmd.core.host import Host
 from remote_cmd.repository.sqlite_host_repository import SqliteHostRepository
+from remote_cmd.utils.crypto import CredentialEncryption
 
 
 class TestSqliteHostRepository:
     """SqliteHostRepository 集成测试"""
+
+    # --- 加密 ---
+
+    def test_encryption_roundtrip(self, temp_db_path):
+        """测试：配置 encryption 后密码加密落库并可解密读取"""
+        encryption = CredentialEncryption()
+        repo = SqliteHostRepository(temp_db_path, encryption=encryption)
+        repo.save(Host(name="srv1", hostname="10.0.0.1", username="admin", password="plain_secret"))
+
+        # 读取返回解密后的明文
+        retrieved = repo.get("srv1")
+        assert retrieved.password == "plain_secret"
+
+        # 落库内容是加密 token（非明文）
+        conn = sqlite3.connect(temp_db_path)
+        try:
+            row = conn.execute("SELECT password FROM hosts WHERE name = ?", ("srv1",)).fetchone()
+            assert row is not None
+            assert row[0] != "plain_secret"
+            assert encryption.is_encrypted(row[0])
+        finally:
+            conn.close()
+
+    def test_without_encryption_stores_plaintext(self, temp_db_path):
+        """测试：未配置 encryption 时明文直接落库（兼容旧行为）"""
+        repo = SqliteHostRepository(temp_db_path)
+        repo.save(Host(name="srv1", hostname="10.0.0.1", username="admin", password="plain_secret"))
+
+        conn = sqlite3.connect(temp_db_path)
+        try:
+            row = conn.execute("SELECT password FROM hosts WHERE name = ?", ("srv1",)).fetchone()
+            assert row[0] == "plain_secret"
+        finally:
+            conn.close()
 
     # --- CRUD ---
 

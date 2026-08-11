@@ -97,11 +97,7 @@ class AsyncSSHClient:
             raise SSHConnectionError(f"authentication failed: {e}") from e
         except (OSError, asyncssh.Error) as e:
             msg = str(e).lower()
-            if (
-                "timed out" in msg
-                or "timeout" in msg
-                or isinstance(e, asyncssh.TimeoutError)
-            ):
+            if "timed out" in msg or "timeout" in msg or isinstance(e, asyncssh.TimeoutError):
                 raise SSHConnectionError(f"connection timeout: {self.config.hostname}") from e
             raise SSHConnectionError(f"connection error: {e}") from e
 
@@ -210,11 +206,15 @@ class AsyncSSHClient:
         except (OSError, asyncssh.Error) as e:
             raise SSHCommandError(f"command execution failed '{command}': {e}") from e
 
-        stdout_data = result.stdout if isinstance(result.stdout, str) else (
-            result.stdout.decode("utf-8", errors="replace") if result.stdout else ""
+        stdout_data = (
+            result.stdout
+            if isinstance(result.stdout, str)
+            else (result.stdout.decode("utf-8", errors="replace") if result.stdout else "")
         )
-        stderr_data = result.stderr if isinstance(result.stderr, str) else (
-            result.stderr.decode("utf-8", errors="replace") if result.stderr else ""
+        stderr_data = (
+            result.stderr
+            if isinstance(result.stderr, str)
+            else (result.stderr.decode("utf-8", errors="replace") if result.stderr else "")
         )
         exit_code = int(result.exit_status) if result.exit_status is not None else -1
 
@@ -252,11 +252,13 @@ class AsyncSSHClient:
             raise SSHCommandError(f"sudo command execution failed '{command}': {e}") from e
 
         stdout_data = (
-            result.stdout if isinstance(result.stdout, str)
+            result.stdout
+            if isinstance(result.stdout, str)
             else (result.stdout.decode("utf-8", errors="replace") if result.stdout else "")
         )
         stderr_data = (
-            result.stderr if isinstance(result.stderr, str)
+            result.stderr
+            if isinstance(result.stderr, str)
             else (result.stderr.decode("utf-8", errors="replace") if result.stderr else "")
         )
         return CommandResult(

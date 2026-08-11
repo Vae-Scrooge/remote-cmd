@@ -185,7 +185,12 @@ class AsyncConnectionPool:
         if age > self._max_lifetime:
             logger.debug("connection %s exceeded max lifetime", meta.get("conn_id", "?")[:8])
             return False
-        # 触发轻量探活：发出一个无害命令
+        # 连接刚使用过（空闲未超时）则信任其状态，避免频繁探活开销
+        # （与 SyncConnectionPool._check_connection 保持一致）
+        idle = time.time() - meta["last_used"]
+        if idle < self._idle_timeout:
+            return True
+        # 空闲较久才触发轻量探活：发出一个无害命令
         try:
             result = await conn.execute("true", timeout=5)
             return result.success

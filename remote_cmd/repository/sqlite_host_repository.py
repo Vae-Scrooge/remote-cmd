@@ -25,6 +25,7 @@ from typing import Optional
 
 from remote_cmd.core.host import Host
 from remote_cmd.repository.host_repository import HostRepository
+from remote_cmd.utils.crypto import CredentialEncryption
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +72,10 @@ class SqliteHostRepository(HostRepository):
         db_path: SQLite 数据库文件路径
         migrate_from: JSON 文件路径，用于自动迁移（仅首次使用）
         auto_create: 是否自动创建表和数据库，默认 True
+        encryption: 可选的凭据加密器（设置后 save() 自动加密 password）
+
+    注意: 密码的加密依赖传入 encryption。若直接以明文密码调用 save()
+    且未提供 encryption，明文会被持久化到数据库。请勿绕过 HostService。
     """
 
     def __init__(
@@ -78,9 +83,11 @@ class SqliteHostRepository(HostRepository):
         db_path: str,
         migrate_from: Optional[str] = None,
         auto_create: bool = True,
+        encryption: Optional[CredentialEncryption] = None,
     ):
         self._db_path = db_path
         self._lock = threading.Lock()
+        self._encryption = encryption
 
         if auto_create:
             self._init_db()
@@ -197,6 +204,10 @@ class SqliteHostRepository(HostRepository):
         """保存或更新主机"""
         with self._lock, self._txn() as conn:
             tags_json = json.dumps(host.tags or [], ensure_ascii=False)
+            # 配置了加密器时，明文密码先加密再落库
+            password = host.password
+            if password and self._encryption and not self._encryption.is_encrypted(password):
+                password = self._encryption.encrypt(password)
             conn.execute(
                 """
                     INSERT INTO hosts (name, hostname, username, port, password,
@@ -217,7 +228,7 @@ class SqliteHostRepository(HostRepository):
                     host.hostname,
                     host.username,
                     host.port,
-                    host.password,
+                    password,
                     host.key_filename,
                     tags_json,
                     host.description,
@@ -371,8 +382,7 @@ class SqliteHostRepository(HostRepository):
     # 内部辅助
     # ========================================================================
 
-    @staticmethod
-    def _row_to_host(row: sqlite3.Row) -> Host:
+    def _row_to_host(self, row: sqlite3.Row) -> Host:
         """
         将 SQLite 行转换为 Host 对象
 
@@ -393,12 +403,21 @@ class SqliteHostRepository(HostRepository):
         except (json.JSONDecodeError, TypeError):
             pass
 
+        # 配置了加密器时解密密码
+        password = row["password"]
+        if password and self._encryption and self._encryption.is_encrypted(password):
+            try:
+                password = self._encryption.decrypt(password)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("failed to decrypt password for host '%s': %s", row["name"], e)
+                password = None
+
         return Host(
             name=row["name"],
             hostname=row["hostname"],
             username=row["username"],
             port=row["port"],
-            password=row["password"],
+            password=password,
             key_filename=row["key_filename"],
             tags=tags,
             description=row["description"] or "",

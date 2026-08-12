@@ -7,6 +7,21 @@
 
 ## [Unreleased]
 
+## [1.2.3] - 2026-08-11
+
+### Added
+- `storage_factory.build_repository` 新增 `encryption` 参数并透传至 JSON/SQLite 仓库：
+  作为防御深度，即使调用方绕过 `HostService` 直接 `save()` 明文密码，落盘仍是密文
+- CLI 构建 `HostService` 时传入 `CredentialEncryption`，开启仓库级加密
+
+### Changed
+- `EnvCredentialProvider._host_env_suffix` 补充文档：非字母数字字符统一归一化为
+  下划线，`web-1` 与 `web_1` 会映射到同一环境变量（需统一主机命名）
+
+### Fixed
+- `tests/integration/conftest.py` 缺失的 `# noqa: ARG002` 标注
+- ruff format 全仓库统一格式
+
 ## [1.2.2] - 2026-08-06
 
 ### Added

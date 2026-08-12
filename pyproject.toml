@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "remote_cmd_manager"
-version = "1.2.2"
+version = "1.2.3"
 description = "SSH 远程服务器管理工具 / Python SSH remote server management tool"
 readme = "README.md"
 requires-python = ">=3.9"

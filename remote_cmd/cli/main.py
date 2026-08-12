@@ -34,6 +34,7 @@ from remote_cmd.service.credential_provider import (
 from remote_cmd.service.host_service import HostService
 from remote_cmd.service.storage_factory import build_repository
 from remote_cmd.utils.config import get_default_config_path, load_config
+from remote_cmd.utils.crypto import CredentialEncryption
 
 
 def _build_service(config_file: str, storage_backend: Optional[str] = None) -> HostService:
@@ -49,7 +50,11 @@ def _build_service(config_file: str, storage_backend: Optional[str] = None) -> H
     explicitly, otherwise inferred from the config file extension:
     .json -> JsonHostRepository; .db/.sqlite -> SqliteHostRepository.
     """
-    repo = build_repository(filepath=config_file, storage_backend=storage_backend)
+    repo = build_repository(
+        filepath=config_file,
+        storage_backend=storage_backend,
+        encryption=CredentialEncryption(),
+    )
     cred_provider = ChainCredentialProvider(
         [
             EnvCredentialProvider(),

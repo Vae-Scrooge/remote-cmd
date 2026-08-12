@@ -282,9 +282,7 @@ class TestBatchExecutor:
         future_map = {}
 
         # 调用 _handle_interrupt
-        executor._handle_interrupt(
-            future_map, ["srv1", "srv2", "srv3"], "uptime", existing_results
-        )
+        executor._handle_interrupt(future_map, ["srv1", "srv2", "srv3"], "uptime", existing_results)
 
         # 验证：srv1 保留原结果，srv2/srv3 被标记为 user interrupted
         assert existing_results["srv1"].success is True
@@ -390,6 +388,7 @@ class TestBatchExecutor:
             pass
 
         import logging
+
         with caplog.at_level(logging.WARNING, logger="remote_cmd.service.batch_executor"):
             executor = BatchExecutor(host_service=service)
             executor.execute(["srv1"], "uptime", progress_callback=async_callback)

@@ -7,6 +7,9 @@
 - 未知扩展名且无显式配置时抛出 ValueError
 """
 
+import json
+import sqlite3
+
 import pytest
 
 from remote_cmd.repository.json_host_repository import JsonHostRepository
@@ -80,3 +83,48 @@ class TestBuildRepository:
         """默认 hosts.json 行为保持为 JSON 存储，不破坏兼容性"""
         repo = build_repository(str(tmp_path / "hosts.json"))
         assert isinstance(repo, JsonHostRepository)
+
+    def test_encryption_wired_into_json_repo(self, tmp_path):
+        """测试：传入 encryption 后 JSON 仓库在写入时加密密码"""
+        from remote_cmd.core.host import Host
+        from remote_cmd.utils.crypto import CredentialEncryption
+
+        path = str(tmp_path / "hosts.json")
+        repo = build_repository(path, encryption=CredentialEncryption())
+        repo.save(Host(name="srv1", hostname="10.0.0.1", username="admin", password="secret"))
+        repo.flush()
+
+        with open(path, encoding="utf-8") as f:
+            raw = json.load(f)
+        stored = raw["hosts"]["srv1"]["password"]
+        assert stored != "secret"
+        assert stored.startswith("$encrypted$") or "encrypted" in stored
+
+    def test_encryption_wired_into_sqlite_repo(self, tmp_path):
+        """测试：传入 encryption 后 SQLite 仓库在写入时加密密码"""
+        from remote_cmd.core.host import Host
+        from remote_cmd.utils.crypto import CredentialEncryption
+
+        path = str(tmp_path / "hosts.db")
+        repo = build_repository(path, encryption=CredentialEncryption())
+        repo.save(Host(name="srv1", hostname="10.0.0.1", username="admin", password="secret"))
+
+        conn = sqlite3.connect(path)
+        try:
+            row = conn.execute("SELECT password FROM hosts WHERE name = ?", ("srv1",)).fetchone()
+            assert row[0] != "secret"
+        finally:
+            conn.close()
+
+    def test_without_encryption_preserves_old_behavior(self, tmp_path):
+        """测试：不传 encryption 时保持原有行为（明文直存，兼容）"""
+        from remote_cmd.core.host import Host
+
+        path = str(tmp_path / "hosts.json")
+        repo = build_repository(path)
+        repo.save(Host(name="srv1", hostname="10.0.0.1", username="admin", password="secret"))
+        repo.flush()
+
+        with open(path, encoding="utf-8") as f:
+            raw = json.load(f)
+        assert raw["hosts"]["srv1"]["password"] == "secret"

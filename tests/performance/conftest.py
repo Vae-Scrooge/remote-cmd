@@ -84,9 +84,7 @@ def patched_async_client():
             await asyncio.sleep(state["latency"])
             return CommandResult(command=command, stdout="OK", stderr="", exit_code=0)
 
-    with patch(
-        "remote_cmd.service.async_batch_executor.AsyncSSHClient", _StubClient
-    ):
+    with patch("remote_cmd.service.async_batch_executor.AsyncSSHClient", _StubClient):
         yield state
 
 

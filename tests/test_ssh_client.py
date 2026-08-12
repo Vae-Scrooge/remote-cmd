@@ -256,13 +256,19 @@ class TestSSHClientExecute:
     def test_execute_ssh_exception(self, mock_paramiko):
         mock_paramiko.exec_command.side_effect = paramiko.SSHException("channel error")
         config = ConnectionConfig(hostname="h", username="u")
-        with SSHClient(config) as client, pytest.raises(SSHCommandError, match="command execution failed"):
+        with (
+            SSHClient(config) as client,
+            pytest.raises(SSHCommandError, match="command execution failed"),
+        ):
             client.execute("ls")
 
     def test_execute_os_error(self, mock_paramiko):
         mock_paramiko.exec_command.side_effect = OSError("pipe broken")
         config = ConnectionConfig(hostname="h", username="u")
-        with SSHClient(config) as client, pytest.raises(SSHCommandError, match="command execution failed"):
+        with (
+            SSHClient(config) as client,
+            pytest.raises(SSHCommandError, match="command execution failed"),
+        ):
             client.execute("ls")
 
     def test_execute_stdout_decoding(self, mock_paramiko):
@@ -323,8 +329,9 @@ class TestSSHClientFileTransfer:
 
     def test_upload_missing_local(self, mock_paramiko):  # noqa: ARG002
         config = ConnectionConfig(hostname="h", username="u")
-        with SSHClient(config) as client, pytest.raises(
-            SSHFileTransferError, match="Local file not found"
+        with (
+            SSHClient(config) as client,
+            pytest.raises(SSHFileTransferError, match="Local file not found"),
         ):
             client.upload_file("/no/file", "/remote/x")
 
@@ -334,8 +341,9 @@ class TestSSHClientFileTransfer:
         sftp = mock_paramiko.open_sftp.return_value
         sftp.put.side_effect = paramiko.SSHException("transfer fail")
         config = ConnectionConfig(hostname="h", username="u")
-        with SSHClient(config) as client, pytest.raises(
-            SSHFileTransferError, match="file upload failed"
+        with (
+            SSHClient(config) as client,
+            pytest.raises(SSHFileTransferError, match="file upload failed"),
         ):
             client.upload_file(str(local), "/remote/x")
 
@@ -352,8 +360,9 @@ class TestSSHClientFileTransfer:
         sftp = mock_paramiko.open_sftp.return_value
         sftp.get.side_effect = OSError("disk full")
         config = ConnectionConfig(hostname="h", username="u")
-        with SSHClient(config) as client, pytest.raises(
-            SSHFileTransferError, match="file download failed"
+        with (
+            SSHClient(config) as client,
+            pytest.raises(SSHFileTransferError, match="file download failed"),
         ):
             client.download_file("/remote/x", str(tmp_path / "x.txt"))
 
@@ -377,8 +386,9 @@ class TestSSHClientFileTransfer:
         sftp = mock_paramiko.open_sftp.return_value
         sftp.listdir_attr.side_effect = paramiko.SSHException("ls fail")
         config = ConnectionConfig(hostname="h", username="u")
-        with SSHClient(config) as client, pytest.raises(
-            SSHFileTransferError, match="failed to list remote directory"
+        with (
+            SSHClient(config) as client,
+            pytest.raises(SSHFileTransferError, match="failed to list remote directory"),
         ):
             client.list_remote_directory("/")
 
@@ -400,8 +410,9 @@ class TestSSHClientFileTransfer:
         sftp = mock_paramiko.open_sftp.return_value
         sftp.remove.side_effect = paramiko.SSHException("rm fail")
         config = ConnectionConfig(hostname="h", username="u")
-        with SSHClient(config) as client, pytest.raises(
-            SSHFileTransferError, match="failed to delete remote file"
+        with (
+            SSHClient(config) as client,
+            pytest.raises(SSHFileTransferError, match="failed to delete remote file"),
         ):
             client.remove_remote_file("/remote/x.txt")
 
@@ -457,8 +468,9 @@ class TestSSHClientFileTransfer:
         sftp = mock_paramiko.open_sftp.return_value
         sftp.stat.side_effect = paramiko.SSHException("stat fail")
         config = ConnectionConfig(hostname="h", username="u")
-        with SSHClient(config) as client, pytest.raises(
-            SSHFileTransferError, match="failed to get file info"
+        with (
+            SSHClient(config) as client,
+            pytest.raises(SSHFileTransferError, match="failed to get file info"),
         ):
             client.get_remote_file_info("/remote/x.txt")
 
@@ -501,8 +513,9 @@ class TestSSHClientFileTransfer:
         sftp.stat.side_effect = OSError("not found")
         sftp.mkdir.side_effect = paramiko.SSHException("mkdir fail")
         config = ConnectionConfig(hostname="h", username="u")
-        with SSHClient(config) as c, pytest.raises(
-            SSHFileTransferError, match="failed to create remote directory"
+        with (
+            SSHClient(config) as c,
+            pytest.raises(SSHFileTransferError, match="failed to create remote directory"),
         ):
             c.create_remote_directory("/a/b")
 

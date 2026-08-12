@@ -247,9 +247,7 @@ class TestAsyncConnectionPool:
     async def test_monitor_loop_handles_exception(self, config, patched_client):
         """测试：监控循环中异常被捕获并继续运行"""
         pool = AsyncConnectionPool(config=config, health_check_interval=0.01)
-        pool._cleanup_expired = AsyncMock(
-            side_effect=[RuntimeError("boom"), None, None, None]
-        )
+        pool._cleanup_expired = AsyncMock(side_effect=[RuntimeError("boom"), None, None, None])
         pool._start_monitor()
         await asyncio.sleep(0.05)
         pool.stop_monitor()
@@ -259,6 +257,7 @@ class TestAsyncConnectionPool:
     @pytest.mark.asyncio
     async def test_create_connection_failure(self, config):
         """测试：创建连接失败时释放信号量并累计失败数"""
+
         def failing_factory(cfg):
             client = _client_mock()
             client.connect = AsyncMock(side_effect=OSError("auth failed"))
@@ -266,10 +265,13 @@ class TestAsyncConnectionPool:
 
         pool = AsyncConnectionPool(config=config, max_connections=1)
         try:
-            with patch(
-                "remote_cmd.core.async_connection_pool.AsyncSSHClient",
-                side_effect=failing_factory,
-            ), pytest.raises(OSError):
+            with (
+                patch(
+                    "remote_cmd.core.async_connection_pool.AsyncSSHClient",
+                    side_effect=failing_factory,
+                ),
+                pytest.raises(OSError),
+            ):
                 await pool.acquire()
             assert pool.get_metrics()["failed"] == 1
         finally:
@@ -299,9 +301,7 @@ class TestAsyncConnectionPool:
     @pytest.mark.asyncio
     async def test_monitor_loop_cancelled(self, config, patched_client):
         """测试：监控任务可被取消"""
-        pool = AsyncConnectionPool(
-            config=config, health_check_interval=0.01
-        )
+        pool = AsyncConnectionPool(config=config, health_check_interval=0.01)
         pool._start_monitor()
         assert pool._monitor_task is not None
         await asyncio.sleep(0.05)
@@ -322,9 +322,7 @@ class TestAsyncConnectionPool:
     @pytest.mark.asyncio
     async def test_cleanup_expired(self, config, patched_client):
         """测试：清理过期与空闲超时连接"""
-        pool = AsyncConnectionPool(
-            config=config, max_connections=3, max_lifetime=1, idle_timeout=1
-        )
+        pool = AsyncConnectionPool(config=config, max_connections=3, max_lifetime=1, idle_timeout=1)
         try:
             c1 = await pool.acquire()
             c2 = await pool.acquire()

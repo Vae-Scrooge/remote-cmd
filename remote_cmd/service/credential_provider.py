@@ -65,7 +65,13 @@ class EnvCredentialProvider(CredentialProvider):
 
     @staticmethod
     def _host_env_suffix(host_name: str) -> str:
-        """将主机名转换为环境变量后缀：web1 -> WEB1，my-host -> MY_HOST"""
+        """
+        将主机名转换为环境变量后缀：web1 -> WEB1，my-host -> MY_HOST
+
+        注意: 非字母数字字符统一归一化为下划线，因此 ``web-1`` 与 ``web_1``
+        会映射到同一个变量 ``..._WEB_1``。若同舰队同时存在这两种命名，
+        需避免依赖同名变量（如需区分请先统一主机命名规范）。
+        """
         normalized = "".join(c if c.isalnum() else "_" for c in host_name).upper()
         return normalized
 

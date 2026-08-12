@@ -13,6 +13,7 @@
     >>> repo = build_repository("hosts.json")
     >>> repo = build_repository("hosts.db")
     >>> repo = build_repository("hosts.json", storage_backend="sqlite")
+    >>> repo = build_repository("hosts.db", encryption=CredentialEncryption())
 """
 
 from pathlib import Path
@@ -21,19 +22,24 @@ from typing import Callable, Optional
 from remote_cmd.repository.host_repository import HostRepository
 from remote_cmd.repository.json_host_repository import JsonHostRepository
 from remote_cmd.repository.sqlite_host_repository import SqliteHostRepository
+from remote_cmd.utils.crypto import CredentialEncryption
 
 # 显式 storage_backend 取值 -> 仓库工厂
-BACKEND_FACTORIES: dict[str, Callable[[str], HostRepository]] = {
-    "json": lambda path: JsonHostRepository(filepath=path, auto_load=True),
-    "sqlite": lambda path: SqliteHostRepository(db_path=path),
-    "sqlite3": lambda path: SqliteHostRepository(db_path=path),
+BACKEND_FACTORIES: dict[str, Callable[[str, Optional[CredentialEncryption]], HostRepository]] = {
+    "json": lambda path, encryption: JsonHostRepository(
+        filepath=path, auto_load=True, encryption=encryption
+    ),
+    "sqlite": lambda path, encryption: SqliteHostRepository(db_path=path, encryption=encryption),
+    "sqlite3": lambda path, encryption: SqliteHostRepository(db_path=path, encryption=encryption),
 }
 
 # 扩展名 -> 仓库工厂
-EXTENSION_FACTORIES: dict[str, Callable[[str], HostRepository]] = {
-    ".json": lambda path: JsonHostRepository(filepath=path, auto_load=True),
-    ".db": lambda path: SqliteHostRepository(db_path=path),
-    ".sqlite": lambda path: SqliteHostRepository(db_path=path),
+EXTENSION_FACTORIES: dict[str, Callable[[str, Optional[CredentialEncryption]], HostRepository]] = {
+    ".json": lambda path, encryption: JsonHostRepository(
+        filepath=path, auto_load=True, encryption=encryption
+    ),
+    ".db": lambda path, encryption: SqliteHostRepository(db_path=path, encryption=encryption),
+    ".sqlite": lambda path, encryption: SqliteHostRepository(db_path=path, encryption=encryption),
 }
 
 
@@ -76,6 +82,7 @@ def resolve_storage_backend(filepath: str, storage_backend: Optional[str] = None
 def build_repository(
     filepath: str,
     storage_backend: Optional[str] = None,
+    encryption: Optional[CredentialEncryption] = None,
 ) -> HostRepository:
     """
     根据扩展名或显式存储后端构建 HostRepository。
@@ -83,6 +90,9 @@ def build_repository(
     Args:
         filepath: hosts 文件路径
         storage_backend: 显式指定的存储后端（可选，优先于扩展名推断）
+        encryption: 凭据加密器（可选）。传入后仓库在写入时自动加密密码、
+            读取时自动解密，作为防御深度（即使调用方绕过 HostService
+            直接 save() 明文密码，落盘仍是密文）。
 
     Returns:
         HostRepository: 匹配的仓库实例
@@ -92,4 +102,4 @@ def build_repository(
     """
     backend = resolve_storage_backend(filepath, storage_backend)
     factory = BACKEND_FACTORIES[backend]
-    return factory(filepath)
+    return factory(filepath, encryption)

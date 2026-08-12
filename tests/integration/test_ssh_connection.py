@@ -29,9 +29,7 @@ class TestSSHConnectionIntegration:
 
     def test_connect_with_password(self, mock_ssh_server, integration_host):
         """密码认证连接成功"""
-        config = ConnectionConfig(
-            port=integration_host.port, **self.TEST_CONFIG
-        )
+        config = ConnectionConfig(port=integration_host.port, **self.TEST_CONFIG)
         client = SSHClient(config)
         client.connect()
         assert client.is_connected()
@@ -39,9 +37,7 @@ class TestSSHConnectionIntegration:
 
     def test_connect_and_disconnect(self, mock_ssh_server, integration_host):
         """连接后断开"""
-        config = ConnectionConfig(
-            port=integration_host.port, **self.TEST_CONFIG
-        )
+        config = ConnectionConfig(port=integration_host.port, **self.TEST_CONFIG)
         client = SSHClient(config)
         client.connect()
         assert client.is_connected()
@@ -73,18 +69,14 @@ class TestSSHConnectionIntegration:
 
     def test_context_manager(self, mock_ssh_server, integration_host):
         """上下文管理器自动关闭连接"""
-        config = ConnectionConfig(
-            port=integration_host.port, **self.TEST_CONFIG
-        )
+        config = ConnectionConfig(port=integration_host.port, **self.TEST_CONFIG)
         with SSHClient(config) as client:
             assert client.is_connected()
         assert not client.is_connected()
 
     def test_double_disconnect_safe(self, mock_ssh_server, integration_host):
         """重复 disconnect 不抛异常"""
-        config = ConnectionConfig(
-            port=integration_host.port, **self.TEST_CONFIG
-        )
+        config = ConnectionConfig(port=integration_host.port, **self.TEST_CONFIG)
         client = SSHClient(config)
         client.connect()
         client.disconnect()

@@ -32,7 +32,9 @@ class MockSSHServerInterface(paramiko.ServerInterface):
         return "password,publickey"
 
     def check_channel_exec_request(
-        self, channel: paramiko.Channel, command: bytes  # noqa: ARG002
+        self,
+        channel: paramiko.Channel,  # noqa: ARG002
+        command: bytes,  # noqa: ARG002
     ) -> bool:
         return True
 

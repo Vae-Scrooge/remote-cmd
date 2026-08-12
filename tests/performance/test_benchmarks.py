@@ -116,9 +116,7 @@ class TestSchedulingOverhead:
 
         # --- 异步路径 ---
         hosts2 = make_hosts(n)
-        ex_async, _ = async_backend_factory(
-            hosts2, max_concurrency=concurrency, latency=latency
-        )
+        ex_async, _ = async_backend_factory(hosts2, max_concurrency=concurrency, latency=latency)
         t0 = time.perf_counter()
         asyncio.run(ex_async.execute([h.name for h in hosts2], "uptime"))
         async_wall = time.perf_counter() - t0
@@ -130,8 +128,7 @@ class TestSchedulingOverhead:
         )
         # 断言：异步不应慢于同步（框架开销更小）。允许 10% 测量波动。
         assert async_wall <= sync_wall * 1.1, (
-            f"异步 {async_wall:.4f}s 慢于同步 {sync_wall:.4f}s，"
-            f"speedup={speedup:.2f}x"
+            f"异步 {async_wall:.4f}s 慢于同步 {sync_wall:.4f}s，speedup={speedup:.2f}x"
         )
 
 
@@ -143,9 +140,7 @@ class TestSchedulingOverhead:
 class TestScalabilityCurve:
     """不同规模下记录耗时，输出可扩展性曲线与并发倍率。"""
 
-    @pytest.mark.parametrize(
-        "n, concurrency", [(10, 10), (50, 10), (100, 20), (500, 50)]
-    )
+    @pytest.mark.parametrize("n, concurrency", [(10, 10), (50, 10), (100, 20), (500, 50)])
     def test_scalability_async(self, async_backend_factory, n, concurrency):
         latency = 0.02
         hosts = make_hosts(n)
@@ -166,9 +161,7 @@ class TestScalabilityCurve:
         # 可扩展性断言：实测不应超过理论 1.5 倍
         assert wall < ideal * 1.5
 
-    @pytest.mark.parametrize(
-        "n, concurrency", [(10, 10), (50, 10), (100, 20), (500, 50)]
-    )
+    @pytest.mark.parametrize("n, concurrency", [(10, 10), (50, 10), (100, 20), (500, 50)])
     def test_scalability_sync(self, sync_backend_factory, n, concurrency):
         latency = 0.02
         hosts = make_hosts(n)
@@ -228,9 +221,7 @@ class TestUseAsyncDelegation:
 
         from remote_cmd.service.batch_executor import BatchExecutor
 
-        with patch(
-            "remote_cmd.service.async_batch_executor.AsyncSSHClient", _Stub
-        ):
+        with patch("remote_cmd.service.async_batch_executor.AsyncSSHClient", _Stub):
             ex_delegated = BatchExecutor(
                 host_service=make_mock_service(hosts),
                 max_concurrency=10,

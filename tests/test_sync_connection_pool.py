@@ -261,9 +261,7 @@ class TestSyncConnectionPool:
         # 强行使 conn 空闲超时
         pool._meta[id(conn)]["last_used"] = time.time() - 1000
 
-        conn.execute.return_value = CommandResult(
-            command="true", stdout="", stderr="", exit_code=0
-        )
+        conn.execute.return_value = CommandResult(command="true", stdout="", stderr="", exit_code=0)
         conn2 = pool.acquire()
         assert conn2 is conn  # 探活成功，复用
         pool.close_all()

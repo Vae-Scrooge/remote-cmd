@@ -104,9 +104,7 @@ class TestAsyncSSHClientConnect:
 
     @pytest.mark.asyncio
     async def test_connect_timeout(self, config, patched_asyncssh):
-        patched_asyncssh.connect = AsyncMock(
-            side_effect=OSError("Connection timed out")
-        )
+        patched_asyncssh.connect = AsyncMock(side_effect=OSError("Connection timed out"))
         client = AsyncSSHClient(config)
         with pytest.raises(SSHConnectionError, match="connection timeout"):
             await client.connect()
@@ -156,9 +154,7 @@ class TestAsyncSSHClientExecute:
 
     @pytest.mark.asyncio
     async def test_execute_failure_exit_code(self, config, patched_asyncssh, conn_mock):
-        conn_mock.run = AsyncMock(
-            return_value=MagicMock(stdout="", stderr="boom", exit_status=127)
-        )
+        conn_mock.run = AsyncMock(return_value=MagicMock(stdout="", stderr="boom", exit_status=127))
         async with AsyncSSHClient(config) as client:
             r = await client.execute("badcmd")
         assert r.success is False
@@ -167,9 +163,7 @@ class TestAsyncSSHClientExecute:
 
     @pytest.mark.asyncio
     async def test_execute_sudo_without_password(self, config, patched_asyncssh, conn_mock):
-        conn_mock.run = AsyncMock(
-            return_value=MagicMock(stdout="ok", stderr="", exit_status=0)
-        )
+        conn_mock.run = AsyncMock(return_value=MagicMock(stdout="ok", stderr="", exit_status=0))
         async with AsyncSSHClient(config) as client:
             r = await client.execute_sudo("whoami")
         assert r.success

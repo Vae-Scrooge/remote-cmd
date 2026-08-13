@@ -7,9 +7,17 @@
 
 ## [Unreleased]
 
+### Added
+
+- `BatchExecutor` 新增 `use_async: bool = False` 构造参数：开启后同步 `execute` 内部切换到
+  既有的 `AsyncBatchExecutor` 原生异步内核（asyncssh），以在大规模并发下降低线程/CPU 开销。
+  新增 CLI `--async` 开关透传。对外 `execute` 签名与返回类型不变，便于上层无差别切换。
+  调用方须确保开启时当前线程未运行 asyncio 事件循环。
+- CLI `--async`/`use_async` 透传已有单元测试覆盖（`TestBatchExecutorUseAsyncSwitch`）。
+
 ### Changed
 
-- 重构：8 步小步增量（详见 `REFACTORING_PLAN.md`），无行为变更，测试 410→424：
+- 重构：8 步小步增量（详见 `REFACTORING_PLAN.md`），纯结构/类型收紧，现有行为不变，测试 410→424：
   - `core/host.py`：`Host.tags` 收紧为 `list[str] = field(default_factory=list)`（构造器仍兼容
     外部传入 `None` 的历史数据）
   - 新增 `utils/credential_guard.PasswordGuard`：统一 JSON/SQLite 仓库的密码加解密策略

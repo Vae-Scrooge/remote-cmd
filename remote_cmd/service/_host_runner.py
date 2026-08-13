@@ -4,7 +4,6 @@
 从 ``batch_executor.BatchExecutor`` 与 ``async_batch_executor.AsyncBatchExecutor``
 的 ``_execute_on_host`` 中提取的纯构造 / 解析逻辑：
 
-- ``HostExecutionPolicy``: 单主机执行参数（超时 / 重试次数 / 重试间隔）
 - ``build_connection_config``: 由 Host 构造 ConnectionConfig
 - ``resolve_host_or_error``: 解析主机，失败时返回带错误信息的 BatchHostResult
 - ``to_host_result``: 由 CommandResult 构造成功结果的 BatchHostResult
@@ -16,12 +15,10 @@
 
 用法:
     >>> from remote_cmd.service._host_runner import (
-    ...     HostExecutionPolicy, build_connection_config, resolve_host_or_error,
-    ...     to_host_result,
+    ...     build_connection_config, resolve_host_or_error, to_host_result,
     ... )
 """
 
-from dataclasses import dataclass
 from typing import Union
 
 from remote_cmd.core.host import Host
@@ -31,21 +28,6 @@ from remote_cmd.service.host_service import HostService
 
 # host 解析结果：成功返回 Host，失败返回带错误信息的 BatchHostResult
 ResolveOutcome = Union[Host, BatchHostResult]
-
-
-@dataclass
-class HostExecutionPolicy:
-    """单主机执行参数。
-
-    Attributes:
-        command_timeout: 单条命令超时（秒）
-        retry_count: 失败重试次数
-        retry_delay: 重试间隔（秒）
-    """
-
-    command_timeout: int
-    retry_count: int = 0
-    retry_delay: float = 1.0
 
 
 def build_connection_config(host: Host, timeout: int) -> ConnectionConfig:

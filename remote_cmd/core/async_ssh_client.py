@@ -195,7 +195,8 @@ class AsyncSSHClient:
                 + "; "
             )
         full_command = f"{env_str}cd ~ && {command}"
-        logger.debug(f"executing command: {command}")
+        # 安全：不记录命令全文（可能含敏感参数），仅记录执行事件
+        logger.debug("executing remote command")
         try:
             result = await conn.run(
                 full_command,
@@ -204,7 +205,7 @@ class AsyncSSHClient:
                 env={k: str(v) for k, v in (environment or {}).items()},
             )
         except (OSError, asyncssh.Error) as e:
-            raise SSHCommandError(f"command execution failed '{command}': {e}") from e
+            raise SSHCommandError(f"command execution failed: {e}") from e
 
         stdout_data = (
             result.stdout
@@ -242,14 +243,14 @@ class AsyncSSHClient:
                 timeout=timeout,
             )
         except (OSError, asyncssh.Error) as e:
-            raise SSHCommandError(f"sudo command execution failed '{command}': {e}") from e
+            raise SSHCommandError(f"sudo command execution failed: {e}") from e
 
         try:
             proc.stdin.write(password + "\n")
             proc.stdin.write_eof()
             result = await proc.wait()
         except (OSError, asyncssh.Error) as e:
-            raise SSHCommandError(f"sudo command execution failed '{command}': {e}") from e
+            raise SSHCommandError(f"sudo command execution failed: {e}") from e
 
         stdout_data = (
             result.stdout

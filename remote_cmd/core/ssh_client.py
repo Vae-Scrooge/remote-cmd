@@ -397,7 +397,8 @@ class SSHClient:
             raise SSHConnectionError("not connected, call connect() first")
 
         try:
-            logger.debug(f"executing command: {command}")
+            # 安全：不记录命令全文（可能含敏感参数），仅记录执行事件
+            logger.debug("executing remote command")
 
             # 构建环境变量设置命令
             # 安全：对 value 做 shlex.quote 转义，防止包含 shell 元字符
@@ -430,7 +431,7 @@ class SSHClient:
             return result
 
         except (paramiko.SSHException, OSError) as e:
-            raise SSHCommandError(f"command execution failed '{command}': {e}") from e
+            raise SSHCommandError(f"command execution failed: {e}") from e
 
     def execute_sudo(
         self,
@@ -486,7 +487,7 @@ class SSHClient:
                 exit_code=exit_code,
             )
         except (paramiko.SSHException, OSError) as e:
-            raise SSHCommandError(f"sudo command execution failed '{command}': {e}") from e
+            raise SSHCommandError(f"sudo command execution failed: {e}") from e
 
     # ========================================================================
     # 文件传输方法

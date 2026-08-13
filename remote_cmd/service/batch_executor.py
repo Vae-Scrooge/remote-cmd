@@ -25,7 +25,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
 
 from remote_cmd.core.host import Host
-from remote_cmd.core.ssh_client import ConnectionConfig, SSHClient
+from remote_cmd.core.ssh_client import SSHClient
 from remote_cmd.core.sync_connection_pool import SyncConnectionPool
 from remote_cmd.service._host_runner import (
     build_connection_config,
@@ -225,14 +225,7 @@ class BatchExecutor:
             return pools[host_name]
 
         host = self._host_service.resolve_host(host_name)
-        config = ConnectionConfig(
-            hostname=host.hostname,
-            username=host.username,
-            port=host.port,
-            password=host.password,
-            key_filename=host.key_filename,
-            timeout=self._command_timeout,
-        )
+        config = build_connection_config(host, self._command_timeout)
         pool = SyncConnectionPool(
             config,
             max_connections=max(1, self._max_concurrency),

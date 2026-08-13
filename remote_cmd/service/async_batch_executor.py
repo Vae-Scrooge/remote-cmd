@@ -87,6 +87,10 @@ class AsyncBatchExecutor:
         if retry_delay < 0:
             raise ValueError(f"retry_delay must be >= 0, got: {retry_delay}")
 
+        # 去重（保留首次出现顺序）：重复主机名只执行一次，避免 results 覆盖导致
+        # total/success/failed 统计错位
+        host_names = list(dict.fromkeys(host_names))
+
         total = len(host_names)
         semaphore = asyncio.Semaphore(self._max_concurrency)
         start = time.time()

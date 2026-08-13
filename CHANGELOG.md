@@ -32,6 +32,12 @@
   再 `acquire` 抛 `RuntimeError("connection pool is closed")`，`release` 在关闭后直接关闭
   连接而非放回空闲队列（避免游离连接与关闭后池"复活"泄漏）。
 
+### Changed
+
+- 行为：`BatchExecutor.execute` / `AsyncBatchExecutor.execute` 对 `host_names` 去重
+  （保留首次出现顺序）——重复主机名只执行一次。此前重复主机会因 `results` 被后完成结果覆盖，
+  导致 `total`/`success`/`failed` 统计错位（如 `["srv1","srv1"]` 报 success=0 但实际成功 1 台）。
+
 - 重构：8 步小步增量（详见 `REFACTORING_PLAN.md`），纯结构/类型收紧，现有行为不变，测试 410→424：
   - `core/host.py`：`Host.tags` 收紧为 `list[str] = field(default_factory=list)`（构造器仍兼容
     外部传入 `None` 的历史数据）

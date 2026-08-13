@@ -121,6 +121,29 @@ class TestBatchExecutor:
             executor.execute(["srv1"], "uptime", retry_delay=-0.5)
 
     @patch("remote_cmd.service.batch_executor.SSHClient")
+    def test_duplicate_host_deduped(self, mock_ssh_class):
+        """测试：重复主机名去重，只执行一次且统计正确"""
+        hosts = [Host(name="srv1", hostname="10.0.0.1", username="admin")]
+        service = self.make_mock_service(hosts)
+
+        mock_instance = MagicMock()
+        mock_ssh_class.return_value = mock_instance
+        mock_result = MagicMock()
+        mock_result.success = True
+        mock_result.exit_code = 0
+        mock_result.stdout = "OK"
+        mock_result.stderr = ""
+        mock_instance.execute.return_value = mock_result
+
+        executor = BatchExecutor(host_service=service)
+        result = executor.execute(["srv1", "srv1", "srv1"], "uptime")
+
+        assert result.total == 1
+        assert result.success == 1
+        assert result.failed == 0
+        assert mock_instance.execute.call_count == 1
+
+    @patch("remote_cmd.service.batch_executor.SSHClient")
     def test_single_host_success(self, mock_ssh_class):
         """测试：单主机执行成功"""
         host = Host(name="srv1", hostname="10.0.0.1", username="admin")

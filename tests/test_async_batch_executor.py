@@ -432,6 +432,18 @@ class TestAsyncBatchExecutor:
             await ex.execute(["srv1"], "uptime", retry_delay=-0.5)
 
     @pytest.mark.asyncio
+    async def test_duplicate_host_deduped(self, mock_async_client_class):
+        """测试：重复主机名去重，只执行一次且统计正确"""
+        cm, instance = mock_async_client_class
+        host = Host(name="srv1", hostname="10.0.0.1", username="admin")
+        ex = AsyncBatchExecutor(host_service=make_mock_service([host]))
+        result = await ex.execute(["srv1", "srv1", "srv1"], "uptime")
+        assert result.total == 1
+        assert result.success == 1
+        assert result.failed == 0
+        assert instance.execute.await_count == 1
+
+    @pytest.mark.asyncio
     async def test_single_host(self, mock_async_client_class):
         cm, instance = mock_async_client_class
         host = Host(name="srv1", hostname="10.0.0.1", username="admin")

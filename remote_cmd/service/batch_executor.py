@@ -125,6 +125,10 @@ class BatchExecutor:
         if retry_delay < 0:
             raise ValueError(f"retry_delay must be >= 0, got: {retry_delay}")
 
+        # 去重（保留首次出现顺序）：重复主机名只执行一次，避免 results 覆盖导致
+        # total/success/failed 统计错位
+        host_names = list(dict.fromkeys(host_names))
+
         # 异步内核委托路径：同步接口 + asyncio.run(异步实现)
         if self._async_executor is not None:
             return self._delegate_to_async(

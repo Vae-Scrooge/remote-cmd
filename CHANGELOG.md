@@ -5,7 +5,7 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，
 并且本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/).
 
-## [Unreleased]
+## [2.0.0] - 2026-08-13
 
 ### Added
 
@@ -59,6 +59,8 @@
 - `SSHClient.list_remote_directory` 与 `AsyncSSHClient.list_remote_directory` 返回类型由
   `list[dict]` 改为 `list[RemoteFileEntry]`（新增 dataclass）。
   外部调用方需由 `entry["name"]` 改为 `entry.name`。建议随 v2.0 发版。
+
+## [Unreleased]
 
 ## [1.2.3] - 2026-08-11
 

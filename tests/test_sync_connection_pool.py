@@ -102,6 +102,23 @@ class TestSyncConnectionPool:
         pool.close_all()
         assert pool.get_metrics()["total_connections"] == 0
 
+    def test_acquire_after_close_raises(self, config, patched_client):
+        """测试：close_all 之后再 acquire 应抛 RuntimeError"""
+        pool = SyncConnectionPool(config=config, max_connections=2)
+        pool.close_all()
+        with pytest.raises(RuntimeError, match="connection pool is closed"):
+            pool.acquire()
+
+    def test_release_after_close_no_residue(self, config, patched_client):
+        """测试：close_all 之后 release 不把连接放回空闲队列（无游离连接）"""
+        pool = SyncConnectionPool(config=config, max_connections=2)
+        conn = pool.acquire()
+        pool.close_all()
+        pool.release(conn)
+        assert pool._free.qsize() == 0
+        assert pool.get_metrics()["total_connections"] == 0
+        assert pool._total_released == 1
+
     def test_reuse_free_connection(self, config, patched_client):
         """测试：空闲队列中有健康连接时直接复用，不新建"""
         pool = SyncConnectionPool(config=config, max_connections=3)

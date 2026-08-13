@@ -64,6 +64,9 @@ class SyncConnectionPool:
         self._semaphore = threading.Semaphore(max_connections)
         self._lock = threading.Lock()
 
+        # 生命周期状态：close_all() 后置 True，禁止再借用/归还
+        self._closed = False
+
         # 指标
         self._total_created = 0
         self._total_reconnects = 0
@@ -108,7 +111,10 @@ class SyncConnectionPool:
 
         Raises:
             SSHConnectionError: 创建连接失败
+            RuntimeError: 连接池已关闭（close_all 之后）
         """
+        if self._closed:
+            raise RuntimeError("connection pool is closed")
         self._semaphore.acquire()
         try:
             # 优先复用空闲连接
@@ -128,6 +134,12 @@ class SyncConnectionPool:
     def release(self, conn: Optional[SSHClient]) -> None:
         """归还连接到池中（如已断开/超时则关闭）。"""
         if conn is None:
+            return
+        # 池已关闭：不把连接放回空闲队列（避免游离连接），直接关闭并释放槽位
+        if self._closed:
+            self._close_connection(conn)
+            self._semaphore.release()
+            self._total_released += 1
             return
         meta = self._meta.get(id(conn))
         if meta is not None:
@@ -286,6 +298,7 @@ class SyncConnectionPool:
 
     def close_all(self) -> None:
         """关闭池中所有连接并停止监控。"""
+        self._closed = True
         self.stop_monitor()
         with self._lock:
             conns = list(self._connections)

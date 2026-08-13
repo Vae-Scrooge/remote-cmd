@@ -62,6 +62,23 @@ class TestAsyncConnectionPool:
             await pool.close_all()
 
     @pytest.mark.asyncio
+    async def test_acquire_after_close_raises(self, config, patched_client):
+        pool = AsyncConnectionPool(config=config, max_connections=2)
+        await pool.close_all()
+        with pytest.raises(RuntimeError, match="connection pool is closed"):
+            await pool.acquire()
+
+    @pytest.mark.asyncio
+    async def test_release_after_close_no_residue(self, config, patched_client):
+        pool = AsyncConnectionPool(config=config, max_connections=2)
+        conn = await pool.acquire()
+        await pool.close_all()
+        await pool.release(conn)
+        assert pool._free.qsize() == 0
+        assert pool.get_metrics()["total_connections"] == 0
+        assert pool._total_released == 1
+
+    @pytest.mark.asyncio
     async def test_max_connections_enforced(self, config, patched_client):
         pool = AsyncConnectionPool(config=config, max_connections=2)
         try:

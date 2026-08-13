@@ -28,6 +28,9 @@
   `retry_delay` 必须 `>= 0`，非法值抛 `ValueError`（此前非法值会在运行时以晦涩错误暴露，
   如 `ThreadPoolExecutor(max_workers=0)` 或 `Semaphore(0)` 死锁）。
 - 安全：批量执行开始日志不再包含命令全文（与命令执行脱敏原则一致）。
+- 修复：`SyncConnectionPool` / `AsyncConnectionPool` 增加生命周期守卫——`close_all()` 之后
+  再 `acquire` 抛 `RuntimeError("connection pool is closed")`，`release` 在关闭后直接关闭
+  连接而非放回空闲队列（避免游离连接与关闭后池"复活"泄漏）。
 
 - 重构：8 步小步增量（详见 `REFACTORING_PLAN.md`），纯结构/类型收紧，现有行为不变，测试 410→424：
   - `core/host.py`：`Host.tags` 收紧为 `list[str] = field(default_factory=list)`（构造器仍兼容

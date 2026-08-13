@@ -22,7 +22,7 @@ from typing import Any, Optional
 
 import asyncssh
 
-from remote_cmd.core.ssh_client import CommandResult, ConnectionConfig
+from remote_cmd.core.ssh_client import CommandResult, ConnectionConfig, RemoteFileEntry
 from remote_cmd.utils.exceptions import (
     SSHCommandError,
     SSHConnectionError,
@@ -305,7 +305,7 @@ class AsyncSSHClient:
             raise SSHFileTransferError(f"file download failed: {e}") from e
         logger.info("file download finished")
 
-    async def list_remote_directory(self, remote_path: str = ".") -> list[dict[str, Any]]:
+    async def list_remote_directory(self, remote_path: str = ".") -> list[RemoteFileEntry]:
         """异步列出远程目录内容（结构与同步 SSHClient 一致）。"""
         sftp = await self._get_sftp()
         try:
@@ -313,18 +313,20 @@ class AsyncSSHClient:
         except (OSError, asyncssh.Error) as e:
             raise SSHFileTransferError(f"failed to list remote directory: {e}") from e
 
-        entries: list[dict[str, Any]] = []
+        entries: list[RemoteFileEntry] = []
         for entry in names:
             attrs = entry.attrs
             mode = attrs.permissions if hasattr(attrs, "permissions") else None
+            raw_size = attrs.size if hasattr(attrs, "size") else None
+            raw_mtime = attrs.mtime if hasattr(attrs, "mtime") else 0
             entries.append(
-                {
-                    "name": entry.filename,
-                    "size": attrs.size if hasattr(attrs, "size") else 0,
-                    "mode": oct(int(mode))[-3:] if mode else "000",
-                    "mtime": attrs.mtime if hasattr(attrs, "mtime") else 0,
-                    "is_dir": bool(mode & stat.S_IFDIR) if mode else False,
-                }
+                RemoteFileEntry(
+                    name=str(entry.filename),
+                    size=raw_size if raw_size is not None else 0,
+                    mode=oct(int(mode))[-3:] if mode else "000",
+                    mtime=raw_mtime,
+                    is_dir=bool(mode & stat.S_IFDIR) if mode else False,
+                )
             )
         return entries
 

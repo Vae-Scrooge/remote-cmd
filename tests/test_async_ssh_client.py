@@ -237,5 +237,5 @@ class TestAsyncSSHClientFileTransfer:
         async with AsyncSSHClient(config) as client:
             entries = await client.list_remote_directory("/home")
         assert len(entries) == 2
-        assert entries[0]["name"] == "a.txt"
-        assert entries[1]["is_dir"] is True
+        assert entries[0].name == "a.txt"
+        assert entries[1].is_dir is True

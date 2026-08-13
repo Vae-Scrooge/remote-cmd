@@ -137,6 +137,28 @@ class CommandResult:
         return f"{status} [{self.exit_code}] {self.command}"
 
 
+@dataclass
+class RemoteFileEntry:
+    """
+    远程文件/目录条目信息
+
+    描述远程目录中的单个条目（文件或目录），替代弱类型的字典返回。
+
+    Attributes:
+        name: 文件/目录名
+        size: 文件大小（字节）
+        mode: 权限模式（八进制字符串）
+        mtime: 修改时间戳
+        is_dir: 是否为目录
+    """
+
+    name: str
+    size: int
+    mode: str
+    mtime: Any
+    is_dir: bool
+
+
 # ============================================================================
 # SSH 客户端类
 # ============================================================================
@@ -166,7 +188,7 @@ class SSHClient:
         ...     print(result.stdout)
     """
 
-    def __init__(self, config: ConnectionConfig):
+    def __init__(self, config: ConnectionConfig) -> None:
         """
         初始化 SSH 客户端
 
@@ -532,7 +554,7 @@ class SSHClient:
         except (paramiko.SSHException, OSError) as e:
             raise SSHFileTransferError(f"file download failed: {e}") from e
 
-    def list_remote_directory(self, remote_path: str = ".") -> list[dict[str, Any]]:
+    def list_remote_directory(self, remote_path: str = ".") -> list[RemoteFileEntry]:
         """
         列出远程目录内容
 
@@ -540,12 +562,7 @@ class SSHClient:
             remote_path: 远程目录路径，默认为当前目录
 
         Returns:
-            List[Dict[str, Any]]: 目录项信息列表，每个字典包含：
-                - name: 文件/目录名
-                - size: 文件大小（字节）
-                - mode: 权限模式（八进制字符串）
-                - mtime: 修改时间戳
-                - is_dir: 是否为目录
+            List[RemoteFileEntry]: 目录项信息列表
 
         Raises:
             SSHFileTransferError: 列出目录失败时抛出
@@ -554,22 +571,22 @@ class SSHClient:
         Example:
             >>> entries = client.list_remote_directory("/home/user")
             >>> for entry in entries:
-            ...     print(f"{entry['name']}: {entry['size']} bytes")
+            ...     print(f"{entry.name}: {entry.size} bytes")
         """
         sftp = self._get_sftp()
 
         try:
-            entries = []
+            entries: list[RemoteFileEntry] = []
             for entry in sftp.listdir_attr(remote_path):
                 mode = entry.st_mode if entry.st_mode is not None else 0
                 entries.append(
-                    {
-                        "name": entry.filename,
-                        "size": entry.st_size,
-                        "mode": oct(mode)[-3:] if mode else "000",
-                        "mtime": entry.st_mtime,
-                        "is_dir": bool(mode & stat.S_IFDIR) if mode else False,
-                    }
+                    RemoteFileEntry(
+                        name=entry.filename,
+                        size=entry.st_size,
+                        mode=oct(mode)[-3:] if mode else "000",
+                        mtime=entry.st_mtime,
+                        is_dir=bool(mode & stat.S_IFDIR) if mode else False,
+                    )
                 )
             return entries
         except (paramiko.SSHException, OSError) as e:
@@ -579,7 +596,7 @@ class SSHClient:
         """创建远程目录（支持递归创建）"""
         sftp = self._get_sftp()
 
-        def _makedirs(sftp_client, remote_path):
+        def _makedirs(sftp_client: paramiko.SFTPClient, remote_path: str) -> None:
             if remote_path == "/":
                 return
             try:
@@ -607,9 +624,9 @@ class SSHClient:
         """删除远程目录"""
         sftp = self._get_sftp()
 
-        def _rm_recursive(sftp_client, remote_path):
+        def _rm_recursive(sftp_client: paramiko.SFTPClient, remote_path: str) -> None:
             """递归删除目录内容，先收集后删除以避免不一致状态"""
-            entries = []
+            entries: list[tuple[str, bool]] = []
             try:
                 for entry in sftp_client.listdir_attr(remote_path):
                     entries.append((entry.filename, bool(entry.st_mode & stat.S_IFDIR)))

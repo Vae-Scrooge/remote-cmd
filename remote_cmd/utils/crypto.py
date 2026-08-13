@@ -23,7 +23,10 @@ import logging
 import os
 import stat as stat_module
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:  # pragma: no cover - 仅用于类型注解，避免运行时依赖 cryptography
+    from cryptography.fernet import Fernet
 
 logger = logging.getLogger(__name__)
 
@@ -47,18 +50,16 @@ class CredentialEncryption:
 
     _PREFIX = "$encrypted$"
 
-    def __init__(self, key_path: Optional[Path] = None):
+    def __init__(self, key_path: Optional[Path] = None) -> None:
         """
         Args:
             key_path: 密钥文件路径，默认 ~/.remote_cmd/.key
         """
-        from cryptography.fernet import Fernet
-
         self._key_path = key_path or (Path.home() / ".remote_cmd" / ".key")
         self._fernet: Optional[Fernet] = None
 
     @property
-    def _cipher(self):
+    def _cipher(self) -> "Fernet":
         """延迟初始化 Fernet 实例"""
         if self._fernet is None:
             key = self._load_or_create_key()

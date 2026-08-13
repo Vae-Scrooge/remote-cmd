@@ -379,8 +379,8 @@ class TestSSHClientFileTransfer:
         with SSHClient(config) as client:
             entries = client.list_remote_directory("/home")
         assert len(entries) == 1
-        assert entries[0]["name"] == "file.txt"
-        assert entries[0]["size"] == 100
+        assert entries[0].name == "file.txt"
+        assert entries[0].size == 100
 
     def test_list_remote_ssh_exception(self, mock_paramiko):
         sftp = mock_paramiko.open_sftp.return_value

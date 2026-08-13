@@ -20,93 +20,30 @@
 
 import logging
 import time
-from collections.abc import Awaitable, Coroutine
+from collections.abc import Coroutine
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field
-from typing import Callable, Optional
+from typing import Optional
 
 from remote_cmd.core.host import Host
 from remote_cmd.core.ssh_client import ConnectionConfig, SSHClient
 from remote_cmd.core.sync_connection_pool import SyncConnectionPool
+from remote_cmd.service._host_runner import (
+    build_connection_config,
+    resolve_host_or_error,
+    to_host_result,
+)
+from remote_cmd.service._types import (
+    BatchHostResult,
+    BatchResult,
+    ProgressCallback,
+)
 from remote_cmd.service.host_service import HostService
 
 logger = logging.getLogger(__name__)
 
-# 进度回调签名：completed, total, current_host_name；async 或 sync 均可
-ProgressCallback = Callable[[int, int, str], Optional[Awaitable[None]]]
-
-
-@dataclass
-class BatchHostResult:
-    """
-    单个主机的批量执行结果
-
-    Attributes:
-        host: 主机名称
-        success: whether the command succeeded
-        command: 执行的命令
-        stdout: 标准输出
-        stderr: 标准错误
-        exit_code: 退出码
-        duration: execution took (seconds)
-        error: 错误信息（如果有）
-    """
-
-    host: str
-    success: bool
-    command: str
-    stdout: str = ""
-    stderr: str = ""
-    exit_code: int = -1
-    duration: float = 0.0
-    error: Optional[str] = None
-
-
-@dataclass
-class BatchResult:
-    """
-    批量执行汇总结果
-
-    Attributes:
-        total: 总主机数
-        success: number of succeeded hosts
-        failed: 失败主机数
-        duration: total took (seconds)
-        results: 按主机名索引的详细结果
-    """
-
-    total: int
-    success: int
-    failed: int
-    duration: float
-    results: dict[str, BatchHostResult] = field(default_factory=dict)
-
-    @property
-    def success_rate(self) -> float:
-        """success rate (0.0 ~ 1.0)"""
-        if self.total == 0:
-            return 1.0
-        return self.success / self.total
-
-    @property
-    def failed_hosts(self) -> list[str]:
-        """失败主机列表"""
-        return [h for h, r in self.results.items() if not r.success]
-
-    @property
-    def success_hosts(self) -> list[str]:
-        """list of succeeded hosts"""
-        return [h for h, r in self.results.items() if r.success]
-
-    def summary(self) -> str:
-        """生成可读的汇总字符串"""
-        return (
-            f"Total: {self.total}, "
-            f"Succeeded: {self.success}, "
-            f"Failed: {self.failed}, "
-            f"Duration: {self.duration:.1f}s, "
-            f"Success rate: {self.success_rate:.1%}"
-        )
+# 公共 API 兼容 re-export：类型定义已迁移至 service._types
+# （外部仍可 from remote_cmd.service.batch_executor import BatchResult）
+__all__ = ["BatchExecutor", "BatchResult", "BatchHostResult"]
 
 
 class BatchExecutor:
@@ -135,7 +72,7 @@ class BatchExecutor:
         max_concurrency: int = 10,
         command_timeout: int = 30,
         use_async: bool = False,
-    ):
+    ) -> None:
         self._host_service = host_service
         self._max_concurrency = max_concurrency
         self._command_timeout = command_timeout
@@ -419,23 +356,11 @@ class BatchExecutor:
         Returns:
             BatchHostResult: 单台主机的执行结果
         """
-        # 解析主机配置（包括凭据解密）
-        try:
-            host: Host = self._host_service.resolve_host(host_name)
-        except KeyError as e:
-            return BatchHostResult(
-                host=host_name,
-                success=False,
-                command=command,
-                error=f"host not found: {e}",
-            )
-        except (RuntimeError, OSError) as e:
-            return BatchHostResult(
-                host=host_name,
-                success=False,
-                command=command,
-                error=f"host resolution failed: {e}",
-            )
+        # 解析主机配置（包括凭据解密）；失败返回错误结果
+        outcome = resolve_host_or_error(self._host_service, host_name, command)
+        if isinstance(outcome, BatchHostResult):
+            return outcome
+        host: Host = outcome
 
         last_error: Optional[str] = None
         last_duration = 0.0
@@ -443,29 +368,13 @@ class BatchExecutor:
         for attempt in range(retry_count + 1):
             start = time.time()
             try:
-                config = ConnectionConfig(
-                    hostname=host.hostname,
-                    username=host.username,
-                    port=host.port,
-                    password=host.password,
-                    key_filename=host.key_filename,
-                    timeout=self._command_timeout,
-                )
+                config = build_connection_config(host, self._command_timeout)
 
                 if pool is not None:
                     # 连接池模式：复用主机连接，避免每次操作握手
                     with pool.acquire_context() as client:
                         cmd_result = client.execute(command, timeout=self._command_timeout)
-                    duration = time.time() - start
-                    return BatchHostResult(
-                        host=host_name,
-                        success=cmd_result.success,
-                        command=command,
-                        stdout=cmd_result.stdout,
-                        stderr=cmd_result.stderr,
-                        exit_code=cmd_result.exit_code,
-                        duration=duration,
-                    )
+                    return to_host_result(host_name, command, cmd_result, time.time() - start)
 
                 # 非连接池路径：try/finally 确保即使 execute() 抛异常，
                 # disconnect() 也会执行，避免 SSH 连接泄漏
@@ -476,17 +385,7 @@ class BatchExecutor:
                 finally:
                     client.disconnect()
 
-                duration = time.time() - start
-
-                return BatchHostResult(
-                    host=host_name,
-                    success=cmd_result.success,
-                    command=command,
-                    stdout=cmd_result.stdout,
-                    stderr=cmd_result.stderr,
-                    exit_code=cmd_result.exit_code,
-                    duration=duration,
-                )
+                return to_host_result(host_name, command, cmd_result, time.time() - start)
 
             except Exception as e:  # noqa: BLE001
                 duration = time.time() - start
@@ -506,6 +405,3 @@ class BatchExecutor:
             error=last_error,
             duration=last_duration,
         )
-
-
-__all__ = ["BatchExecutor", "BatchResult", "BatchHostResult"]

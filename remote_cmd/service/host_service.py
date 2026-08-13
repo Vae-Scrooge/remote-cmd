@@ -24,7 +24,8 @@
 """
 
 import logging
-from typing import Optional
+from pathlib import Path
+from typing import Any, Optional
 
 from remote_cmd.core.host import Host
 from remote_cmd.core.ssh_client import SSHClient
@@ -58,7 +59,7 @@ class HostService:
         credential_provider: Optional[CredentialProvider] = None,
         encryption: Optional[CredentialEncryption] = None,
         ssh_service: Optional[SSHService] = None,
-    ):
+    ) -> None:
         self._repo = repository
         self._encryption = encryption or CredentialEncryption()
         self._ssh = ssh_service or SSHService()
@@ -167,14 +168,7 @@ class HostService:
             SSHClient: 已连接的客户端
         """
         host = self.resolve_host(name)
-        client = self._ssh.create_client(
-            hostname=host.hostname,
-            username=host.username,
-            port=host.port,
-            password=host.password,
-            key_filename=host.key_filename,
-        )
-        return client
+        return self._ssh.create_client(**self._to_ssh_args(host))
 
     def test_connection(self, name: str) -> bool:
         """
@@ -187,13 +181,7 @@ class HostService:
             bool: True if connected
         """
         host = self.resolve_host(name)
-        return self._ssh.test_connection(
-            hostname=host.hostname,
-            username=host.username,
-            port=host.port,
-            password=host.password,
-            key_filename=host.key_filename,
-        )
+        return self._ssh.test_connection(**self._to_ssh_args(host))
 
     def test_all_connections(self, max_workers: int = 10) -> dict[str, bool]:
         """并行测试所有主机连接"""
@@ -214,21 +202,49 @@ class HostService:
 
         return results
 
+    def _build_resolved_host(
+        self,
+        host: Host,
+        password: Optional[str],
+        key_filename: Optional[str],
+    ) -> Host:
+        """构造带解析后凭据的 Host 副本，绝不修改仓库内存中的原对象。
+
+        Args:
+            host: 仓库中的原始主机对象
+            password: 解析后的密码（明文或加密 token）
+            key_filename: 解析后的私钥路径
+
+        Returns:
+            Host: 新副本
+        """
+        return Host(
+            name=host.name,
+            hostname=host.hostname,
+            username=host.username,
+            port=host.port,
+            password=password,
+            key_filename=key_filename,
+            tags=host.tags,
+            description=host.description,
+        )
+
+    def _to_ssh_args(self, host: Host) -> dict[str, Any]:
+        """从主机构造 SSH 服务的连接参数字典（create_client / test_connection 共用）。"""
+        return {
+            "hostname": host.hostname,
+            "username": host.username,
+            "port": host.port,
+            "password": host.password,
+            "key_filename": host.key_filename,
+        }
+
     def _decrypt_host(self, host: Host) -> Host:
         """返回主机副本，密码字段自动解密（如已加密）"""
         if host.password and self._encryption.is_encrypted(host.password):
             try:
                 decrypted = self._encryption.decrypt(host.password)
-                return Host(
-                    name=host.name,
-                    hostname=host.hostname,
-                    username=host.username,
-                    port=host.port,
-                    password=decrypted,
-                    key_filename=host.key_filename,
-                    tags=host.tags,
-                    description=host.description,
-                )
+                return self._build_resolved_host(host, decrypted, host.key_filename)
             except Exception as e:  # noqa: BLE001
                 # 解密失败不应阻塞整批主机返回：保留加密 token，
                 # 让 SSH 层在真正连接时报告认证失败
@@ -272,18 +288,7 @@ class HostService:
         # 解析密钥路径
         resolved_key_filename = host.key_filename
         if resolved_key_filename:
-            from pathlib import Path
-
             resolved_key_filename = str(Path(resolved_key_filename).expanduser())
 
         # 返回新对象，保持仓库内存中的加密 token 不被污染
-        return Host(
-            name=host.name,
-            hostname=host.hostname,
-            username=host.username,
-            port=host.port,
-            password=resolved_password,
-            key_filename=resolved_key_filename,
-            tags=host.tags,
-            description=host.description,
-        )
+        return self._build_resolved_host(host, resolved_password, resolved_key_filename)

@@ -20,6 +20,12 @@ import uuid
 from typing import Any, Optional
 
 from remote_cmd.core.ssh_client import ConnectionConfig, SSHClient
+from remote_cmd.service._pool_policy import (
+    ConnectionMeta,
+    idle_expired,
+    lifetime_expired,
+    should_close,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +75,7 @@ class SyncConnectionPool:
         self._stop_event = threading.Event()
 
         # 连接元数据（副表，避免侵入 SSHClient 私有属性）
-        self._meta: dict[int, dict[str, Any]] = {}
+        self._meta: dict[int, ConnectionMeta] = {}
 
     # ------------------------------------------------------------------
     # 指标
@@ -125,7 +131,7 @@ class SyncConnectionPool:
             return
         meta = self._meta.get(id(conn))
         if meta is not None:
-            meta["last_used"] = time.time()
+            meta.last_used = time.time()
 
         if not conn.is_connected():
             self._close_connection(conn)
@@ -133,10 +139,7 @@ class SyncConnectionPool:
             return
 
         # 生命周期 / 空闲超时则关闭
-        if meta and (
-            time.time() - meta["created_at"] > self._max_lifetime
-            or time.time() - meta["last_used"] > self._idle_timeout
-        ):
+        if meta and should_close(meta, self._max_lifetime, self._idle_timeout, True):
             self._close_connection(conn)
             self._semaphore.release()
             return
@@ -167,18 +170,18 @@ class SyncConnectionPool:
         with self._lock:
             self._connections.append(client)
         now = time.time()
-        self._meta[id(client)] = {
-            "created_at": now,
-            "last_used": now,
-            "conn_id": uuid.uuid4().hex,
-        }
+        self._meta[id(client)] = ConnectionMeta(
+            created_at=now,
+            last_used=now,
+            conn_id=uuid.uuid4().hex,
+        )
         self._total_created += 1
         return client
 
     def _touch(self, conn: SSHClient) -> None:
         meta = self._meta.get(id(conn))
         if meta is not None:
-            meta["last_used"] = time.time()
+            meta.last_used = time.time()
 
     def _check_connection(self, conn: SSHClient) -> bool:
         if not conn.is_connected():
@@ -186,13 +189,11 @@ class SyncConnectionPool:
         meta = self._meta.get(id(conn))
         if meta is None:
             return True
-        age = time.time() - meta["created_at"]
-        if age > self._max_lifetime:
-            logger.debug("connection %s exceeded max lifetime", meta.get("conn_id", "?")[:8])
+        if lifetime_expired(meta.created_at, self._max_lifetime):
+            logger.debug("connection %s exceeded max lifetime", meta.conn_id[:8])
             return False
         # 连接刚使用过（空闲未超时）则信任其状态，避免频繁探活开销
-        idle = time.time() - meta["last_used"]
-        if idle < self._idle_timeout:
+        if not idle_expired(meta.last_used, self._idle_timeout):
             return True
         # 空闲较久才触发轻量探活：发出一个无害命令
         try:
@@ -254,15 +255,10 @@ class SyncConnectionPool:
         keep: list[SSHClient] = []
         for conn in snapshot:
             meta = self._meta.get(id(conn))
-            if meta is None:
+            if should_close(meta, self._max_lifetime, self._idle_timeout, conn.is_connected(), now):
                 self._close_connection(conn)
                 continue
-            age = now - meta["created_at"]
-            idle = now - meta["last_used"]
-            if age < self._max_lifetime and idle < self._idle_timeout and conn.is_connected():
-                keep.append(conn)
-            else:
-                self._close_connection(conn)
+            keep.append(conn)
         # 将存活连接放回同一队列对象
         with self._lock:
             for conn in keep:

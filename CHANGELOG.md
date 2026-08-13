@@ -7,6 +7,23 @@
 
 ## [Unreleased]
 
+### Changed
+
+- 重构：8 步小步增量（详见 `REFACTORING_PLAN.md`），无行为变更，测试 410→424：
+  - `core/host.py`：`Host.tags` 收紧为 `list[str] = field(default_factory=list)`（构造器仍兼容
+    外部传入 `None` 的历史数据）
+  - 新增 `utils/credential_guard.PasswordGuard`：统一 JSON/SQLite 仓库的密码加解密策略
+  - 新增 `service/_pool_policy`（`ConnectionMeta` + 纯时间判断）与 `service/_host_runner`、
+    `service/_types`：消除 sync/async 连接池与执行器的重复逻辑
+  - CLI 命令补齐 `ctx: click.Context` 与返回类型；各模块 `__init__ -> None` 补齐
+  - mypy 全量校验通过（31 source files, 0 error）
+
+### Breaking
+
+- `SSHClient.list_remote_directory` 与 `AsyncSSHClient.list_remote_directory` 返回类型由
+  `list[dict]` 改为 `list[RemoteFileEntry]`（新增 dataclass）。
+  外部调用方需由 `entry["name"]` 改为 `entry.name`。建议随 v2.0 发版。
+
 ## [1.2.3] - 2026-08-11
 
 ### Added

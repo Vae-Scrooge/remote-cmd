@@ -22,12 +22,12 @@ from typing import Optional
 
 from remote_cmd.core.async_ssh_client import AsyncSSHClient
 from remote_cmd.core.host import Host
-from remote_cmd.core.ssh_client import ConnectionConfig
-from remote_cmd.service.batch_executor import (
-    BatchHostResult,
-    BatchResult,
-    ProgressCallback,
+from remote_cmd.service._host_runner import (
+    build_connection_config,
+    resolve_host_or_error,
+    to_host_result,
 )
+from remote_cmd.service._types import BatchHostResult, BatchResult, ProgressCallback
 from remote_cmd.service.host_service import HostService
 
 logger = logging.getLogger(__name__)
@@ -181,52 +181,24 @@ class AsyncBatchExecutor:
         retry_delay: float,
     ) -> BatchHostResult:
         """在单台主机上异步执行命令（含重试逻辑）。"""
-        # 主机解析
-        try:
-            host: Host = self._host_service.resolve_host(host_name)
-        except KeyError as e:
-            return BatchHostResult(
-                host=host_name,
-                success=False,
-                command=command,
-                error=f"host not found: {e}",
-            )
-        except (RuntimeError, OSError) as e:
-            return BatchHostResult(
-                host=host_name,
-                success=False,
-                command=command,
-                error=f"host resolution failed: {e}",
-            )
+        # 主机解析（失败返回错误结果）
+        outcome = resolve_host_or_error(self._host_service, host_name, command)
+        if isinstance(outcome, BatchHostResult):
+            return outcome
+        host: Host = outcome
 
         last_error: Optional[str] = None
         last_duration = 0.0
         for attempt in range(retry_count + 1):
             start = time.time()
             try:
-                config = ConnectionConfig(
-                    hostname=host.hostname,
-                    username=host.username,
-                    port=host.port,
-                    password=host.password,
-                    key_filename=host.key_filename,
-                    timeout=self._command_timeout,
-                )
+                config = build_connection_config(host, self._command_timeout)
                 async with AsyncSSHClient(config) as client:
                     cmd_result = await client.execute(
                         command,
                         timeout=self._command_timeout,
                     )
-                duration = time.time() - start
-                return BatchHostResult(
-                    host=host_name,
-                    success=cmd_result.success,
-                    command=command,
-                    stdout=cmd_result.stdout,
-                    stderr=cmd_result.stderr,
-                    exit_code=cmd_result.exit_code,
-                    duration=duration,
-                )
+                return to_host_result(host_name, command, cmd_result, time.time() - start)
             except Exception as e:  # noqa: BLE001
                 last_error = str(e)
                 last_duration = time.time() - start

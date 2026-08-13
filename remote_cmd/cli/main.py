@@ -18,6 +18,7 @@ Main commands:
 
 import getpass
 import os
+from pathlib import Path
 from typing import Any, Optional
 
 import click
@@ -77,7 +78,12 @@ def _build_service(config_file: str, storage_backend: Optional[str] = None) -> H
 )
 @click.option("--verbose", "-v", is_flag=True, help="Enable verbose output mode")
 @click.pass_context
-def cli(ctx, config: Optional[str], hosts_file_override: Optional[str], verbose: bool):
+def cli(
+    ctx: click.Context,
+    config: Optional[str],
+    hosts_file_override: Optional[str],
+    verbose: bool,
+) -> None:
     """
     Remote CMD - SSH remote server management tool
 
@@ -115,7 +121,7 @@ def cli(ctx, config: Optional[str], hosts_file_override: Optional[str], verbose:
 
 
 @cli.group()
-def host():
+def host() -> None:
     """
     Host management command group
 
@@ -141,7 +147,7 @@ def host():
 @click.option("--description", "-d", default="", help="Host description")
 @click.pass_context
 def host_add(
-    ctx,
+    ctx: click.Context,
     name: str,
     hostname: str,
     username: str,
@@ -149,7 +155,7 @@ def host_add(
     key: Optional[str],
     tag: tuple,
     description: str,
-):
+) -> None:
     """
     Add a new host
 
@@ -207,7 +213,7 @@ def host_add(
 @host.command("list")
 @click.option("--tag", "-t", help="Filter hosts by tag")
 @click.pass_context
-def host_list(ctx, tag: Optional[str]):
+def host_list(ctx: click.Context, tag: Optional[str]) -> None:
     """List all hosts"""
     service: HostService = ctx.obj["service"]
     hosts = service.list_hosts(tag=tag)
@@ -233,7 +239,7 @@ def host_list(ctx, tag: Optional[str]):
 @click.argument("name", required=True)
 @click.confirmation_option(prompt="Are you sure you want to remove this host?")
 @click.pass_context
-def host_remove(ctx, name: str):
+def host_remove(ctx: click.Context, name: str) -> None:
     """Remove a host"""
     service: HostService = ctx.obj["service"]
 
@@ -250,7 +256,7 @@ def host_remove(ctx, name: str):
 @host.command("show")
 @click.argument("name", required=True)
 @click.pass_context
-def host_show(ctx, name: str):
+def host_show(ctx: click.Context, name: str) -> None:
     """Show host details"""
     service: HostService = ctx.obj["service"]
 
@@ -272,8 +278,6 @@ def host_show(ctx, name: str):
         click.echo(f"  Auth:       {auth_type}")
         if host.key_filename:
             # Sanitize key path: show only the filename, not full path
-            from pathlib import Path
-
             key_name = Path(host.key_filename).name
             click.echo(f"  Key file:   {key_name}")
         tags_str = ", ".join(host.tags) if host.tags else "-"
@@ -290,7 +294,7 @@ def host_show(ctx, name: str):
 @host.command("test")
 @click.argument("name", required=True)
 @click.pass_context
-def host_test(ctx, name: str):
+def host_test(ctx: click.Context, name: str) -> None:
     """Test host connection"""
     service: HostService = ctx.obj["service"]
 
@@ -307,7 +311,7 @@ def host_test(ctx, name: str):
 @click.argument("host_name", required=True)
 @click.argument("command", required=True)
 @click.pass_context
-def run(ctx, host_name: str, command: str):
+def run(ctx: click.Context, host_name: str, command: str) -> None:
     """
     Execute a command on a remote host
 
@@ -340,7 +344,7 @@ def run(ctx, host_name: str, command: str):
 @click.argument("local_path", required=True)
 @click.argument("remote_path", required=True)
 @click.pass_context
-def upload(ctx, host_name: str, local_path: str, remote_path: str):
+def upload(ctx: click.Context, host_name: str, local_path: str, remote_path: str) -> None:
     """
     Upload a file to a remote host
 
@@ -366,7 +370,7 @@ def upload(ctx, host_name: str, local_path: str, remote_path: str):
 @click.argument("local_path", required=True)
 @click.argument("remote_path", required=True)
 @click.pass_context
-def download(ctx, host_name: str, local_path: str, remote_path: str):
+def download(ctx: click.Context, host_name: str, local_path: str, remote_path: str) -> None:
     """
     Download a file from a remote host
 
@@ -398,8 +402,8 @@ def download(ctx, host_name: str, local_path: str, remote_path: str):
 @click.option("--show-failures", is_flag=True, help="Show only failed hosts")
 @click.pass_context
 def batch_run(
-    ctx,
-    host_names: tuple,
+    ctx: click.Context,
+    host_names: tuple[str, ...],
     command: str,
     concurrency: int,
     timeout: int,
@@ -407,7 +411,7 @@ def batch_run(
     retry_delay: float,
     use_async: bool,
     show_failures: bool,
-):
+) -> None:
     """
     Execute a command on multiple hosts in batch
 
@@ -443,7 +447,7 @@ def batch_run(
         show_percent=True,
     ) as bar:
 
-        def progress(_completed, _total, _host_name):
+        def progress(_completed: int, _total: int, _host_name: str) -> None:
             bar.update(1)
 
         result = executor.execute(
@@ -488,7 +492,7 @@ def batch_run(
         ctx.exit(1)
 
 
-def main():
+def main() -> None:
     """CLI entry point"""
     cli()
 

@@ -259,7 +259,7 @@ class TestSyncConnectionPool:
         pool.release(conn)
 
         # 强行使 conn 空闲超时
-        pool._meta[id(conn)]["last_used"] = time.time() - 1000
+        pool._meta[id(conn)].last_used = time.time() - 1000
 
         conn.execute.return_value = CommandResult(command="true", stdout="", stderr="", exit_code=0)
         conn2 = pool.acquire()
@@ -271,7 +271,7 @@ class TestSyncConnectionPool:
         pool = SyncConnectionPool(config=config, max_connections=2, idle_timeout=300)
         conn = pool.acquire()
         pool.release(conn)
-        pool._meta[id(conn)]["last_used"] = time.time() - 1000
+        pool._meta[id(conn)].last_used = time.time() - 1000
 
         def bad_execute(*args, **kwargs):
             raise SSHConnectionError("down")
@@ -290,7 +290,7 @@ class TestSyncConnectionPool:
         pool.release(conn)
         assert pool._free.qsize() == 1
 
-        pool._meta[id(conn)]["created_at"] = time.time() - 100
+        pool._meta[id(conn)].created_at = time.time() - 100
         conn2 = pool.acquire()
         assert conn2 is not conn
         assert conn.disconnect.called
@@ -361,7 +361,7 @@ class TestSyncConnectionPool:
         pool.release(stale)
         pool.release(dead)
 
-        pool._meta[id(stale)]["last_used"] = time.time() - 10_000
+        pool._meta[id(stale)].last_used = time.time() - 10_000
         dead.is_connected.return_value = False
 
         pool._cleanup_expired()
@@ -379,7 +379,7 @@ class TestSyncConnectionPool:
         """释放时已超过生命周期的连接直接关闭，不进入空闲队列。"""
         pool = SyncConnectionPool(config=config, max_connections=2, max_lifetime=1)
         conn = pool.acquire()
-        pool._meta[id(conn)]["created_at"] = time.time() - 100
+        pool._meta[id(conn)].created_at = time.time() - 100
         pool.release(conn)
         assert pool._free.qsize() == 0
         assert conn.disconnect.called

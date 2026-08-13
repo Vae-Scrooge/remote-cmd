@@ -25,7 +25,7 @@ class SSHService:
     支持重试和超时控制。
     """
 
-    def __init__(self, timeout: int = 30):
+    def __init__(self, timeout: int = 30) -> None:
         self._timeout = timeout
 
     def create_client(

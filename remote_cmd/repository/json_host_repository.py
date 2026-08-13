@@ -19,7 +19,8 @@ from typing import Optional
 
 from remote_cmd.core.host import Host
 from remote_cmd.repository.host_repository import HostRepository
-from remote_cmd.utils.crypto import CredentialEncryption, CredentialEncryptionError
+from remote_cmd.utils.credential_guard import PasswordGuard
+from remote_cmd.utils.crypto import CredentialEncryption
 
 logger = logging.getLogger(__name__)
 
@@ -42,9 +43,10 @@ class JsonHostRepository(HostRepository):
         filepath: str,
         encryption: Optional[CredentialEncryption] = None,
         auto_load: bool = True,
-    ):
+    ) -> None:
         self._filepath = Path(filepath)
         self._encryption = encryption
+        self._guard = PasswordGuard(encryption)
         self._hosts: dict[str, Host] = {}
 
         if auto_load and self._filepath.exists():
@@ -107,11 +109,9 @@ class JsonHostRepository(HostRepository):
         hosts_dict = {name: host.to_dict() for name, host in self._hosts.items()}
 
         # 加密密码
-        if self._encryption:
+        if self._guard.enabled:
             for host_data in hosts_dict.values():
-                pw = host_data.get("password")
-                if pw and not self._encryption.is_encrypted(pw):
-                    host_data["password"] = self._encryption.encrypt(pw)
+                host_data["password"] = self._guard.encrypt(host_data.get("password"))
 
         return {
             "version": CONFIG_VERSION,
@@ -140,12 +140,11 @@ class JsonHostRepository(HostRepository):
         self._hosts = {}
         for name, host_data in hosts_data.items():
             pw = host_data.get("password")
-            if pw and self._encryption and self._encryption.is_encrypted(pw):
-                try:
-                    host_data["password"] = self._encryption.decrypt(pw)
-                except (ValueError, TypeError, KeyError, CredentialEncryptionError) as e:
-                    logger.error(f"decrypting password for host '{name}' failed: {e}")
-                    host_data["password"] = None
+            if self._guard.is_encrypted(pw):
+                resolved = self._guard.decrypt(pw)
+                if resolved is None:
+                    logger.error(f"decrypting password for host '{name}' failed")
+                host_data["password"] = resolved
 
             try:
                 host = Host.from_dict(host_data)

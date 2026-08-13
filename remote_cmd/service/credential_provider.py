@@ -60,7 +60,7 @@ class EnvCredentialProvider(CredentialProvider):
         env_var: 环境变量名（默认 REMOTE_CMD_PASSWORD）
     """
 
-    def __init__(self, env_var: str = "REMOTE_CMD_PASSWORD"):
+    def __init__(self, env_var: str = "REMOTE_CMD_PASSWORD") -> None:
         self._env_var = env_var
 
     @staticmethod
@@ -97,7 +97,7 @@ class EncryptedFileCredentialProvider(CredentialProvider):
         self,
         repo: HostRepository,
         encryption: Optional[CredentialEncryption] = None,
-    ):
+    ) -> None:
         self._repo = repo
         self._encryption = encryption or CredentialEncryption()
 
@@ -123,7 +123,7 @@ class ChainCredentialProvider(CredentialProvider):
         providers: 凭据提供者列表，按优先级降序排列
     """
 
-    def __init__(self, providers: list[CredentialProvider]):
+    def __init__(self, providers: list[CredentialProvider]) -> None:
         self._providers = list(providers)
 
     def get_password(self, host: Host) -> Optional[str]:
@@ -151,7 +151,7 @@ class KeyringCredentialProvider(CredentialProvider):
         service_name: Keyring 服务名称，默认 "remote-cmd"
     """
 
-    def __init__(self, service_name: str = "remote-cmd"):
+    def __init__(self, service_name: str = "remote-cmd") -> None:
         self._service_name = service_name
 
     def get_password(self, host: Host) -> Optional[str]:

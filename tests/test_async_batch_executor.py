@@ -144,7 +144,7 @@ class TestAsyncConnectionPool:
             # 让连接空闲超过 idle_timeout，强制触发探活路径
             import time as _time
 
-            pool._meta[id(c1)]["last_used"] = _time.time() - pool._idle_timeout - 1
+            pool._meta[id(c1)].last_used = _time.time() - pool._idle_timeout - 1
             # 让探活失败：execute 抛异常
             c1.execute = AsyncMock(side_effect=OSError("connection dead"))
             c2 = await pool.acquire()
@@ -190,7 +190,7 @@ class TestAsyncConnectionPool:
         pool = AsyncConnectionPool(config=config, max_connections=2, max_lifetime=1)
         try:
             c1 = await pool.acquire()
-            pool._meta[id(c1)]["created_at"] = 0
+            pool._meta[id(c1)].created_at = 0
             await pool.release(c1)
             assert pool._free.qsize() == 0
             assert pool._free.empty()
@@ -283,7 +283,7 @@ class TestAsyncConnectionPool:
         pool = AsyncConnectionPool(config=config, max_lifetime=1)
         try:
             conn = await pool.acquire()
-            pool._meta[id(conn)]["created_at"] = 0
+            pool._meta[id(conn)].created_at = 0
             assert await pool._check_connection(conn) is False
         finally:
             await pool.close_all()
@@ -328,8 +328,8 @@ class TestAsyncConnectionPool:
             c2 = await pool.acquire()
             await pool.release(c1)
             await pool.release(c2)
-            pool._meta[id(c1)]["created_at"] = 0  # 生命周期过期
-            pool._meta[id(c2)]["last_used"] = 0  # 空闲超时
+            pool._meta[id(c1)].created_at = 0  # 生命周期过期
+            pool._meta[id(c2)].last_used = 0  # 空闲超时
             await pool._cleanup_expired()
             assert pool._free.qsize() == 0
         finally:

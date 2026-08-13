@@ -9,7 +9,8 @@
 - 与连接配置的转换
 """
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any, Optional
 
 from remote_cmd.core.ssh_client import ConnectionConfig
@@ -49,11 +50,11 @@ class Host:
     port: int = 22
     password: Optional[str] = None
     key_filename: Optional[str] = None
-    tags: Optional[list[str]] = None
+    tags: list[str] = field(default_factory=list)
     description: str = ""
 
     def __post_init__(self):
-        """初始化后处理：设置默认标签列表"""
+        """初始化后处理：归一化外部传入的 None 标签（兼容旧数据）"""
         if self.tags is None:
             self.tags = []
 
@@ -124,8 +125,6 @@ class Host:
             )
         # 脱敏密钥路径：仅显示文件名
         if data.get("key_filename"):
-            from pathlib import Path
-
             data["key_filename"] = Path(data["key_filename"]).name
         return data
 

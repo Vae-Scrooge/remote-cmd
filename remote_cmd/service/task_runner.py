@@ -82,7 +82,7 @@ class TaskRunner:
         max_workers: 最大并发任务数，默认 10
     """
 
-    def __init__(self, max_workers: int = 10):
+    def __init__(self, max_workers: int = 10) -> None:
         self._max_workers = max_workers
         self._tasks: dict[str, Task] = {}
         self._events: dict[str, threading.Event] = {}

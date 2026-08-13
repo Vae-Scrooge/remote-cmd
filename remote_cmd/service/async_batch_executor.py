@@ -48,6 +48,10 @@ class AsyncBatchExecutor:
         max_concurrency: int = 10,
         command_timeout: int = 30,
     ) -> None:
+        if max_concurrency < 1:
+            raise ValueError(f"max_concurrency must be >= 1, got: {max_concurrency}")
+        if command_timeout <= 0:
+            raise ValueError(f"command_timeout must be > 0, got: {command_timeout}")
         self._host_service = host_service
         self._max_concurrency = max_concurrency
         self._command_timeout = command_timeout
@@ -78,16 +82,19 @@ class AsyncBatchExecutor:
         """
         if not host_names:
             raise ValueError("host_names must not be empty")
+        if retry_count < 0:
+            raise ValueError(f"retry_count must be >= 0, got: {retry_count}")
+        if retry_delay < 0:
+            raise ValueError(f"retry_delay must be >= 0, got: {retry_delay}")
 
         total = len(host_names)
         semaphore = asyncio.Semaphore(self._max_concurrency)
         start = time.time()
 
         logger.info(
-            "异步批量执行开始: %s 台主机, 并发=%s, 命令='%s'",
+            "异步批量执行开始: %s 台主机, 并发=%s",
             total,
             self._max_concurrency,
-            command,
         )
 
         completed_counter = 0

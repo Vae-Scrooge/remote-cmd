@@ -398,6 +398,22 @@ class TestAsyncBatchExecutor:
         with pytest.raises(ValueError, match="host_names must not be empty"):
             await ex.execute([], "uptime")
 
+    def test_invalid_max_concurrency_raises(self):
+        with pytest.raises(ValueError, match="max_concurrency must be >= 1"):
+            AsyncBatchExecutor(host_service=MagicMock(), max_concurrency=0)
+
+    def test_invalid_command_timeout_raises(self):
+        with pytest.raises(ValueError, match="command_timeout must be > 0"):
+            AsyncBatchExecutor(host_service=MagicMock(), command_timeout=0)
+
+    @pytest.mark.asyncio
+    async def test_invalid_retry_params_raise(self):
+        ex = AsyncBatchExecutor(host_service=MagicMock())
+        with pytest.raises(ValueError, match="retry_count must be >= 0"):
+            await ex.execute(["srv1"], "uptime", retry_count=-1)
+        with pytest.raises(ValueError, match="retry_delay must be >= 0"):
+            await ex.execute(["srv1"], "uptime", retry_delay=-0.5)
+
     @pytest.mark.asyncio
     async def test_single_host(self, mock_async_client_class):
         cm, instance = mock_async_client_class

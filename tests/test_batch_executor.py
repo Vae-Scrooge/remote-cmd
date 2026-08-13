@@ -102,6 +102,24 @@ class TestBatchExecutor:
         with pytest.raises(ValueError, match="host_names must not be empty"):
             executor.execute([], "uptime")
 
+    def test_invalid_max_concurrency_raises(self):
+        """测试：max_concurrency < 1 应报错"""
+        with pytest.raises(ValueError, match="max_concurrency must be >= 1"):
+            BatchExecutor(host_service=MagicMock(), max_concurrency=0)
+
+    def test_invalid_command_timeout_raises(self):
+        """测试：command_timeout <= 0 应报错"""
+        with pytest.raises(ValueError, match="command_timeout must be > 0"):
+            BatchExecutor(host_service=MagicMock(), command_timeout=0)
+
+    def test_invalid_retry_params_raise(self):
+        """测试：retry_count / retry_delay 非法值应报错"""
+        executor = BatchExecutor(host_service=MagicMock())
+        with pytest.raises(ValueError, match="retry_count must be >= 0"):
+            executor.execute(["srv1"], "uptime", retry_count=-1)
+        with pytest.raises(ValueError, match="retry_delay must be >= 0"):
+            executor.execute(["srv1"], "uptime", retry_delay=-0.5)
+
     @patch("remote_cmd.service.batch_executor.SSHClient")
     def test_single_host_success(self, mock_ssh_class):
         """测试：单主机执行成功"""

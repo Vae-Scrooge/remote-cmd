@@ -23,6 +23,11 @@
 - 修复：`AsyncSSHClient.execute_sudo` 的 `timeout` 现在覆盖整个命令执行 wall-clock
   （`proc.wait(timeout=...)`），与 `execute` 的 `conn.run(timeout=...)` 语义对齐；
   避免挂起的 sudo（如等待密码）无限等待。未传 timeout 时行为不变（无限等待）。
+- 校验：`BatchExecutor` / `AsyncBatchExecutor` 构造参数增加守卫——`max_concurrency` 必须
+  `>= 1`、`command_timeout` 必须 `> 0`；`execute` 的 `retry_count` 必须 `>= 0`、
+  `retry_delay` 必须 `>= 0`，非法值抛 `ValueError`（此前非法值会在运行时以晦涩错误暴露，
+  如 `ThreadPoolExecutor(max_workers=0)` 或 `Semaphore(0)` 死锁）。
+- 安全：批量执行开始日志不再包含命令全文（与命令执行脱敏原则一致）。
 
 - 重构：8 步小步增量（详见 `REFACTORING_PLAN.md`），纯结构/类型收紧，现有行为不变，测试 410→424：
   - `core/host.py`：`Host.tags` 收紧为 `list[str] = field(default_factory=list)`（构造器仍兼容

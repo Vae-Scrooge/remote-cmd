@@ -28,6 +28,11 @@
   `retry_delay` 必须 `>= 0`，非法值抛 `ValueError`（此前非法值会在运行时以晦涩错误暴露，
   如 `ThreadPoolExecutor(max_workers=0)` 或 `Semaphore(0)` 死锁）。
 - 安全：批量执行开始日志不再包含命令全文（与命令执行脱敏原则一致）。
+- 版本号收敛为单一来源：新增轻量无副作用模块 `remote_cmd/_version.py` 作为版本唯一真相源；
+  `remote_cmd/__init__.py` 的 `__version__` 改从 `_version` 导入；`pyproject.toml` 的
+  `version` 改为动态读取（`[tool.setuptools.dynamic]`）。开发者只需修改 `_version.py` 一处，
+  打包自动取用，且 setuptools 解析版本时不会触发 `remote_cmd` 包级 import（避免干净构建
+  环境缺依赖时 ImportError）。公共 API（`__all__` 中的 `__version__` 条目）保持不变。
 - 修复：`SyncConnectionPool` / `AsyncConnectionPool` 增加生命周期守卫——`close_all()` 之后
   再 `acquire` 抛 `RuntimeError("connection pool is closed")`，`release` 在关闭后直接关闭
   连接而非放回空闲队列（避免游离连接与关闭后池"复活"泄漏）。

@@ -52,7 +52,9 @@ Version: 1.2.3
 License: MIT
 """
 
-__version__ = "1.2.3"
+# 版本号单一真相源（见 remote_cmd._version）
+from remote_cmd._version import __version__
+
 __author__ = "Vae-Scrooge"
 __email__ = "vae-scrooge@example.com"
 __license__ = "MIT"

@@ -20,6 +20,9 @@
 - 安全：`SSHClient` / `AsyncSSHClient` 的命令执行不再将命令全文写入 debug 日志
   （改为记录无命令的执行事件）；命令执行失败异常消息去掉命令明文，仅保留失败原因。
   防止命令中的敏感参数（密码、token 等）进入日志或异常链。
+- 修复：`AsyncSSHClient.execute_sudo` 的 `timeout` 现在覆盖整个命令执行 wall-clock
+  （`proc.wait(timeout=...)`），与 `execute` 的 `conn.run(timeout=...)` 语义对齐；
+  避免挂起的 sudo（如等待密码）无限等待。未传 timeout 时行为不变（无限等待）。
 
 - 重构：8 步小步增量（详见 `REFACTORING_PLAN.md`），纯结构/类型收紧，现有行为不变，测试 410→424：
   - `core/host.py`：`Host.tags` 收紧为 `list[str] = field(default_factory=list)`（构造器仍兼容

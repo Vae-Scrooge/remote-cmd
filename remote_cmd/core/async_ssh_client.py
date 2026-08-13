@@ -248,7 +248,9 @@ class AsyncSSHClient:
         try:
             proc.stdin.write(password + "\n")
             proc.stdin.write_eof()
-            result = await proc.wait()
+            # 与 execute 的 conn.run(timeout=...) 语义对齐：timeout 覆盖整个命令执行
+            # wall-clock，避免挂起的 sudo（如等待密码）无限等待
+            result = await proc.wait(timeout=timeout)
         except (OSError, asyncssh.Error) as e:
             raise SSHCommandError(f"sudo command execution failed: {e}") from e
 

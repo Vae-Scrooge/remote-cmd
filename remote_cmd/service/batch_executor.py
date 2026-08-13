@@ -174,9 +174,7 @@ class BatchExecutor:
         results: dict[str, BatchHostResult] = {}
         start_time = time.time()
 
-        logger.info(
-            f"batch execution started: {total} hosts, concurrency={self._max_concurrency}"
-        )
+        logger.info(f"batch execution started: {total} hosts, concurrency={self._max_concurrency}")
 
         pools: dict[str, SyncConnectionPool] = {}
 

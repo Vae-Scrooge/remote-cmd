@@ -271,7 +271,7 @@ pip install -e ".[dev]"
 
 ## 参与贡献
 
-欢迎各类贡献！请先阅读 [CONTRIBUTING.md](./CONTRIBUTING.md) 了解如何参与。
+欢迎各类贡献！请先阅读 [CONTRIBUTING.md](./CONTRIBUTING.zh-CN.md) 了解如何参与。
 
 在贡献之前，请阅读我们的[行为准则](./CODE_OF_CONDUCT.md)。
 

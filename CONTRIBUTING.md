@@ -1,131 +1,136 @@
-# 贡献指南
+<p align="center">
+  <img src="https://img.shields.io/badge/English-blue?style=flat-square" alt="English"> ·
+  <a href="./CONTRIBUTING.zh-CN.md"><img src="https://img.shields.io/badge/中文-gray?style=flat-square" alt="中文"></a>
+</p>
 
-感谢您对 Remote CMD 项目的关注！我们欢迎任何形式的贡献，无论是提交 Bug 报告、功能建议、代码贡献还是文档改进。
+# Contributing
 
-## 目录
+Thank you for your interest in Remote CMD! We welcome all kinds of contributions, whether it is a bug report, a feature suggestion, a code contribution, or a documentation improvement.
 
-- [行为准则](#行为准则)
-- [如何贡献](#如何贡献)
-- [开发环境搭建](#开发环境搭建)
-- [代码规范](#代码规范)
-- [提交规范](#提交规范)
-- [Pull Request 流程](#pull-request-流程)
-- [报告问题](#报告问题)
+## Table of Contents
 
----
-
-## 行为准则
-
-参与本项目即表示您同意遵守以下准则：
-
-- 尊重所有参与者，保持友善和建设性的态度
-- 欢迎新手，耐心解答问题
-- 专注于技术讨论，避免人身攻击
-- 接受不同的观点和经验
-
-## 如何贡献
-
-### 1. 报告 Bug
-
-如果您发现了 Bug，请通过 [GitHub Issues](https://github.com/Vae-Scrooge/remote-cmd/issues) 提交。
-
-**提交 Bug 时请包含：**
-
-- 清晰的标题
-- 详细的描述
-- 复现步骤
-- 期望行为 vs 实际行为
-- 环境信息（操作系统、Python 版本等）
-- 错误日志或截图
-
-**Bug 报告模板：**
-
-```markdown
-**问题描述**
-简明扼要地描述 Bug
-
-**复现步骤**
-1. 执行 '...'
-2. 输入 '...'
-3. 出现错误
-
-**期望行为**
-描述应该发生什么
-
-**实际行为**
-描述实际发生了什么
-
-**环境信息**
-- OS: [例如 Windows 10, Ubuntu 20.04]
-- Python: [例如 3.9.0]
-- 版本: [例如 1.0.0]
-
-**错误日志**
-```
-粘贴错误日志
-```
-```
-
-### 2. 建议新功能
-
-有新功能建议？请通过 GitHub Issues 提交，使用标签 `enhancement`。
-
-**功能建议模板：**
-
-```markdown
-**功能描述**
-简明描述您想要的功能
-
-**使用场景**
-描述这个功能在什么情况下有用
-
-**期望行为**
-描述该功能应该如何工作
-
-**替代方案**
-您考虑过的其他解决方案
-
-**其他信息**
-截图、示例或其他相关信息
-```
-
-### 3. 改进文档
-
-文档改进同样重要！您可以：
-
-- 修复拼写错误或语法错误
-- 改进示例代码
-- 添加更多使用场景
-- 翻译文档
-
-### 4. 提交代码
-
-见下方的 [Pull Request 流程](#pull-request-流程)
+- [Code of Conduct](#code-of-conduct)
+- [How to Contribute](#how-to-contribute)
+- [Setting Up the Development Environment](#setting-up-the-development-environment)
+- [Code Standards](#code-standards)
+- [Commit Conventions](#commit-conventions)
+- [Pull Request Process](#pull-request-process)
+- [Reporting Issues](#reporting-issues)
 
 ---
 
-## 开发环境搭建
+## Code of Conduct
 
-### 前置要求
+By participating in this project you agree to abide by the following guidelines:
+
+- Respect all participants and keep a friendly, constructive attitude
+- Welcome newcomers and patiently answer their questions
+- Stay focused on technical discussion and avoid personal attacks
+- Accept differing viewpoints and experiences
+
+## How to Contribute
+
+### 1. Report a Bug
+
+If you find a bug, please report it through [GitHub Issues](https://github.com/Vae-Scrooge/remote-cmd/issues).
+
+**When reporting a bug, please include:**
+
+- A clear title
+- A detailed description
+- Steps to reproduce
+- Expected behavior vs. actual behavior
+- Environment information (operating system, Python version, etc.)
+- Error logs or screenshots
+
+**Bug report template:**
+
+```markdown
+**Description**
+Briefly describe the bug.
+
+**Steps to Reproduce**
+1. Run '...'
+2. Enter '...'
+3. See the error
+
+**Expected Behavior**
+Describe what should happen.
+
+**Actual Behavior**
+Describe what actually happened.
+
+**Environment**
+- OS: [e.g. Windows 10, Ubuntu 20.04]
+- Python: [e.g. 3.9.0]
+- Version: [e.g. 1.0.0]
+
+**Error Log**
+```python
+paste error log here
+```
+```
+
+### 2. Suggest a Feature
+
+Have a feature suggestion? Please submit it through GitHub Issues using the `enhancement` label.
+
+**Feature suggestion template:**
+
+```markdown
+**Description**
+Briefly describe the feature you want.
+
+**Use Case**
+Describe the scenario in which this feature is useful.
+
+**Expected Behavior**
+Describe how the feature should work.
+
+**Alternatives**
+Other solutions you have considered.
+
+**Additional Information**
+Screenshots, examples, or other relevant information.
+```
+
+### 3. Improve Documentation
+
+Documentation improvements are just as important! You can:
+
+- Fix typos or grammatical errors
+- Improve example code
+- Add more usage scenarios
+- Translate documentation
+
+### 4. Submit Code
+
+See the [Pull Request Process](#pull-request-process) below.
+
+---
+
+## Setting Up the Development Environment
+
+### Prerequisites
 
 - Python 3.9
 - Git
-- （可选）虚拟环境工具
+- (Optional) A virtual environment tool
 
-### 设置步骤
+### Setup Steps
 
 ```bash
-# 1. Fork 仓库
-# 在 GitHub 上点击 Fork 按钮
+# 1. Fork the repository
+# Click the Fork button on GitHub
 
-# 2. 克隆您的 Fork
+# 2. Clone your fork
 git clone https://github.com/YOUR_USERNAME/remote-cmd.git
 cd remote-cmd
 
-# 3. 添加上游仓库
+# 3. Add the upstream repository
 git remote add upstream https://github.com/Vae-Scrooge/remote-cmd.git
 
-# 4. 创建虚拟环境
+# 4. Create a virtual environment
 python -m venv venv
 
 # Windows
@@ -133,83 +138,83 @@ venv\Scripts\activate
 # Linux/Mac
 source venv/bin/activate
 
-# 5. 安装开发依赖
+# 5. Install development dependencies
 pip install -e ".[dev]"
 
-# 6. 验证安装
+# 6. Verify the installation
 pytest tests/ -v
 ```
 
-### 同步上游更新
+### Syncing with Upstream
 
 ```bash
-# 获取上游更新
+# Fetch upstream updates
 git fetch upstream
 
-# 切换到 main 分支
+# Switch to the main branch
 git checkout main
 
-# 合并上游更新
+# Merge upstream changes
 git merge upstream/main
 
-# 推送到您的 Fork
+# Push to your fork
 git push origin main
 ```
 
 ---
 
-## 代码规范
+## Code Standards
 
-### Python 代码风格
+### Python Code Style
 
-我们使用以下工具保持代码风格一致：
+We use the following tools to keep the code style consistent:
 
-#### 1. Ruff - 代码格式化与 Lint
+#### 1. Ruff - Formatting and Linting
 
 ```bash
-# 格式化代码
+# Format code
 ruff format remote_cmd/ tests/
 
-# 检查代码格式
+# Check formatting
 ruff format --check remote_cmd/ tests/
 
-# Lint 检查
+# Lint
 ruff check remote_cmd/ tests/
 ```
 
-#### 4. MyPy - 类型检查
+#### 4. MyPy - Type Checking
 
 ```bash
-# 类型检查
+# Type check
 mypy remote_cmd/
 ```
 
-### 代码规范要点
+### Code Standards Highlights
 
-#### 命名规范
+#### Naming Conventions
 
 ```python
-# 模块名：小写，下划线分隔
+# Modules: lowercase, underscore-separated
 my_module.py
 
-# 类名：大驼峰
+# Classes: CamelCase
 class MyClass:
     pass
 
-# 函数名：小写，下划线分隔
+# Functions: lowercase, underscore-separated
 def my_function():
     pass
 
-# 常量：全大写
+# Constants: all uppercase
 MAX_CONNECTIONS = 100
 
-# 私有变量：下划线前缀
+# Private variables: underscore prefix
 _private_var = 10
 ```
 
-#### 文档字符串
+#### Docstrings
 
-所有公共 API 都需要文档字符串：
+All public APIs require docstrings:
 
 ```python
 def execute_command(
@@ -218,19 +223,19 @@ def execute_command(
     timeout: Optional[int] = None
 ) -> CommandResult:
     """
-    在远程服务器上执行命令。
+    Execute a command on a remote server.
 
     Args:
-        command: 要执行的命令字符串
-        timeout: 命令执行超时时间（秒），默认无超时
+        command: The command string to execute
+        timeout: Timeout in seconds, defaults to no timeout
 
     Returns:
-        CommandResult 对象，包含 stdout、stderr 和退出码
+        A CommandResult object containing stdout, stderr, and the exit code
 
     Raises:
-        SSHConnectionError: 当 SSH 连接失败时
-        SSHCommandError: 当命令执行失败时
-        TimeoutError: 当命令执行超时时
+        SSHConnectionError: When the SSH connection fails
+        SSHCommandError: When the command execution fails
+        TimeoutError: When the command execution times out
 
     Example:
         >>> result = client.execute("ls -la")
@@ -242,9 +247,9 @@ def execute_command(
     pass
 ```
 
-#### 类型注解
+#### Type Annotations
 
-使用类型注解提高代码可读性：
+Use type annotations to improve readability:
 
 ```python
 from typing import Optional, List, Dict, Any
@@ -262,11 +267,11 @@ def process_hosts(
 
 ---
 
-## 提交规范
+## Commit Conventions
 
-### 提交信息格式
+### Commit Message Format
 
-我们使用 [Conventional Commits](https://www.conventionalcommits.org/) 规范：
+We follow the [Conventional Commits](https://www.conventionalcommits.org/) specification:
 
 ```
 <type>(<scope>): <subject>
@@ -276,203 +281,203 @@ def process_hosts(
 <footer>
 ```
 
-### 类型说明
+### Type Reference
 
-| 类型 | 说明 |
-|------|------|
-| `feat` | 新功能 |
-| `fix` | Bug 修复 |
-| `docs` | 文档更新 |
-| `style` | 代码格式（不影响代码功能）|
-| `refactor` | 代码重构 |
-| `perf` | 性能优化 |
-| `test` | 测试相关 |
-| `chore` | 构建过程或辅助工具的变动 |
+| Type | Description |
+|------|-------------|
+| `feat` | A new feature |
+| `fix` | A bug fix |
+| `docs` | Documentation updates |
+| `style` | Code formatting (no functional change) |
+| `refactor` | A code refactor |
+| `perf` | A performance improvement |
+| `test` | Test changes |
+| `chore` | Build process or auxiliary tool changes |
 
-### 示例
+### Examples
 
 ```bash
-# 新功能
+# New feature
 feat(ssh): add support for SSH agent authentication
 
-# Bug 修复
+# Bug fix
 fix(core): fix connection timeout handling
 
-# 文档
+# Docs
 docs(readme): add installation instructions for Windows
 
-# 重构
+# Refactor
 refactor(host_manager): simplify host validation logic
 
-# 测试
+# Test
 test(ssh_client): add tests for file transfer
 ```
 
 ---
 
-## Pull Request 流程
+## Pull Request Process
 
-### 1. 创建分支
+### 1. Create a Branch
 
 ```bash
-# 从最新的 main 分支创建
+# Start from the latest main
 git checkout main
 git pull upstream main
 
-# 创建功能分支
+# Create a feature branch
 git checkout -b feat/my-new-feature
 
-# 或修复分支
+# Or a fix branch
 git checkout -b fix/bug-description
 ```
 
-**分支命名规范：**
+**Branch naming conventions:**
 
-- `feat/` - 新功能
-- `fix/` - Bug 修复
-- `docs/` - 文档更新
-- `refactor/` - 代码重构
-- `test/` - 测试相关
+- `feat/` - New feature
+- `fix/` - Bug fix
+- `docs/` - Documentation
+- `refactor/` - Code refactor
+- `test/` - Test changes
 
-### 2. 开发和提交
+### 2. Develop and Commit
 
 ```bash
-# 开发您的功能
+# Develop your feature
 # ...
 
-# 提交更改
+# Stage and commit your changes
 git add .
 git commit -m "feat(scope): description"
 
-# 保持与上游同步
+# Keep in sync with upstream
 git fetch upstream
 git rebase upstream/main
 ```
 
-### 3. 确保代码质量
+### 3. Ensure Code Quality
 
-在提交 PR 前，请确保：
+Before submitting a PR, please make sure:
 
 ```bash
-# 1. 代码格式化与 Lint
+# 1. Format and lint
 ruff format remote_cmd/ tests/
 ruff check remote_cmd/ tests/
 
-# 2. 类型检查
+# 2. Type check
 mypy remote_cmd/
 
-# 3. 运行测试
+# 3. Run tests
 pytest tests/ -v --cov=remote_cmd
 
-# 4. 确保所有测试通过
-# 覆盖率不低于 80%
+# 4. Make sure all tests pass
+# Coverage should not fall below 80%
 ```
 
-### 4. 推送分支
+### 4. Push the Branch
 
 ```bash
 git push origin feat/my-new-feature
 ```
 
-### 5. 创建 Pull Request
+### 5. Create a Pull Request
 
-1. 访问您的 Fork 页面
-2. 点击 "Compare & pull request"
-3. 填写 PR 描述：
+1. Visit your fork page
+2. Click "Compare & pull request"
+3. Fill in the PR description:
 
-**PR 描述模板：**
+**PR description template:**
 
 ```markdown
-## 描述
-简明描述这个 PR 做了什么
+## Description
+Briefly describe what this PR does.
 
-## 类型
-- [ ] Bug 修复
-- [ ] 新功能
-- [ ] 文档更新
-- [ ] 代码重构
-- [ ] 性能优化
-- [ ] 测试
+## Type
+- [ ] Bug fix
+- [ ] New feature
+- [ ] Documentation update
+- [ ] Code refactor
+- [ ] Performance improvement
+- [ ] Tests
 
-## 检查清单
-- [ ] 代码遵循项目风格指南
-- [ ] 所有测试通过
-- [ ] 添加了必要的测试
-- [ ] 更新了相关文档
-- [ ] 代码经过自测
+## Checklist
+- [ ] Code follows the project style guidelines
+- [ ] All tests pass
+- [ ] Necessary tests were added
+- [ ] Related documentation was updated
+- [ ] Code was self-tested
 
-## 相关 Issue
-Fixes #(issue 编号)
-Closes #(issue 编号)
+## Related Issues
+Fixes #(issue number)
+Closes #(issue number)
 
-## 截图（如有必要）
+## Screenshots (optional)
 ```
 
-### 6. 代码审查
+### 6. Code Review
 
-- 维护者会审查您的代码
-- 根据反馈进行修改
-- 通过所有 CI 检查
+- Maintainers will review your code
+- Make changes based on feedback
+- Pass all CI checks
 
-### 7. 合并
+### 7. Merge
 
-审查通过后，维护者会合并您的 PR。
+Once the review passes, a maintainer will merge your PR.
 
 ---
 
-## 报告问题
+## Reporting Issues
 
-### 安全漏洞
+### Security Vulnerabilities
 
-如果您发现了安全漏洞，请**不要**在公共 Issue 中报告。请发送邮件到：
+If you find a security vulnerability, **do not** report it in a public issue. Please email us at:
 
 📧 `scroogevae@gmail.com`
 
-我们会尽快处理。
+We will handle it as soon as possible.
 
-### 一般问题
+### General Issues
 
-对于使用问题，请先：
+For usage questions, please first:
 
-1. 查看 [文档](./README.zh-CN.md)
-2. 搜索 [Issues](https://github.com/Vae-Scrooge/remote-cmd/issues)
-3. 查看 [故障排查指南](docs/TROUBLESHOOTING.md)
+1. Check the [documentation](./README.md)
+2. Search [Issues](https://github.com/Vae-Scrooge/remote-cmd/issues)
+3. Check the [troubleshooting guide](docs/TROUBLESHOOTING.md)
 
-如果仍有问题，欢迎创建 Issue 或使用 GitHub Discussions。
+If you still have questions, feel free to create an issue or use GitHub Discussions.
 
 ---
 
-## 开发提示
+## Development Tips
 
-### 调试技巧
+### Debugging
 
 ```python
-# 启用调试日志
+# Enable debug logging
 import logging
 logging.basicConfig(level=logging.DEBUG)
 
-# 使用断点
+# Use breakpoints
 import pdb; pdb.set_trace()
 ```
 
-### 常用命令
+### Common Commands
 
 ```bash
-# 运行单个测试
+# Run a single test
 pytest tests/test_ssh_client.py::TestSSHClient::test_connect -v
 
-# 查看覆盖率报告
+# View the coverage report
 pytest --cov=remote_cmd --cov-report=html
 
-# 自动格式化
+# Auto-format
 ruff format remote_cmd/ && ruff check --select I remote_cmd/
 ```
 
 ---
 
-## 贡献者
+## Contributors
 
-感谢所有为这个项目做出贡献的人！
+Thanks to everyone who has contributed to this project!
 
 <a href="https://github.com/Vae-Scrooge/remote-cmd/graphs/contributors">
   <img src="https://contrib.rocks/image?repo=Vae-Scrooge/remote-cmd" />
@@ -480,10 +485,10 @@ ruff format remote_cmd/ && ruff check --select I remote_cmd/
 
 ---
 
-## 许可证
+## License
 
-通过贡献代码，您同意您的贡献将在 [MIT License](LICENSE) 下发布。
+By contributing, you agree that your contributions will be released under the [MIT License](LICENSE).
 
 ---
 
-**再次感谢您的贡献！** 🎉
+**Thank you again for your contribution!** 🎉

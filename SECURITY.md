@@ -1,77 +1,82 @@
-# 安全策略
+<p align="center">
+  <img src="https://img.shields.io/badge/English-blue?style=flat-square" alt="English"> ·
+  <a href="./SECURITY.zh-CN.md"><img src="https://img.shields.io/badge/中文-gray?style=flat-square" alt="中文"></a>
+</p>
 
-## 支持的版本
+# Security Policy
 
-Remote CMD 目前处于 **Beta 阶段**。对最新发布的版本积极修复安全漏洞。
+## Supported Versions
 
-| 版本 | 支持状态 |
-|------|----------|
-| 最新发布版 | ✅ 积极维护 |
-| 更早版本 | ⚠️ 仅修复紧急安全漏洞 |
+Remote CMD is currently in the **Beta** stage. Security vulnerabilities in the latest released version are actively fixed.
 
-## 报告安全漏洞
+| Version | Support Status |
+|---------|----------------|
+| Latest release | ✅ Actively maintained |
+| Earlier versions | ⚠️ Critical security fixes only |
 
-我们非常重视 Remote CMD 的安全问题。如果发现安全漏洞，**请不要**在公共 Issue 或公开渠道中报告。
+## Reporting a Vulnerability
 
-### 报告流程
+We take the security of Remote CMD very seriously. If you discover a security vulnerability, **please do NOT** report it in a public Issue or any public channel.
 
-1. **发送邮件**
-   - 邮箱：`scroogevae@gmail.com`
-   - 主题前缀：`[SECURITY]`
+### Reporting Process
 
-2. **邮件内容应包括：**
-   - 漏洞类型（例如：认证绕过、命令注入、敏感信息泄露等）
-   - 受影响版本
-   - 详细复现步骤（如有，请附上 PoC）
-   - 可能的修复建议
-   - 您的联系方式（可选）
+1. **Send an email**
+   - Address: `scroogevae@gmail.com`
+   - Subject prefix: `[SECURITY]`
 
-3. **响应时间**
-   - 确认收到：24 小时内
-   - 初步评估：72 小时内
-   - 修复计划：1 周内
+2. **The email should include:**
+   - Vulnerability type (e.g., authentication bypass, command injection, sensitive information disclosure, etc.)
+   - Affected versions
+   - Detailed reproduction steps (attach a PoC if possible)
+   - Possible fix suggestions
+   - Your contact information (optional)
 
-### 负责任地披露
+3. **Response time**
+   - Acknowledgment: within 24 hours
+   - Initial assessment: within 72 hours
+   - Fix plan: within 1 week
 
-- 请给予我们合理的时间来修复问题
-- 在漏洞修复发布之前，请勿公开披露
-- 修复完成后，我们会在 [CHANGELOG.md](./CHANGELOG.md) 中致谢报告者（经同意后）
+### Responsible Disclosure
 
-## 安全最佳实践
+- Please give us reasonable time to fix the issue
+- Do not disclose publicly before a fix is released
+- After the fix is released, we will credit reporters in the [CHANGELOG.md](./CHANGELOG.md) (with consent)
 
-### 1. SSH 密钥管理
-- 优先使用 SSH 密钥而非密码
-- 私钥文件权限设置为 `600`
-- 定期轮换密钥
-- 可使用密钥管理工具（如 `ssh-agent`）
+## Security Best Practices
 
-### 2. 配置文件保护
-- 不要将配置文件提交到版本控制
-- 使用 `.gitignore` 排除敏感文件（默认会忽略 `*.yaml`、`*.json` 等）
-- 配置文件权限设置为 `600`
-- 敏感信息（如密码）优先通过环境变量注入
+### 1. SSH Key Management
+- Prefer SSH keys over passwords
+- Set private key file permissions to `600`
+- Rotate keys periodically
+- You may use a key management tool (e.g., `ssh-agent`)
 
-### 3. 最小权限原则
-- 使用拥有最小必要权限的用户
-- 避免直接使用 root 账户
-- 通过 `sudo` 执行特权命令
-- 记录特权操作
+### 2. Configuration File Protection
+- Do not commit configuration files to version control
+- Use `.gitignore` to exclude sensitive files (defaults ignore `*.yaml`, `*.json`, etc.)
+- Set configuration file permissions to `600`
+- Sensitive information (such as passwords) should preferably be injected via environment variables
 
-### 4. 网络安全
-- 使用防火墙限制 SSH 访问来源
-- 考虑使用 VPN 或跳板机
-- 启用 SSH 审计日志
-- 监控异常连接
+### 3. Principle of Least Privilege
+- Use accounts with the minimum necessary privileges
+- Avoid using the root account directly
+- Execute privileged commands via `sudo`
+- Log privileged operations
 
-## 已知安全问题
+### 4. Network Security
+- Use a firewall to restrict SSH access sources
+- Consider using a VPN or a jump host
+- Enable SSH audit logging
+- Monitor unusual connections
 
-目前没有已知的公开安全漏洞。
+## Known Security Issues
 
-## 安全更新发布渠道
+There are currently no known public security vulnerabilities.
+
+## Security Update Release Channels
 
 - [GitHub Security Advisories](https://github.com/Vae-Scrooge/remote-cmd/security/advisories)
 - [CHANGELOG.md](./CHANGELOG.md)
 
-## 致谢
+## Acknowledgements
 
-感谢所有关注并提升 Remote CMD 安全性的研究人员与用户。
+We thank all researchers and users who help improve the security of Remote CMD.

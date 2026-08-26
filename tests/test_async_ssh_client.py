@@ -12,7 +12,12 @@ import pytest
 
 from remote_cmd.core.async_ssh_client import AsyncSSHClient
 from remote_cmd.core.ssh_client import CommandResult, ConnectionConfig
-from remote_cmd.utils.exceptions import SSHConnectionError
+from remote_cmd.utils.exceptions import (
+    SSHAuthenticationError,
+    SSHConnectionError,
+    SSHTimeoutError,
+    ValidationError,
+)
 
 # ============================================================================
 # Fixtures
@@ -103,10 +108,30 @@ class TestAsyncSSHClientConnect:
             await client.connect()
 
     @pytest.mark.asyncio
+    async def test_connect_auth_failed_raises_authentication_error(self, config, patched_asyncssh):
+        """v2.1：认证失败细分为 SSHAuthenticationError（永久性，不重试），
+        同时保持 SSHConnectionError 可捕获（既有契约）"""
+        patched_asyncssh.PermissionDenied = type("PD", (Exception,), {})
+        patched_asyncssh.connect = AsyncMock(
+            side_effect=patched_asyncssh.PermissionDenied("bad creds")
+        )
+        client = AsyncSSHClient(config)
+        with pytest.raises(SSHAuthenticationError, match="authentication failed"):
+            await client.connect()
+
+    @pytest.mark.asyncio
     async def test_connect_timeout(self, config, patched_asyncssh):
         patched_asyncssh.connect = AsyncMock(side_effect=OSError("Connection timed out"))
         client = AsyncSSHClient(config)
         with pytest.raises(SSHConnectionError, match="connection timeout"):
+            await client.connect()
+
+    @pytest.mark.asyncio
+    async def test_connect_timeout_raises_timeout_error(self, config, patched_asyncssh):
+        """v2.1：连接超时细分为 SSHTimeoutError（瞬态，可重试）"""
+        patched_asyncssh.connect = AsyncMock(side_effect=OSError("Connection timed out"))
+        client = AsyncSSHClient(config)
+        with pytest.raises(SSHTimeoutError, match="connection timeout"):
             await client.connect()
 
     @pytest.mark.asyncio
@@ -147,10 +172,12 @@ class TestAsyncSSHClientExecute:
     async def test_execute_with_environment(self, config, patched_asyncssh, conn_mock):
         async with AsyncSSHClient(config) as client:
             await client.execute("ls", environment={"FOO": "bar"})
-        # 断言 run 被调用，命令中包含 export 与环境变量传入 env
+        # 断言 run 被调用，命令中包含 export 前缀注入的环境变量；
+        # env 不再通过 conn.run(env=...) 传递（依赖服务端 AcceptEnv 且
+        # 与同步实现语义分叉，v2.1 起仅保留 shell 前缀注入）
         args, kwargs = conn_mock.run.call_args
         assert "export FOO=bar" in args[0]
-        assert kwargs.get("env") == {"FOO": "bar"}
+        assert "env" not in kwargs
 
     @pytest.mark.asyncio
     async def test_execute_failure_exit_code(self, config, patched_asyncssh, conn_mock):
@@ -239,3 +266,27 @@ class TestAsyncSSHClientFileTransfer:
         assert len(entries) == 2
         assert entries[0].name == "a.txt"
         assert entries[1].is_dir is True
+
+
+# ============================================================================
+# v2.1：环境变量键校验（安全加固）
+# ============================================================================
+
+
+class TestAsyncSSHClientEnvironmentValidation:
+    @pytest.mark.asyncio
+    async def test_invalid_key_rejected_before_execution(self, config, patched_asyncssh, conn_mock):
+        """含 shell 元字符的键在拼接命令前被拒绝（防命令注入，与同步实现一致）"""
+        client = AsyncSSHClient(config)
+        await client.connect()
+        with pytest.raises(ValidationError, match="invalid environment variable name"):
+            await client.execute("ls", environment={"A; rm -rf /": "x"})
+        conn_mock.run.assert_not_awaited()
+
+    @pytest.mark.parametrize("bad_key", ["B;echo pwned", "$(cmd)", "`cmd`", "A B", "1BAD", ""])
+    @pytest.mark.asyncio
+    async def test_various_malformed_keys_rejected(self, config, patched_asyncssh, bad_key):
+        client = AsyncSSHClient(config)
+        await client.connect()
+        with pytest.raises(ValidationError):
+            await client.execute("ls", environment={bad_key: "v"})

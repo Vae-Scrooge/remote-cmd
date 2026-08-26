@@ -207,6 +207,15 @@ class TestUseAsyncDelegation:
             def __init__(self, config, *a, **k):  # noqa: ARG002
                 self.config = config
 
+            async def connect(self):
+                return self
+
+            async def disconnect(self):
+                return None
+
+            def is_connected(self):
+                return True
+
             async def __aenter__(self):
                 return self
 

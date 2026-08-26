@@ -7,6 +7,93 @@
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-08-22
+
+本版本包含两层范围：未特别标注的 `Added` / `Changed` / `Fixed` / `Security` 条目记录
+v2.1.0 的主要实现变更（Paramiko 可靠性、异步连接池、重试策略、异常模型、安全与 CLI）；
+标注 **[发布加固]** 的条目记录发布前最终加固，不是“仅文档变更”。
+
+### Added
+
+- **AsyncConnectionPool 正式接入 AsyncBatchExecutor**（此前该池在生产路径零消费，异步内核每次
+  尝试都新建连接）：多主机或需重试时内部按主机创建池、跨重试复用连接、批结束后自动
+  `close_all`，与同步 `BatchExecutor` 的 `SyncConnectionPool` 行为完全对齐。
+- `AsyncBatchExecutor` / `BatchExecutor` 新增 `pool_factory` 构造参数（外部连接池注入）：
+  提供时执行器从工厂获取池并复用连接，**绝不关闭**（所有权归调用方，适合长驻服务跨批次
+  复用）；内部创建的池仍由执行器在单次 `execute` 结束后自动关闭。
+- 新增重试策略模块 `remote_cmd.service.retry_policy`（`is_retryable` / `compute_backoff_delay`）：
+  显式区分瞬态（可重试）与永久性（绝不重试）错误；指数退避 + full jitter。
+- 异常层次新增细分类型（保留既有父类捕获行为，向后兼容）：
+  `SSHAuthenticationError(SSHConnectionError)`、`SSHTimeoutError(SSHConnectionError)`、
+  `SSHCommandTimeoutError(SSHCommandError)`、`CredentialError(RemoteCmdError)`、
+  `ConfigurationError`（`ConfigError` 别名）；`CredentialEncryptionError` 改为继承
+  `CredentialError`（归入 `RemoteCmdError` 层级，既有导入路径不变）。
+- `AsyncConnectionPool` 新增 `client_factory` 参数（与 `SyncConnectionPool` 对齐，测试可注入）。
+- CLI `run` 命令新增 `--timeout/-T` 选项（此前未提供命令执行超时，挂起的远端命令会永久阻塞 CLI）。
+- `SSHClient` / `AsyncSSHClient` 环境变量注入新增键名校验（`validate_environment`）。
+
+### Changed
+
+- **重试语义收紧**（`BatchExecutor` / `AsyncBatchExecutor`）：认证、凭据、配置、校验及
+  编程错误（`ValueError` / `TypeError` / `KeyError` / `RuntimeError`）立即失败不再重试；
+  未识别的 `Exception` 保持历史可重试行为（兼容注入自定义 client_factory 的调用方）。
+- **重试等待改为指数退避 + full jitter**：`retry_delay` 语义由"固定间隔"变为"基础延迟"，
+  第 n 次失败后等待 `0` 到 `min(60s, retry_delay * 2^n)`（含端点）内的随机值，避免多主机同步重试的
+  惊群效应。
+- `SSHClient.execute` / `execute_sudo` 的 `timeout` 明确为 **wall-clock 语义**（与
+  `AsyncSSHClient` 的 `conn.run(timeout=...)` 对齐）：超时后关闭通道终止远端命令并抛出
+  `SSHCommandTimeoutError`。此前 timeout 对静默挂起的命令完全不生效（永久阻塞）。
+- `AsyncSSHClient.execute` 不再通过 `conn.run(env=...)` 重复注入环境变量（该路径依赖
+  服务端 `AcceptEnv` 且与同步实现语义分叉），统一仅保留命令前缀 `export` 注入。
+- **[发布加固] `BatchExecutor(use_async=True)` 在运行中的事件循环内调用**时，抛出可操作
+  的项目级 `RuntimeError`（提示改用 `AsyncBatchExecutor.execute()` 直接调用），替代
+  `asyncio.run` 的通用 Python 错误；其余来源的 `RuntimeError` 不受影响。
+
+### Fixed
+
+- **[Critical] Paramiko 大输出死锁**：`SSHClient.execute` / `execute_sudo` 此前在读取输出流
+  之前调用 `recv_exit_status()`——当命令输出超过 SSH 通道窗口（默认 2MB）时远端阻塞写入、
+  命令永不退出、调用永久挂起（paramiko 官方文档明确警告的场景）。现在 stderr 由后台线程
+  排空、stdout 在当前线程读取，两流并发消费后获取退出状态。
+- **[High] 多主机批次含未知主机时 `execute` 抛 `KeyError`**：`_prepare_pool` 在池准备阶段
+  解析主机失败会上抛异常导致整批失败；现在返回 None 并由单主机路径记录
+  "host not found" 错误条目（契约与单主机路径一致）。
+- **[发布加固] 连接池关闭竞态**：`SyncConnectionPool.acquire` / `AsyncConnectionPool.acquire`
+  阻塞在信号量期间 `close_all()` 完成时，取得槽位后现在复查关闭状态——归还槽位并抛出
+  既有 `RuntimeError("connection pool is closed")`，而不是从已关闭的池发放游离连接。
+- **[发布加固] `SSHClient._read_output` 的 stderr 排空线程 join 改为有界**（5 秒）：
+  极端场景下（超时回调中 `channel.close()` 失败，或主线程读取异常退出而通道仍打开），
+  排空线程可能仍阻塞——无界 join 会让调用方永久挂起。
+
+### Security
+
+- 环境变量**键名**注入防护：值虽经 `shlex.quote` 转义，但键直接拼入 `export {k}=...`
+  命令前缀，含 shell 元字符的键（如 `A; malicious`）可造成命令注入；现在键必须匹配
+  `[A-Za-z_][A-Za-z0-9_]*`，否则抛 `ValidationError`（拼接前拒绝）。
+- `ConnectionConfig` 文档修正：默认主机密钥策略实为 `RejectPolicy`（原文档误写
+  `WarningPolicy`）。
+
+### 迁移说明（v2.0 → v2.1）
+
+- **异常**：既有异常名称与导入路径保持不变，新增 SSH 异常均为既有类型的子类（或别名），
+  因此 `except SSHConnectionError` / `except SSHCommandError` / `except Exception` 等既有
+  捕获行为完全兼容；需要精细处理时可改为捕获新子类。例外是
+  `CredentialEncryptionError` 现在额外继承 `CredentialError`，以归入统一的凭据异常层级，
+  但原有 `except CredentialEncryptionError` 捕获仍有效。
+- **重试**：依赖"认证失败也会重试"的调用方（不推荐）会观察到认证错误现在只执行一次；
+  依赖固定重试间隔的调用方会观察到间隔变为指数退避随机值；第 n 次失败后的期望等待时间
+  约为 `min(60s, retry_delay * 2^n) / 2`。未知的 `Exception` 子类仍保持可重试，以兼容
+  自定义 `client_factory`；自定义实现应优先抛出类型化的 `remote_cmd` 异常以获得精确分类。
+- **超时**：`SSHClient.execute(cmd, timeout=N)` 对静默挂起命令从"永久阻塞"变为
+  "N 秒后抛 `SSHCommandTimeoutError`"——这是超时参数的文档语义，此前是缺陷。
+- **环境变量**：`execute(..., environment={"bad key": v})` 此前会拼出损坏的 shell 命令，
+  现在抛 `ValidationError`。
+- **连接池**：多主机或重试批次现在会复用 `AsyncConnectionPool` / `SyncConnectionPool`；
+  `pool_factory` 提供的外部池由调用方负责生命周期，执行器绝不关闭，内部创建的池则在
+  `execute()` 结束后自动关闭。
+- **事件循环**：`BatchExecutor(use_async=True)` 不能在活动事件循环内调用；请在该场景
+  直接 `await AsyncBatchExecutor.execute()`。
+
 ## [2.0.0] - 2026-08-13
 
 ### Added

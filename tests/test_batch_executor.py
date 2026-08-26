@@ -6,6 +6,21 @@ import pytest
 
 from remote_cmd.core.host import Host
 from remote_cmd.service.batch_executor import BatchExecutor, BatchHostResult, BatchResult
+from remote_cmd.utils.exceptions import CredentialError, SSHAuthenticationError
+
+
+def make_mock_service(hosts: list):
+    """创建模拟的 HostService（模块级共享：多个测试类复用）"""
+    service = MagicMock()
+    host_dict = {h.name: h for h in hosts}
+
+    def resolve_host(name):
+        if name in host_dict:
+            return host_dict[name]
+        raise KeyError(f"主机 '{name}' 不存在")
+
+    service.resolve_host = resolve_host
+    return service
 
 
 class TestBatchHostResult:
@@ -84,17 +99,8 @@ class TestBatchExecutor:
     """BatchExecutor 执行器测试"""
 
     def make_mock_service(self, hosts: list):
-        """创建模拟的 HostService"""
-        service = MagicMock()
-        host_dict = {h.name: h for h in hosts}
-
-        def resolve_host(name):
-            if name in host_dict:
-                return host_dict[name]
-            raise KeyError(f"主机 '{name}' 不存在")
-
-        service.resolve_host = resolve_host
-        return service
+        """创建模拟的 HostService（委托模块级共享实现）"""
+        return make_mock_service(hosts)
 
     def test_empty_host_list_raises(self):
         """测试：空主机列表应报错"""
@@ -435,3 +441,228 @@ class TestBatchExecutor:
             executor.execute(["srv1"], "uptime", progress_callback=async_callback)
 
         assert "同步内核不支持异步进度回调" in caplog.text
+
+
+# ============================================================================
+# v2.1：重试分类（永久性错误不重试）+ 连接池准备健壮性
+# ============================================================================
+
+
+class TestBatchExecutorRetryClassification:
+    """永久性错误（认证/凭据/配置）必须立即放弃重试"""
+
+    def _make_executor(self, service):
+        return BatchExecutor(host_service=service, command_timeout=5)
+
+    @patch("remote_cmd.service.batch_executor.SSHClient")
+    def test_auth_error_not_retried(self, mock_ssh_class):
+        """认证失败是永久性错误：即便 retry_count>0 也只执行一次"""
+        host = Host(name="srv1", hostname="10.0.0.1", username="admin")
+        service = make_mock_service([host])
+
+        mock_instance = MagicMock()
+        mock_ssh_class.return_value = mock_instance
+        mock_instance.execute.side_effect = SSHAuthenticationError("authentication failed")
+
+        executor = self._make_executor(service)
+        result = executor.execute(["srv1"], "uptime", retry_count=3, retry_delay=0.01)
+
+        assert result.success == 0
+        assert mock_instance.execute.call_count == 1
+        assert "authentication failed" in (result.results["srv1"].error or "")
+
+    @patch("remote_cmd.service.batch_executor.SSHClient")
+    def test_credential_error_not_retried(self, mock_ssh_class):
+        """凭据解析失败是永久性错误：不重试"""
+        host = Host(name="srv1", hostname="10.0.0.1", username="admin")
+        service = make_mock_service([host])
+
+        mock_instance = MagicMock()
+        mock_ssh_class.return_value = mock_instance
+        mock_instance.execute.side_effect = CredentialError("decrypt failed")
+
+        executor = self._make_executor(service)
+        result = executor.execute(["srv1"], "uptime", retry_count=3, retry_delay=0.01)
+
+        assert result.success == 0
+        assert mock_instance.execute.call_count == 1
+
+    @patch("remote_cmd.service.batch_executor.SSHClient")
+    def test_value_error_not_retried(self, mock_ssh_class):
+        """参数/编程错误是永久性错误：不重试"""
+        host = Host(name="srv1", hostname="10.0.0.1", username="admin")
+        service = make_mock_service([host])
+
+        mock_instance = MagicMock()
+        mock_ssh_class.return_value = mock_instance
+        mock_instance.execute.side_effect = ValueError("port out of range")
+
+        executor = self._make_executor(service)
+        result = executor.execute(["srv1"], "uptime", retry_count=2, retry_delay=0.01)
+
+        assert result.success == 0
+        assert mock_instance.execute.call_count == 1
+
+    @patch("remote_cmd.service.batch_executor.SSHClient")
+    def test_transient_oserror_retried_with_backoff(self, mock_ssh_class):
+        """瞬态 OSError 保持重试；退避时间为指数上界内的随机值"""
+        host = Host(name="srv1", hostname="10.0.0.1", username="admin")
+        service = make_mock_service([host])
+
+        mock_instance = MagicMock()
+        mock_ssh_class.return_value = mock_instance
+        # attempt 0 失败，attempt 1 失败，attempt 2 成功
+        ok = MagicMock()
+        ok.success = True
+        ok.exit_code = 0
+        ok.stdout = "OK"
+        ok.stderr = ""
+        mock_instance.execute.side_effect = [
+            OSError("connection reset"),
+            OSError("connection reset"),
+            ok,
+        ]
+
+        delays = []
+
+        def fake_sleep(delay):
+            delays.append(delay)
+
+        executor = self._make_executor(service)
+        with patch("remote_cmd.service.batch_executor.time.sleep", side_effect=fake_sleep):
+            result = executor.execute(["srv1"], "uptime", retry_count=3, retry_delay=1.0)
+
+        assert result.success == 1
+        assert mock_instance.execute.call_count == 3
+        # 两次退避：第一次 <= base * 2^0 = 1.0，第二次 <= base * 2^1 = 2.0
+        assert len(delays) == 2
+        assert 0.0 <= delays[0] <= 1.0
+        assert 0.0 <= delays[1] <= 2.0
+
+    @patch("remote_cmd.service.batch_executor.SSHClient")
+    def test_keyboard_interrupt_not_retried(self, mock_ssh_class):
+        """KeyboardInterrupt 属 BaseException：不被重试循环的
+        except Exception 捕获，由批次中断路径接管（不产生重试）"""
+        host = Host(name="srv1", hostname="10.0.0.1", username="admin")
+        service = make_mock_service([host])
+
+        mock_instance = MagicMock()
+        mock_ssh_class.return_value = mock_instance
+        mock_instance.execute.side_effect = KeyboardInterrupt()
+
+        executor = self._make_executor(service)
+        result = executor.execute(["srv1"], "uptime", retry_count=3, retry_delay=0.01)
+
+        # 中断被批次捕获并转为失败记录，绝不重试
+        assert mock_instance.execute.call_count == 1
+        assert result.results["srv1"].success is False
+
+
+class TestBatchExecutorPreparePoolRobustness:
+    """_prepare_pool 对未知主机的健壮性（H3 修复）"""
+
+    @patch("remote_cmd.service.batch_executor.SSHClient")
+    def test_unknown_host_multi_batch_returns_error_result(self, _mock_ssh_class):
+        """多主机批次中含未知主机：execute 不抛 KeyError，
+        返回该主机的错误条目（契约与单主机路径一致）"""
+        host = Host(name="srv1", hostname="10.0.0.1", username="admin")
+        service = make_mock_service([host])
+
+        mock_instance = MagicMock()
+        _mock_ssh_class.return_value = mock_instance
+        ok = MagicMock()
+        ok.success = True
+        ok.exit_code = 0
+        ok.stdout = "OK"
+        ok.stderr = ""
+        mock_instance.execute.return_value = ok
+
+        with patch("remote_cmd.service.batch_executor.SyncConnectionPool") as mock_pool_class:
+            mock_pool_class.return_value = MagicMock()
+            executor = BatchExecutor(host_service=service)
+            # srv1 已知 + ghost 未知：total=2 触发连接池路径
+            result = executor.execute(["srv1", "ghost"], "uptime")
+
+        assert result.total == 2
+        assert result.success == 1
+        assert result.failed == 1
+        assert "not found" in (result.results["ghost"].error or "")
+        # 未知主机的池准备失败不应中断整批：已知主机仍有执行结果
+        assert result.results["srv1"].stdout is not None
+
+    @patch("remote_cmd.service.batch_executor.SSHClient")
+    def test_unknown_host_with_retry_returns_error_result(self, _mock_ssh_class):
+        """retry_count>0 的单未知主机：同样返回错误条目而非抛异常"""
+        service = make_mock_service([])
+
+        with patch("remote_cmd.service.batch_executor.SyncConnectionPool") as mock_pool_class:
+            mock_pool_class.return_value = MagicMock()
+            executor = BatchExecutor(host_service=service)
+            result = executor.execute(["ghost"], "uptime", retry_count=2)
+
+        assert result.total == 1
+        assert result.failed == 1
+        assert "not found" in (result.results["ghost"].error or "")
+
+
+class TestBatchExecutorExternalPoolFactory:
+    """外部连接池工厂（v2.1，与 AsyncBatchExecutor 对称）"""
+
+    @patch("remote_cmd.service.batch_executor.SSHClient")
+    def test_external_pool_factory_never_closed(self, mock_ssh_class):
+        """外部 pool_factory：池由调用方持有，executor 绝不关闭"""
+        host = Host(name="srv1", hostname="10.0.0.1", username="admin")
+        service = make_mock_service([host])
+
+        mock_instance = MagicMock()
+        mock_ssh_class.return_value = mock_instance
+        ok = MagicMock()
+        ok.success = True
+        ok.exit_code = 0
+        ok.stdout = "OK"
+        ok.stderr = ""
+        mock_instance.execute.return_value = ok
+
+        external_pool = MagicMock()
+        factory_calls = []
+
+        def factory(cfg):
+            factory_calls.append(cfg)
+            return external_pool
+
+        # 单主机无重试：提供 factory 时仍使用池（外部注入即明确意图）
+        executor = BatchExecutor(host_service=service, pool_factory=factory)
+        result = executor.execute(["srv1"], "uptime")
+
+        assert result.success == 1
+        assert len(factory_calls) == 1
+        external_pool.acquire_context.assert_called()
+        # 所有权契约：外部池绝不关闭
+        external_pool.close_all.assert_not_called()
+
+    @patch("remote_cmd.service.batch_executor.SSHClient")
+    def test_internal_pools_closed_after_batch(self, mock_ssh_class):
+        """内部池在批次结束后自动 close_all（与历史行为一致）"""
+        hosts = [
+            Host(name=f"srv{i}", hostname=f"10.0.0.{i}", username="admin") for i in range(1, 3)
+        ]
+        service = make_mock_service(hosts)
+
+        mock_instance = MagicMock()
+        mock_ssh_class.return_value = mock_instance
+        ok = MagicMock()
+        ok.success = True
+        ok.exit_code = 0
+        ok.stdout = "OK"
+        ok.stderr = ""
+        mock_instance.execute.return_value = ok
+
+        with patch("remote_cmd.service.batch_executor.SyncConnectionPool") as mock_pool_class:
+            mock_pool_instance = MagicMock()
+            mock_pool_class.return_value = mock_pool_instance
+            executor = BatchExecutor(host_service=service)
+            result = executor.execute(["srv1", "srv2"], "uptime")
+
+        assert result.success == 2
+        # 两个内部池都被关闭
+        assert mock_pool_instance.close_all.call_count == 2

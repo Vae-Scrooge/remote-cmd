@@ -13,6 +13,7 @@ from remote_cmd.core.host import Host
 from remote_cmd.core.ssh_client import CommandResult, ConnectionConfig
 from remote_cmd.service.async_batch_executor import AsyncBatchExecutor
 from remote_cmd.service.batch_executor import BatchExecutor, BatchHostResult
+from remote_cmd.utils.exceptions import CredentialError, SSHAuthenticationError, SSHTimeoutError
 
 # ============================================================================
 # AsyncConnectionPool 测试
@@ -280,19 +281,21 @@ class TestAsyncConnectionPool:
             client.connect = AsyncMock(side_effect=OSError("auth failed"))
             return client
 
-        pool = AsyncConnectionPool(config=config, max_connections=1)
-        try:
-            with (
-                patch(
-                    "remote_cmd.core.async_connection_pool.AsyncSSHClient",
-                    side_effect=failing_factory,
-                ),
-                pytest.raises(OSError),
-            ):
-                await pool.acquire()
-            assert pool.get_metrics()["failed"] == 1
-        finally:
-            await pool.close_all()
+        # 池必须在 patch 生效后构造：client_factory 默认在 __init__ 时
+        # 从模块命名空间解析（与 SyncConnectionPool 行为一致）
+        with (
+            patch(
+                "remote_cmd.core.async_connection_pool.AsyncSSHClient",
+                side_effect=failing_factory,
+            ),
+        ):
+            pool = AsyncConnectionPool(config=config, max_connections=1)
+            try:
+                with pytest.raises(OSError):
+                    await pool.acquire()
+                assert pool.get_metrics()["failed"] == 1
+            finally:
+                await pool.close_all()
 
     @pytest.mark.asyncio
     async def test_check_connection_lifetime(self, config, patched_client):
@@ -396,16 +399,23 @@ def make_mock_service(hosts: list[Host]):
 
 @pytest.fixture
 def mock_async_client_class():
-    """patch AsyncBatchExecutor 使用的 AsyncSSHClient（类层级）。"""
+    """patch AsyncBatchExecutor 使用的 AsyncSSHClient（类层级）。
+
+    返回的 mock 同时支持两种执行路径：
+    - 直连路径：``async with AsyncSSHClient(config) as client``
+    - 连接池路径：``pool.acquire_context()`` 借出的连接
+      （connect / execute / disconnect / is_connected 均可用）
+    """
     instance = MagicMock()
     instance.connect = AsyncMock(return_value=instance)
     instance.disconnect = AsyncMock()
     instance.execute = AsyncMock(return_value=CommandResult("uptime", "OK", "", 0))
-    cm = MagicMock(return_value=instance)
-    cm.__aenter__ = AsyncMock(return_value=instance)
-    cm.__aexit__ = AsyncMock(return_value=None)
-    with patch("remote_cmd.service.async_batch_executor.AsyncSSHClient", return_value=cm):
-        yield cm, instance
+    instance.is_connected.return_value = True
+    instance.__aenter__ = AsyncMock(return_value=instance)
+    instance.__aexit__ = AsyncMock(return_value=None)
+    cls = MagicMock(return_value=instance)
+    with patch("remote_cmd.service.async_batch_executor.AsyncSSHClient", cls):
+        yield cls, instance
 
 
 class TestAsyncBatchExecutor:
@@ -554,3 +564,243 @@ class TestBatchExecutorUseAsyncSwitch:
         ex = BatchExecutor(host_service=MagicMock(), use_async=True)
         with pytest.raises(ValueError, match="host_names must not be empty"):
             ex.execute([], "uptime")
+
+
+# ============================================================================
+# v2.1：重试分类 + 连接池集成（内部池生命周期 / 外部池所有权）
+# ============================================================================
+
+
+class TestAsyncBatchExecutorRetryClassification:
+    @pytest.mark.asyncio
+    async def test_auth_error_not_retried(self, mock_async_client_class):
+        """认证失败是永久性错误：即便 retry_count>0 也只执行一次"""
+        cm, instance = mock_async_client_class
+        instance.execute = AsyncMock(side_effect=SSHAuthenticationError("authentication failed"))
+        host = Host(name="srv1", hostname="10.0.0.1", username="admin")
+        ex = AsyncBatchExecutor(host_service=make_mock_service([host]))
+        result = await ex.execute(["srv1"], "uptime", retry_count=3, retry_delay=0.01)
+        assert result.success == 0
+        assert instance.execute.await_count == 1
+        assert "authentication failed" in (result.results["srv1"].error or "")
+
+    @pytest.mark.asyncio
+    async def test_credential_error_not_retried(self, mock_async_client_class):
+        """凭据解析失败是永久性错误：不重试"""
+        cm, instance = mock_async_client_class
+        instance.execute = AsyncMock(side_effect=CredentialError("decrypt failed"))
+        host = Host(name="srv1", hostname="10.0.0.1", username="admin")
+        ex = AsyncBatchExecutor(host_service=make_mock_service([host]))
+        result = await ex.execute(["srv1"], "uptime", retry_count=3, retry_delay=0.01)
+        assert result.success == 0
+        assert instance.execute.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_timeout_error_retried(self, mock_async_client_class):
+        """SSHTimeoutError 是瞬态错误：保持重试"""
+        cm, instance = mock_async_client_class
+        instance.execute = AsyncMock(
+            side_effect=[SSHTimeoutError("timeout"), CommandResult("uptime", "OK", "", 0)]
+        )
+        host = Host(name="srv1", hostname="10.0.0.1", username="admin")
+        ex = AsyncBatchExecutor(host_service=make_mock_service([host]))
+        result = await ex.execute(["srv1"], "uptime", retry_count=2, retry_delay=0.01)
+        assert result.success == 1
+        assert instance.execute.await_count == 2
+
+
+class TestAsyncBatchExecutorPoolIntegration:
+    """AsyncConnectionPool 集成（v2.1）"""
+
+    @pytest.mark.asyncio
+    async def test_retry_reuses_pooled_connection(self):
+        """重试通过池复用连接：3 次尝试只有 1 次 connect 握手"""
+        host = Host(name="srv1", hostname="10.0.0.1", username="admin")
+        clients = []
+
+        def factory(cfg):
+            c = _client_mock()
+            c.execute = AsyncMock(
+                side_effect=[
+                    OSError("connection reset"),
+                    OSError("connection reset"),
+                    CommandResult("uptime", "OK", "", 0),
+                ]
+            )
+            clients.append(c)
+            return c
+
+        with patch("remote_cmd.service.async_batch_executor.AsyncSSHClient", side_effect=factory):
+            ex = AsyncBatchExecutor(host_service=make_mock_service([host]))
+            result = await ex.execute(["srv1"], "uptime", retry_count=2, retry_delay=0.01)
+
+        assert result.success == 1
+        assert len(clients) == 1  # 池只创建了一个连接
+        assert clients[0].connect.await_count == 1  # 只握手一次
+        assert clients[0].execute.await_count == 3  # 三次尝试复用同一连接
+
+    @pytest.mark.asyncio
+    async def test_internal_pools_closed_after_batch(self):
+        """内部池在批次结束后自动 close_all（连接被 disconnect）"""
+        hosts = [Host(name=f"srv{i}", hostname=f"10.0.0.{i}", username="admin") for i in range(3)]
+        clients = []
+
+        def factory(cfg):
+            c = _client_mock()
+            clients.append(c)
+            return c
+
+        with patch("remote_cmd.service.async_batch_executor.AsyncSSHClient", side_effect=factory):
+            ex = AsyncBatchExecutor(host_service=make_mock_service(hosts))
+            result = await ex.execute([h.name for h in hosts], "uptime")
+
+        assert result.success == 3
+        assert len(clients) == 3
+        for c in clients:
+            c.disconnect.assert_awaited_once()  # close_all 关闭所有连接
+
+    @pytest.mark.asyncio
+    async def test_single_host_no_retry_no_pool(self):
+        """单主机无重试不创建内部池（与同步 BatchExecutor 对齐）"""
+        host = Host(name="srv1", hostname="10.0.0.1", username="admin")
+        clients = []
+
+        def factory(cfg):
+            c = _client_mock()
+            clients.append(c)
+            return c
+
+        with (
+            patch("remote_cmd.service.async_batch_executor.AsyncSSHClient", side_effect=factory),
+            patch("remote_cmd.service.async_batch_executor.AsyncConnectionPool") as mock_pool_cls,
+        ):
+            ex = AsyncBatchExecutor(host_service=make_mock_service([host]))
+            result = await ex.execute(["srv1"], "uptime")
+
+        assert result.success == 1
+        mock_pool_cls.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_external_pool_factory_never_closed(self):
+        """外部 pool_factory：池由调用方持有，executor 绝不关闭"""
+        host = Host(name="srv1", hostname="10.0.0.1", username="admin")
+        client = _client_mock()
+        ctx = MagicMock()
+        ctx.__aenter__ = AsyncMock(return_value=client)
+        ctx.__aexit__ = AsyncMock(return_value=None)
+        external_pool = MagicMock()
+        external_pool.acquire_context = MagicMock(return_value=ctx)
+        external_pool.close_all = AsyncMock()
+
+        factory_calls = []
+
+        def factory(cfg):
+            factory_calls.append(cfg)
+            return external_pool
+
+        # 单主机无重试：提供 factory 时仍使用池（外部注入即明确意图）
+        ex = AsyncBatchExecutor(host_service=make_mock_service([host]), pool_factory=factory)
+        result = await ex.execute(["srv1"], "uptime")
+
+        assert result.success == 1
+        assert len(factory_calls) == 1
+        client.execute.assert_awaited_once()
+        external_pool.acquire_context.assert_called()
+        # 所有权契约：外部池绝不关闭
+        external_pool.close_all.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_unknown_host_multi_batch_returns_error_result(self):
+        """多主机批次中含未知主机：返回错误条目而非抛异常（与同步一致）"""
+        host = Host(name="srv1", hostname="10.0.0.1", username="admin")
+
+        def factory(cfg):
+            return _client_mock()
+
+        with patch("remote_cmd.service.async_batch_executor.AsyncSSHClient", side_effect=factory):
+            ex = AsyncBatchExecutor(host_service=make_mock_service([host]))
+            result = await ex.execute(["srv1", "ghost"], "uptime")
+
+        assert result.total == 2
+        assert result.success == 1
+        assert result.failed == 1
+        assert "not found" in (result.results["ghost"].error or "")
+
+
+# ============================================================================
+# v2.1 发布加固：close_all 与阻塞中 acquire 的竞态（异步池）
+# ============================================================================
+
+
+class TestAsyncConnectionPoolCloseRace:
+    """close_all() 与阻塞在信号量上的 acquire() 的竞态守卫（异步池）"""
+
+    @pytest.mark.asyncio
+    async def test_acquire_blocked_during_close_raises(self, config, patched_client):
+        """信号量等待期间池被关闭：阻塞的 acquire 必须抛 RuntimeError，
+        而非从已关闭的池发放新连接
+
+        竞态窗口（无守卫时）：
+        1. acquire 通过 _closed 预检（False）→ 挂起在信号量等待上
+        2. close_all() 置位 _closed
+        3. 信号量被 release 唤醒 → acquire 继续执行 → _create_connection
+           从已关闭的池发放游离连接
+        """
+        pool = AsyncConnectionPool(config=config, max_connections=1)
+        c1 = await pool.acquire()  # 占用唯一槽位
+
+        task = asyncio.create_task(pool.acquire())
+        # 协作式调度下，数次 sleep(0) 足以保证 task 已通过 _closed 预检
+        # 并挂起在信号量上（许可为 0，不存在其他可前进的路径）
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert not task.done()
+        assert pool._semaphore._value == 0
+
+        # task 挂起期间关闭池，随后归还连接释放许可唤醒 task
+        await pool.close_all()
+        await pool.release(c1)
+
+        with pytest.raises(RuntimeError, match="connection pool is closed"):
+            await task
+        # 已关闭的池不得再新建连接
+        assert pool.get_metrics()["total_created"] == 1
+
+
+class TestBatchExecutorUseAsyncInRunningLoop:
+    """use_async=True 在运行中的事件循环内调用的错误提示（v2.1 发布加固）"""
+
+    @pytest.mark.asyncio
+    async def test_execute_inside_running_loop_raises_clear_error(self):
+        """事件循环内调用 use_async=True 的同步 execute：抛出可操作的
+        项目级 RuntimeError（而非 asyncio.run 的通用错误）"""
+        host = Host(name="srv1", hostname="10.0.0.1", username="admin")
+        ex = BatchExecutor(host_service=make_mock_service([host]), use_async=True)
+        with pytest.raises(RuntimeError) as excinfo:
+            ex.execute(["srv1"], "uptime")
+
+        msg = str(excinfo.value)
+        assert "use_async=True" in msg
+        assert "cannot be used inside a running event loop" in msg
+        assert "AsyncBatchExecutor.execute()" in msg
+
+    @pytest.mark.asyncio
+    async def test_sync_kernel_unaffected_inside_running_loop(self):
+        """守卫仅针对委托路径：use_async=False 的同步内核在事件循环内
+        行为不变（不经 _delegate_to_async，不受影响）"""
+        from unittest.mock import MagicMock
+
+        host = Host(name="srv1", hostname="10.0.0.1", username="admin")
+        with patch("remote_cmd.service.batch_executor.SSHClient") as mock_cls:
+            mock_instance = MagicMock()
+            mock_cls.return_value = mock_instance
+            ok = MagicMock()
+            ok.success = True
+            ok.exit_code = 0
+            ok.stdout = "OK"
+            ok.stderr = ""
+            mock_instance.execute.return_value = ok
+
+            ex = BatchExecutor(host_service=make_mock_service([host]), use_async=False)
+            result = ex.execute(["srv1"], "uptime")
+        assert result.success == 1

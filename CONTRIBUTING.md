@@ -235,7 +235,7 @@ def execute_command(
     Raises:
         SSHConnectionError: When the SSH connection fails
         SSHCommandError: When the command execution fails
-        TimeoutError: When the command execution times out
+        SSHCommandTimeoutError: When the command execution wall-clock timeout expires
 
     Example:
         >>> result = client.execute("ls -la")

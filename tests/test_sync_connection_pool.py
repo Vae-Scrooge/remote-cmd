@@ -448,3 +448,58 @@ class TestSyncConnectionPool:
         conn2 = pool.acquire()
         assert conn2 is not None
         pool.close_all()
+
+
+# ============================================================================
+# v2.1 发布加固：close_all 与阻塞中 acquire 的竞态
+# ============================================================================
+
+
+class TestSyncConnectionPoolCloseRace:
+    """close_all() 与阻塞在信号量上的 acquire() 的竞态守卫"""
+
+    def test_acquire_blocked_during_close_raises(self, config, patched_client):
+        """信号量等待期间池被关闭：阻塞的 acquire 必须抛 RuntimeError，
+        而非从已关闭的池发放新连接
+
+        竞态窗口（无守卫时）：
+        1. acquire 通过 _closed 预检（False）→ 阻塞在信号量上
+        2. close_all() 置位 _closed
+        3. 信号量被 release 唤醒 → acquire 继续执行 → _create_connection
+           从已关闭的池发放游离连接
+        """
+        pool = SyncConnectionPool(config=config, max_connections=1)
+        c1 = pool.acquire()  # 占用唯一槽位，后续 acquire 将阻塞
+
+        # 追踪信号量 acquire 调用：确保 worker 已通过 _closed 预检并
+        # 停在信号量等待点，再触发 close_all（确定性复现竞态窗口）
+        entered = threading.Event()
+        original_acquire = pool._semaphore.acquire
+
+        def traced_acquire(blocking=True, timeout=None):  # noqa: ARG001
+            entered.set()
+            return original_acquire(blocking, timeout)
+
+        pool._semaphore.acquire = traced_acquire
+
+        outcome: dict = {}
+
+        def worker():
+            try:
+                outcome["conn"] = pool.acquire()
+            except RuntimeError as e:
+                outcome["error"] = e
+
+        t = threading.Thread(target=worker, daemon=True)
+        t.start()
+        assert entered.wait(timeout=5), "worker 未到达信号量等待点"
+        # worker 已通过预检并阻塞 → 关闭池 → 归还连接释放许可唤醒 worker
+        pool.close_all()
+        pool.release(c1)
+        t.join(timeout=5)
+        assert not t.is_alive()
+
+        # 已关闭的池不得发放连接；必须抛既有 pool-closed 错误
+        assert "conn" not in outcome, "已关闭的池不得发放连接"
+        assert isinstance(outcome["error"], RuntimeError)
+        assert "connection pool is closed" in str(outcome["error"])

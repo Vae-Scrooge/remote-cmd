@@ -67,12 +67,24 @@ def patched_async_client():
     """patch NativeAsyncSSHClient 为受控延迟的 async mock。
 
     暴露 `latency` 可在测试内动态调整（默认 0.05s）。
+    同时提供连接池路径所需的 connect/disconnect/is_connected
+    （v2.1 起 AsyncBatchExecutor 经 AsyncConnectionPool 复用连接）；
+    延迟模型仍只在 execute 上（connect/disconnect 为零开销）。
     """
     state = {"latency": 0.05}
 
     class _StubClient:
         def __init__(self, config: ConnectionConfig, *args, **kwargs):  # noqa: ARG002
             self.config = config
+
+        async def connect(self):
+            return self
+
+        async def disconnect(self):
+            return None
+
+        def is_connected(self):
+            return True
 
         async def __aenter__(self):
             return self
@@ -111,10 +123,16 @@ def patched_sync_client():
     def _disconnect(self):
         return None
 
+    def _is_connected(self):
+        # 连接池路径依赖 is_connected 判定复用；真实健康连接应返回 True，
+        # 否则池会在每次归还后丢弃连接，破坏"复用"语义的基准保真度
+        return True
+
     patches = (
         patch("remote_cmd.service.batch_executor.SSHClient.execute", _execute),
         patch("remote_cmd.service.batch_executor.SSHClient.connect", _connect),
         patch("remote_cmd.service.batch_executor.SSHClient.disconnect", _disconnect),
+        patch("remote_cmd.service.batch_executor.SSHClient.is_connected", _is_connected),
     )
     for p in patches:
         p.start()

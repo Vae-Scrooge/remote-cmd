@@ -50,7 +50,7 @@ remote-cmd run web-01 "uptime"
 remote-cmd host add web-02 192.168.1.11 ubuntu --key ~/.ssh/id_rsa --tag production
 remote-cmd host add db-01 192.168.1.20 ubuntu --key ~/.ssh/id_rsa --tag production --tag database
 
-remote-cmd batch-run -t production "df -h /"
+remote-cmd batch-run web-01 web-02 db-01 "df -h /"
 # ✓ web-01  → Disk: 32G/100G (32%)
 # ✓ web-02  → Disk: 45G/100G (45%)
 # ✓ db-01   → Disk: 12G/50G  (24%)
@@ -61,7 +61,7 @@ remote-cmd batch-run -t production "df -h /"
 **Incident Response**
 ```bash
 # Check errors across all web servers in 3 seconds
-remote-cmd batch-run -t web "journalctl -xe -n 50 | grep -i error"
+remote-cmd batch-run web-01 web-02 "journalctl -xe -n 50 | grep -i error"
 ```
 
 **Deploy Code**
@@ -132,7 +132,7 @@ It's a Python CLI + API that wraps Paramiko with:
 ```bash
 pip install remote_cmd_manager
 remote-cmd host add web-01 192.168.1.10 ubuntu --key ~/.ssh/id_rsa
-remote-cmd batch-run -t production "df -h /"
+remote-cmd batch-run web-01 web-02 db-01 "df -h /"
 ```
 
 I made a conscious choice to keep it simple:

@@ -310,19 +310,27 @@ def host_test(ctx: click.Context, name: str) -> None:
 @cli.command()
 @click.argument("host_name", required=True)
 @click.argument("command", required=True)
+@click.option(
+    "--timeout",
+    "-T",
+    default=None,
+    type=int,
+    help="Command timeout in seconds (default: no timeout)",
+)
 @click.pass_context
-def run(ctx: click.Context, host_name: str, command: str) -> None:
+def run(ctx: click.Context, host_name: str, command: str, timeout: Optional[int]) -> None:
     """
     Execute a command on a remote host
 
     HOST_NAME: host name
+
     COMMAND: command to execute
     """
     service: HostService = ctx.obj["service"]
 
     try:
         with service.connect_to_host(host_name) as client:
-            result = client.execute(command)
+            result = client.execute(command, timeout=timeout)
 
             if result.stdout:
                 click.echo(result.stdout)
@@ -397,7 +405,12 @@ def download(ctx: click.Context, host_name: str, local_path: str, remote_path: s
 @click.option("--concurrency", "-C", default=10, help="Max concurrency (default: 10)")
 @click.option("--timeout", "-T", default=30, help="Command timeout in seconds (default: 30)")
 @click.option("--retry", "-r", default=0, help="Failure retry count (default: 0)")
-@click.option("--retry-delay", default=1.0, help="Retry delay in seconds (default: 1.0)")
+@click.option(
+    "--retry-delay",
+    default=1.0,
+    help="Base retry delay in seconds; actual wait is exponential "
+    "backoff with jitter (default: 1.0)",
+)
 @click.option("--async", "use_async", is_flag=True, help="Use async execution engine (asyncssh)")
 @click.option("--show-failures", is_flag=True, help="Show only failed hosts")
 @click.pass_context

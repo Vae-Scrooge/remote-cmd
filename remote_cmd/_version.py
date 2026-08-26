@@ -9,4 +9,4 @@
 - ``__version__`` 由 ``remote_cmd/__init__.py`` 导入并继续作为公共 API 导出。
 """
 
-__version__ = "2.0.0"
+__version__ = "2.1.0"

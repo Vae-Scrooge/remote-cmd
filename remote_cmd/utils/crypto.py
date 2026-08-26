@@ -25,14 +25,21 @@ import stat as stat_module
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
+from remote_cmd.utils.exceptions import CredentialError
+
 if TYPE_CHECKING:  # pragma: no cover - 仅用于类型注解，避免运行时依赖 cryptography
     from cryptography.fernet import Fernet
 
 logger = logging.getLogger(__name__)
 
 
-class CredentialEncryptionError(Exception):
-    """凭据加解密错误"""
+class CredentialEncryptionError(CredentialError):
+    """凭据加解密错误
+
+    继承自 ``CredentialError``（v2.1 起）：归入永久性错误，
+    批量执行器对解密失败不做重试。既有
+    ``except CredentialEncryptionError`` / ``except Exception`` 捕获不受影响。
+    """
 
     pass
 

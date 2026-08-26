@@ -1,6 +1,8 @@
-# remote-cmd 项目重构规划报告
+# remote-cmd 项目重构规划报告（历史归档）
 
-> 状态：规划（Blueprint）阶段，未修改任何业务代码。
+> 状态：历史 Blueprint，相关结构重构已在 v2.0.0 前后完成；本文不代表当前 v2.1.0
+> 发布范围或代码状态。
+> 当前 release 行为与迁移说明请以 [CHANGELOG.md](./CHANGELOG.md) 为准。
 > 目的：供 Claude / Codex 审阅、判断、修改指正。
 >
 > 审阅结论（Claude）：PASS ✅ — 规划可执行。
@@ -11,7 +13,7 @@
 
 ## 1. 基准锁定（Baseline Lock）
 
-**当前状态（已实测确认，v1.2.3）**
+**计划编写时的状态（已实测确认，v1.2.3）**
 - 版本：`1.2.3`，git HEAD = `b493a4e`（working tree clean）
 - 全量测试：**410 passed, 22 deselected**（benchmark + integration）
 - ruff check：**All checks passed**；ruff format：**53 files already formatted**

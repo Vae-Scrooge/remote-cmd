@@ -22,11 +22,18 @@ from typing import Any, Optional
 
 import asyncssh
 
-from remote_cmd.core.ssh_client import CommandResult, ConnectionConfig, RemoteFileEntry
+from remote_cmd.core.ssh_client import (
+    CommandResult,
+    ConnectionConfig,
+    RemoteFileEntry,
+    validate_environment,
+)
 from remote_cmd.utils.exceptions import (
+    SSHAuthenticationError,
     SSHCommandError,
     SSHConnectionError,
     SSHFileTransferError,
+    SSHTimeoutError,
 )
 
 logger = logging.getLogger(__name__)
@@ -94,11 +101,12 @@ class AsyncSSHClient:
         try:
             self._conn = await asyncssh.connect(**connect_kwargs)
         except asyncssh.PermissionDenied as e:
-            raise SSHConnectionError(f"authentication failed: {e}") from e
+            # 永久性错误：重试同一凭据只会加剧账号锁定（见 service/retry_policy.py）
+            raise SSHAuthenticationError(f"authentication failed: {e}") from e
         except (OSError, asyncssh.Error) as e:
             msg = str(e).lower()
             if "timed out" in msg or "timeout" in msg or isinstance(e, asyncssh.TimeoutError):
-                raise SSHConnectionError(f"connection timeout: {self.config.hostname}") from e
+                raise SSHTimeoutError(f"connection timeout: {self.config.hostname}") from e
             raise SSHConnectionError(f"connection error: {e}") from e
 
         logger.info(f"connected to {self.config.hostname}")
@@ -187,6 +195,8 @@ class AsyncSSHClient:
             SSHConnectionError: 未连接时抛出
         """
         conn = await self._get_conn()
+        # 安全：键必须为合法 shell 标识符（与同步实现一致，防止命令注入）
+        validate_environment(environment)
         # 安全：对 value 做 shlex.quote 转义，防止 shell 元字符注入
         env_str = ""
         if environment:
@@ -198,11 +208,13 @@ class AsyncSSHClient:
         # 安全：不记录命令全文（可能含敏感参数），仅记录执行事件
         logger.debug("executing remote command")
         try:
+            # 环境变量仅通过命令前缀的 export 注入（与同步 SSHClient 行为
+            # 一致）：conn.run(env=...) 依赖服务端 AcceptEnv 且语义分叉，
+            # 不再重复传递
             result = await conn.run(
                 full_command,
                 timeout=timeout,
                 check=False,
-                env={k: str(v) for k, v in (environment or {}).items()},
             )
         except (OSError, asyncssh.Error) as e:
             raise SSHCommandError(f"command execution failed: {e}") from e

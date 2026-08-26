@@ -9,13 +9,22 @@
 from __future__ import annotations
 
 import socket
+import threading
 from unittest.mock import MagicMock, Mock, patch
 
 import paramiko
 import pytest
 
 from remote_cmd.core.ssh_client import CommandResult, ConnectionConfig, SSHClient
-from remote_cmd.utils.exceptions import SSHCommandError, SSHConnectionError, SSHFileTransferError
+from remote_cmd.utils.exceptions import (
+    SSHAuthenticationError,
+    SSHCommandError,
+    SSHCommandTimeoutError,
+    SSHConnectionError,
+    SSHFileTransferError,
+    SSHTimeoutError,
+    ValidationError,
+)
 
 # ============================================================================
 # ConnectionConfig
@@ -149,10 +158,25 @@ class TestSSHClientConnect:
         with pytest.raises(SSHConnectionError, match="authentication failed"):
             SSHClient(config).connect()
 
+    def test_connect_auth_failure_raises_authentication_error(self, mock_paramiko):
+        """v2.1：认证失败细分为 SSHAuthenticationError（永久性，不重试），
+        同时保持 SSHConnectionError 可捕获（既有契约）"""
+        mock_paramiko.connect.side_effect = paramiko.AuthenticationException("bad auth")
+        config = ConnectionConfig(hostname="h", username="u", password="p")
+        with pytest.raises(SSHAuthenticationError, match="authentication failed"):
+            SSHClient(config).connect()
+
     def test_connect_timeout(self, mock_paramiko):
         mock_paramiko.connect.side_effect = socket.timeout("timeout")
         config = ConnectionConfig(hostname="h", username="u", password="p")
         with pytest.raises(SSHConnectionError, match="connection timeout"):
+            SSHClient(config).connect()
+
+    def test_connect_timeout_raises_timeout_error(self, mock_paramiko):
+        """v2.1：连接超时细分为 SSHTimeoutError（瞬态，可重试）"""
+        mock_paramiko.connect.side_effect = socket.timeout("timeout")
+        config = ConnectionConfig(hostname="h", username="u", password="p")
+        with pytest.raises(SSHTimeoutError, match="connection timeout"):
             SSHClient(config).connect()
 
     def test_connect_unresolved(self, mock_paramiko):
@@ -535,3 +559,176 @@ class TestSSHClientFileTransfer:
             info = c.get_remote_file_info("/dir")
         assert info["is_dir"] is True
         assert info["is_file"] is False
+
+
+# ============================================================================
+# v2.1：大输出死锁防护 / wall-clock 超时 / 环境变量键校验
+# ============================================================================
+
+
+class TestSSHClientDeadlockAndTimeout:
+    """execute 的并发排空与超时语义（v2.1）"""
+
+    def _connected_client(self, mock_paramiko):  # noqa: ARG002
+        client = SSHClient(ConnectionConfig(hostname="h", username="u"))
+        client.connect()
+        return client
+
+    def test_reads_streams_before_exit_status(self, mock_paramiko):
+        """死锁防护契约：退出状态必须在两个输出流排空完成后获取。
+
+        顺序颠倒（先 recv_exit_status）会在输出超过 SSH 通道窗口时
+        死锁——paramiko 官方文档明确警告的场景。
+        """
+        client = self._connected_client(mock_paramiko)
+        _stdin, _stdout, _stderr = mock_paramiko.exec_command.return_value
+        events = []
+        _stdout.read.side_effect = lambda: (events.append("stdout"), b"out")[1]
+        _stderr.read.side_effect = lambda: (events.append("stderr"), b"err")[1]
+        _stdout.channel.recv_exit_status.side_effect = lambda: (events.append("exit"), 0)[1]
+
+        result = client.execute("ls")
+
+        assert result.exit_code == 0
+        assert result.stdout == "out"
+        assert result.stderr == "err"
+        # 退出状态必须在最后；两个流的读取在它之前完成（线程顺序不定）
+        assert events[-1] == "exit"
+        assert set(events[:2]) == {"stdout", "stderr"}
+
+    def test_large_output_both_streams(self, mock_paramiko):
+        """大输出（超过默认通道窗口 2MB）在两个流上均可完整返回"""
+        client = self._connected_client(mock_paramiko)
+        _stdin, _stdout, _stderr = mock_paramiko.exec_command.return_value
+        big_out = b"x" * (3 * 1024 * 1024)
+        big_err = b"y" * (3 * 1024 * 1024)
+        _stdout.read.return_value = big_out
+        _stderr.read.return_value = big_err
+
+        result = client.execute("cat /var/log/big.log")
+
+        assert len(result.stdout) == 3 * 1024 * 1024
+        assert len(result.stderr) == 3 * 1024 * 1024
+        assert result.exit_code == 0
+
+    def test_timeout_raises_command_timeout_error(self, mock_paramiko):
+        """wall-clock 超时：挂起的命令在超时后抛 SSHCommandTimeoutError"""
+        client = self._connected_client(mock_paramiko)
+        _stdin, _stdout, _stderr = mock_paramiko.exec_command.return_value
+        closed = threading.Event()
+        _stdout.channel.close.side_effect = lambda: closed.set()
+        # stdout.read 阻塞直到通道被超时定时器关闭（模拟静默挂起的命令）
+        _stdout.read.side_effect = lambda: (closed.wait(timeout=5), b"partial")[1]
+        _stderr.read.return_value = b""
+
+        with pytest.raises(SSHCommandTimeoutError, match="timed out after 0.1"):
+            client.execute("sleep 100", timeout=0.1)
+
+    def test_timeout_closes_channel(self, mock_paramiko):
+        """超时后必须关闭通道以终止远端命令（避免僵尸进程）"""
+        client = self._connected_client(mock_paramiko)
+        _stdin, _stdout, _stderr = mock_paramiko.exec_command.return_value
+        closed = threading.Event()
+        _stdout.channel.close.side_effect = lambda: closed.set()
+        _stdout.read.side_effect = lambda: (closed.wait(timeout=5), b"")[1]
+        _stderr.read.return_value = b""
+
+        with pytest.raises(SSHCommandTimeoutError):
+            client.execute("sleep 100", timeout=0.1)
+        _stdout.channel.close.assert_called_once()
+
+    def test_stderr_reader_error_propagates(self, mock_paramiko):
+        """stderr 排空线程中的异常回传主线程并包装为 SSHCommandError"""
+        client = self._connected_client(mock_paramiko)
+        _stdin, _stdout, _stderr = mock_paramiko.exec_command.return_value
+        _stdout.read.return_value = b"out"
+        _stderr.read.side_effect = OSError("connection reset during drain")
+
+        with pytest.raises(SSHCommandError, match="command execution failed"):
+            client.execute("ls")
+
+    def test_no_timeout_by_default(self, mock_paramiko):
+        """未传 timeout 时不创建超时定时器（历史行为：不限时）"""
+        client = self._connected_client(mock_paramiko)
+        _stdin, _stdout, _stderr = mock_paramiko.exec_command.return_value
+        _stdout.read.return_value = b"ok"
+        _stderr.read.return_value = b""
+
+        result = client.execute("ls")
+        assert result.success is True
+        _stdout.channel.close.assert_not_called()
+
+    def test_execute_sudo_timeout(self, mock_paramiko):
+        """execute_sudo 复用同一 wall-clock 超时语义"""
+        client = self._connected_client(mock_paramiko)
+        _stdin, _stdout, _stderr = mock_paramiko.exec_command.return_value
+        closed = threading.Event()
+        _stdout.channel.close.side_effect = lambda: closed.set()
+        _stdout.read.side_effect = lambda: (closed.wait(timeout=5), b"")[1]
+        _stderr.read.return_value = b""
+
+        with pytest.raises(SSHCommandTimeoutError, match="timed out after 0.1"):
+            client.execute_sudo("sleep 100", password="pw", timeout=0.1)
+
+
+class TestSSHClientEnvironmentValidation:
+    """环境变量键注入校验（v2.1 安全加固）"""
+
+    def test_invalid_key_rejected_before_execution(self, mock_paramiko):
+        """含 shell 元字符的键在拼接命令前被拒绝（防命令注入）"""
+        client = SSHClient(ConnectionConfig(hostname="h", username="u"))
+        client.connect()
+        with pytest.raises(ValidationError, match="invalid environment variable name"):
+            client.execute("ls", environment={"A; rm -rf /": "x"})
+        mock_paramiko.exec_command.assert_not_called()
+
+    @pytest.mark.parametrize("bad_key", ["B;echo pwned", "$(cmd)", "`cmd`", "A B", "1BAD", ""])
+    def test_various_malformed_keys_rejected(self, mock_paramiko, bad_key):  # noqa: ARG002
+        client = SSHClient(ConnectionConfig(hostname="h", username="u"))
+        client.connect()
+        with pytest.raises(ValidationError):
+            client.execute("ls", environment={bad_key: "v"})
+
+    @pytest.mark.parametrize("good_key", ["FOO", "_FOO", "f9o_Bar"])
+    def test_valid_keys_accepted(self, mock_paramiko, good_key):
+        client = SSHClient(ConnectionConfig(hostname="h", username="u"))
+        client.connect()
+        _stdin, _stdout, _stderr = mock_paramiko.exec_command.return_value
+        _stdout.read.return_value = b""
+        _stderr.read.return_value = b""
+
+        result = client.execute("ls", environment={good_key: "v z"})
+
+        assert result.success is True
+        cmd = mock_paramiko.exec_command.call_args[0][0]
+        assert f"export {good_key}=" in cmd
+        # 值必须被 shlex.quote 转义
+        assert "'v z'" in cmd
+
+
+class TestSSHClientReaderJoinHardening:
+    """stderr 排空线程有界 join（v2.1 发布加固）"""
+
+    def test_blocked_stderr_reader_does_not_hang_execute(self, mock_paramiko, monkeypatch):
+        """有界 join：主线程读取异常退出而 stderr 排空线程仍阻塞时，
+        execute 不得在 join 上永久等待
+
+        复现路径：stdout.read 抛 OSError（如网络中断）时通道未关闭，
+        排空线程的 stderr.read 仍可能阻塞——无界 join 会让调用方挂死。
+        """
+        monkeypatch.setattr("remote_cmd.core.ssh_client._READER_JOIN_TIMEOUT", 0.1)
+
+        client = SSHClient(ConnectionConfig(hostname="h", username="u"))
+        client.connect()
+        _stdin, _stdout, _stderr = mock_paramiko.exec_command.return_value
+
+        # 主线程读取立即失败；stderr 排空线程阻塞至测试收尾
+        _stdout.read.side_effect = OSError("main read failed")
+        block = threading.Event()
+        _stderr.read.side_effect = lambda: (block.wait(), b"")[1]
+
+        try:
+            with pytest.raises(SSHCommandError, match="command execution failed"):
+                client.execute("ls")
+        finally:
+            block.set()  # 允许排空线程退出

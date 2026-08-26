@@ -116,6 +116,12 @@ class SyncConnectionPool:
         if self._closed:
             raise RuntimeError("connection pool is closed")
         self._semaphore.acquire()
+        # 竞态守卫：等待信号量期间 close_all() 可能已完成——
+        # 取得槽位后必须复查，已关闭则归还槽位并抛出既有错误，
+        # 否则会向调用方发放来自已关闭池的连接
+        if self._closed:
+            self._semaphore.release()
+            raise RuntimeError("connection pool is closed")
         try:
             # 优先复用空闲连接
             while not self._free.empty():

@@ -97,7 +97,8 @@ remote-cmd --help
 
 ```bash
 # 1. 添加主机配置
-remote-cmd host add my-server 192.168.1.100 ubuntu --password yourpassword
+# 无私钥时按安全提示交互输入密码（不使用命令行参数传递密码）
+remote-cmd host add my-server 192.168.1.100 ubuntu
 
 # 查看已添加的主机
 remote-cmd host list
@@ -109,6 +110,8 @@ remote-cmd host test my-server
 remote-cmd run my-server "whoami"
 remote-cmd run my-server "pwd"
 remote-cmd run my-server "ls -la"
+# 可选：为可能挂起的命令设置 wall-clock 超时
+remote-cmd run my-server "uptime" --timeout 30
 
 # 4. 查看系统信息
 remote-cmd run my-server "uptime"
@@ -195,10 +198,10 @@ remote-cmd host add web-02 192.168.1.11 ubuntu \
 
 # 数据库服务器
 remote-cmd host add db-01 192.168.1.20 admin \
-    --password dbpassword \
     --tag database \
     --tag production \
     --description "MySQL database server"
+# 无私钥时执行上一条命令后按提示交互输入密码
 ```
 
 ### 查看和筛选
@@ -306,8 +309,8 @@ with SSHClient(config) as client:
     print("📂 远程 /tmp 目录内容:")
     entries = client.list_remote_directory("/tmp")
     for entry in entries[:5]:  # 只显示前 5 个
-        icon = "📁" if entry["is_dir"] else "📄"
-        print(f"  {icon} {entry['name']}")
+        icon = "📁" if entry.is_dir else "📄"
+        print(f"  {icon} {entry.name}")
 ```
 
 ---
@@ -480,7 +483,7 @@ done
 
 **问题：**
 ```
-SSHConnectionError: Connection timeout
+SSHTimeoutError: connection timeout: 192.168.1.100
 ```
 
 **解决方案：**
@@ -501,7 +504,7 @@ config = ConnectionConfig(
 
 **问题：**
 ```
-SSHConnectionError: Authentication failed
+SSHAuthenticationError: authentication failed: Authentication failed.
 ```
 
 **解决方案：**

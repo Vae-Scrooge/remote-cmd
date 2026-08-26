@@ -106,14 +106,14 @@ Remote CMD 采用分层架构设计，将系统划分为多个职责清晰的层
 #### SSHClient (`remote_cmd/core/ssh_client.py`)
 SSH 客户端的核心功能：
 - 连接管理（建立、维护、断开）
-- 命令执行（同步/异步）
+- 命令执行（同步；异步实现见 `AsyncSSHClient`）
 - 文件传输（SFTP）
 - 会话复用
 
 **设计决策：**
 - 使用上下文管理器确保连接关闭
 - 异常转换，统一错误处理
-- 支持连接池（未来扩展）
+- 支持 `SyncConnectionPool` / `AsyncConnectionPool`，批量执行器按需复用连接
 
 ### 4. 网络传输层
 
@@ -415,16 +415,20 @@ class AsyncSSHBackend(SSHBackend):
 ### 连接复用
 
 当前实现：
-- 同步路径每次操作新建连接（简单但开销大）
-- 异步路径使用 `AsyncConnectionPool`（`remote_cmd.core.async_connection_pool`），
-  基于 asyncssh 复用连接并带空闲/生命周期回收与健康检查；由
-  `AsyncBatchExecutor` 在批量执行中启用。
+- 直接使用 `SSHClient` / `AsyncSSHClient` 时，每个客户端实例代表一个连接；
+  调用方可在同一客户端上连续执行多个命令。
+- 同步 `BatchExecutor` 在多主机或重试批次中按主机使用 `SyncConnectionPool`。
+- 异步 `AsyncBatchExecutor` 在多主机或重试批次中按主机使用
+  `AsyncConnectionPool`（`remote_cmd.core.async_connection_pool`），基于 asyncssh
+  复用连接并带空闲/生命周期回收与健康检查。
+- 两个执行器均支持 `pool_factory` 注入外部池；外部池由调用方拥有、执行器绝不关闭，
+  内部创建的池在批次结束后自动关闭。
 
 ```python
 # 连接池（已实现，供异步批量执行使用）
 from remote_cmd.core.async_connection_pool import AsyncConnectionPool
 
-pool = AsyncConnectionPool(config_factory, max_connections=10)
+pool = AsyncConnectionPool(config, max_connections=10)
 client = await pool.acquire()   # 复用现有连接或创建新连接
 await pool.release(client)
 ```
@@ -467,13 +471,13 @@ def parallel_execute(hosts, command):
 2. **密钥管理**
    - 支持 SSH Agent
    - 密钥文件权限检查
-   - 加密密钥支持（计划中）
+   - 凭据加密存储（`CredentialEncryption`）
 
 ### 传输安全
 
 - 使用 SSH 加密通道
 - 支持密钥指纹验证
-- 可选的主机密钥检查
+- 默认严格进行主机密钥检查，可按受控场景配置策略
 
 ### 配置安全
 
@@ -519,10 +523,10 @@ class SecureConfig:
 
 ### 短期计划
 
-- [ ] 连接池支持
-- [ ] 异步 API
-- [ ] 配置文件加密
-- [ ] 批量并行执行
+- [x] 连接池支持
+- [x] 异步 API
+- [x] 凭据加密存储
+- [x] 批量并行执行
 
 ### 长期计划
 
@@ -533,4 +537,4 @@ class SecureConfig:
 
 ---
 
-**最后更新：** 2024年
+**最后更新：** 2026-08-23（v2.1.0 发布审计）

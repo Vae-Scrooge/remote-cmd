@@ -32,7 +32,7 @@
 
 ---
 
-**Remote CMD** is a lightweight Python CLI + API for managing servers over SSH. Add hosts, run commands, transfer files, and target groups by tags — no Ansible DSL or shell loops required.
+**Remote CMD** is a lightweight Python CLI + API for managing servers over SSH. Add hosts, run commands, transfer files, and organize hosts with tags — no Ansible DSL or shell loops required.
 
 ```bash
 # One command to get started
@@ -41,8 +41,32 @@ pip install remote_cmd_manager && remote-cmd host add web-01 192.168.1.10 ubuntu
 
 ---
 
+## v2.1.0 Release Highlights
+
+v2.1.0 contains both major implementation changes and a final release-hardening pass. See the
+[full migration notes](./CHANGELOG.md) before upgrading automated callers.
+
+### Major Implementation Changes
+
+- Paramiko command execution drains stdout and stderr before retrieving the exit status, preventing SSH channel-window deadlocks on large output.
+- Paramiko command timeouts are wall-clock enforced; a silent or hung command closes its channel and raises `SSHCommandTimeoutError`.
+- `AsyncBatchExecutor` now uses `AsyncConnectionPool` for multi-host and retry workloads, reusing connections across attempts.
+- `pool_factory` enables caller-supplied pools; external pools are caller-owned and never closed by either executor, while internally created pools are closed automatically after `execute()`.
+- Retries classify permanent failures (authentication, credentials, configuration, validation, and programming errors) as non-retryable; unknown `Exception` subclasses remain retryable for backward compatibility. `retry_delay` is now the exponential-backoff base and full jitter is applied with a 60-second cap.
+- Unknown hosts produce per-host failure results instead of aborting a multi-host batch, and duplicate host names are executed once.
+- The exception hierarchy adds `SSHAuthenticationError`, `SSHTimeoutError`, `SSHCommandTimeoutError`, `CredentialError`, and the `ConfigurationError` alias without removing existing catch paths.
+- Environment-variable names are validated before shell interpolation, and command text is excluded from library logs and execution errors.
+- `remote-cmd run` supports `--timeout/-T` for command execution limits.
+
+### Final Release Hardening
+
+- Sync and async pools re-check their closed state after semaphore acquisition, preventing a shutdown race from issuing a connection from a closed pool.
+- `BatchExecutor(use_async=True)` now reports an actionable error when called from an active event loop; use `AsyncBatchExecutor.execute()` there instead.
+- The Paramiko stderr drain join is bounded to prevent an exceptional reader path from blocking the caller indefinitely.
+
 ## Table of Contents
 
+- [v2.1.0 Release Highlights](#v210-release-highlights)
 - [Why Remote CMD?](#why-remote-cmd)
 - [Quick Start](#quick-start)
 - [Use Cases](#use-cases)
@@ -85,8 +109,8 @@ remote-cmd host add web-01 192.168.1.10 ubuntu --key ~/.ssh/id_rsa
 # 3. Run a command
 remote-cmd run web-01 "uptime"
 
-# 4. Run across all production servers
-remote-cmd batch-run -t production "df -h /"
+# 4. Run across named production servers
+remote-cmd batch-run web-01 web-02 db-01 "df -h /"
 ```
 
 ---
@@ -96,7 +120,7 @@ remote-cmd batch-run -t production "df -h /"
 ### 🖥️ System Administrators — Check disk across 20 servers in one command
 
 ```bash
-remote-cmd batch-run -t production "df -h / | tail -1"
+remote-cmd batch-run web-01 web-02 db-01 "df -h / | tail -1"
 # Output:
 #   ✓ web-01  → /dev/sda1  32G  12G  19G  40% /
 #   ✓ web-02  → /dev/sda1  32G  28G   3G  90% /   ⚠️
@@ -120,7 +144,7 @@ for host in service.list_hosts(tag="staging"):
 ### 🔥 Incident Response — Check logs across all servers
 
 ```bash
-remote-cmd batch-run -t web "journalctl -xe -n 50 | grep -i error"
+remote-cmd batch-run web-01 web-02 "journalctl -xe -n 50 | grep -i error"
 ```
 
 ### 🔧 Config Update — Upload and reload nginx across tagged hosts
@@ -143,10 +167,10 @@ All operations are available from the terminal:
 | `remote-cmd host show <name>` | Show one host's details |
 | `remote-cmd host test <name>` | Test connectivity to a host |
 | `remote-cmd host remove <name>` | Remove a host |
-| `remote-cmd run <name> "<cmd>"` | Run a command on one host |
+| `remote-cmd run <name> "<cmd>" [-T SECONDS]` | Run a command on one host (`--timeout/-T` sets the wall-clock limit) |
 | `remote-cmd upload <name> <local> <remote>` | Upload a file via SFTP |
 | `remote-cmd download <name> <remote> <local>` | Download a file via SFTP |
-| `remote-cmd batch-run -t <tag> "<cmd>"` | Run across all hosts in a tag (`-C` concurrency, `-T` timeout, `--async`, `--show-failures`) |
+| `remote-cmd batch-run <name>... "<cmd>"` | Run across named hosts (`-C` concurrency, `-T` timeout, `-r` retries, `--async`, `--show-failures`) |
 
 ---
 
@@ -174,7 +198,7 @@ with SSHClient(config) as client:
 
     # List remote directory
     for entry in client.list_remote_directory("/var/log"):
-        print(f"{entry['name']}: {entry['size']} bytes")
+        print(f"{entry.name}: {entry.size} bytes")
 ```
 
 ---
@@ -185,7 +209,7 @@ with SSHClient(config) as client:
 |---|---|
 | **SSH Auth** | Password + key file + ssh-agent, with pluggable credential providers |
 | **Credential Chain** | Source passwords from environment, keyring, or arbitrary providers, in priority order |
-| **Credential Encryption** | AES-encrypt secrets at rest (`CredentialEncryption`) |
+| **Credential Encryption** | Fernet-encrypt secrets at rest (`CredentialEncryption`) |
 | **Commands** | Single, multi-line, sudo with password |
 | **File Transfer** | Upload/download via SFTP (`remote-cmd upload/download`) |
 | **Host Management** | CRUD with pluggable JSON or **SQLite** persistence |
@@ -193,7 +217,7 @@ with SSHClient(config) as client:
 | **Batch Ops** | Run commands across any host group, synchronously or asynchronously |
 | **Async Kernel** | `AsyncSSHClient` / `AsyncConnectionPool` / `AsyncBatchExecutor` via the `[async]` extra |
 | **Task Runner** | Track and schedule long-running remote tasks with statuses (`TaskRunner`) |
-| **Connection Test** | Ping all hosts and report status |
+| **Connection Test** | Test all host SSH connections and report status |
 | **Secure Logging** | Structured logging that filters sensitive data (`SensitiveDataFilter`) |
 | **Type Safety** | Full type annotations + mypy strict |
 
@@ -216,8 +240,9 @@ pip install -e ".[dev]"
 
 The `[async]` extra installs `asyncssh` and enables the native async execution
 kernel: `AsyncSSHClient`, `AsyncConnectionPool` and `AsyncBatchExecutor`
-(also available via `BatchExecutor(use_async=True)`). Without it, `import remote_cmd`
-still works — the async symbols are simply not exported.
+(also available via `BatchExecutor(use_async=True)`). `BatchExecutor(use_async=True)`
+also requires this extra. Without it, `import remote_cmd` still works — the async symbols
+are simply not exported.
 
 ---
 

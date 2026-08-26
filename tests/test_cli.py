@@ -933,3 +933,49 @@ class TestBatchRun:
             )
             assert result.exit_code != 0
             assert "Invalid value" in result.output
+
+
+class TestRunTimeoutOption:
+    """v2.1：run 命令 --timeout 选项"""
+
+    def test_run_timeout_passed_to_execute(self, runner, config_file):
+        """--timeout 透传到 SSHClient.execute"""
+        with runner.isolated_filesystem():
+            runner.invoke(
+                cli,
+                ["--config", config_file, "host", "add", "srv", "1.2.3.4", "admin", "-k", "key"],
+            )
+            with patch("remote_cmd.service.host_service.HostService.connect_to_host") as m:
+                mock_cm = MagicMock()
+                mock_client = MagicMock()
+                mock_client.execute.return_value = CommandResult(
+                    command="uptime", stdout="ok", stderr="", exit_code=0
+                )
+                mock_cm.__enter__.return_value = mock_client
+                mock_cm.__exit__.return_value = None
+                m.return_value = mock_cm
+                result = runner.invoke(
+                    cli, ["--config", config_file, "run", "-T", "15", "srv", "uptime"]
+                )
+            assert result.exit_code == 0
+            mock_client.execute.assert_called_once_with("uptime", timeout=15)
+
+    def test_run_default_timeout_none(self, runner, config_file):
+        """未指定 --timeout 时保持历史行为：不限时"""
+        with runner.isolated_filesystem():
+            runner.invoke(
+                cli,
+                ["--config", config_file, "host", "add", "srv", "1.2.3.4", "admin", "-k", "key"],
+            )
+            with patch("remote_cmd.service.host_service.HostService.connect_to_host") as m:
+                mock_cm = MagicMock()
+                mock_client = MagicMock()
+                mock_client.execute.return_value = CommandResult(
+                    command="uptime", stdout="ok", stderr="", exit_code=0
+                )
+                mock_cm.__enter__.return_value = mock_client
+                mock_cm.__exit__.return_value = None
+                m.return_value = mock_cm
+                result = runner.invoke(cli, ["--config", config_file, "run", "srv", "uptime"])
+            assert result.exit_code == 0
+            mock_client.execute.assert_called_once_with("uptime", timeout=None)

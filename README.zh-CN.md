@@ -32,7 +32,7 @@
 
 ---
 
-**Remote CMD** 是一款轻量级的 Python CLI + API 工具，用于通过 SSH 管理服务器。添加主机、执行命令、传输文件、按标签分组管理——无需 Ansible DSL，也不用写 shell 循环。
+**Remote CMD** 是一款轻量级的 Python CLI + API 工具，用于通过 SSH 管理服务器。添加主机、执行命令、传输文件、用标签组织主机——无需 Ansible DSL，也不用写 shell 循环。
 
 ```bash
 # 一条命令即可上手
@@ -41,8 +41,32 @@ pip install remote_cmd_manager && remote-cmd host add web-01 192.168.1.10 ubuntu
 
 ---
 
+## v2.1.0 发布亮点
+
+v2.1.0 同时包含主要实现变更与最终发布加固。升级自动化调用方前请查看
+[完整迁移说明](./CHANGELOG.md)。
+
+### 主要实现变更
+
+- Paramiko 命令执行会在获取退出码前并发排空 stdout 和 stderr，避免大输出触发 SSH 通道窗口死锁。
+- Paramiko 命令超时采用 wall-clock 语义；静默或挂起命令会关闭通道并抛出 `SSHCommandTimeoutError`。
+- `AsyncBatchExecutor` 在多主机和重试场景中使用 `AsyncConnectionPool`，跨尝试复用连接。
+- `pool_factory` 支持调用方提供连接池；外部池由调用方拥有，两个执行器都不会关闭，内部创建的池则在 `execute()` 结束后自动关闭。
+- 重试显式区分永久性错误（认证、凭据、配置、校验和编程错误）与瞬态错误；未知 `Exception` 子类为保持兼容仍可重试。`retry_delay` 现在是指数退避基础延迟，并使用 full jitter，最大等待 60 秒。
+- 未知主机会成为单独的失败结果，不再中止多主机批次；重复主机名只执行一次。
+- 异常层次新增 `SSHAuthenticationError`、`SSHTimeoutError`、`SSHCommandTimeoutError`、`CredentialError` 和 `ConfigurationError` 别名，同时保留既有捕获路径。
+- 环境变量名在 shell 拼接前校验，库日志和执行错误不再包含命令正文。
+- `remote-cmd run` 支持 `--timeout/-T` 命令执行超时。
+
+### 最终发布加固
+
+- 同步和异步连接池在信号量获取后再次检查关闭状态，避免关闭竞态从已关闭的池发放连接。
+- 在运行中的事件循环内调用 `BatchExecutor(use_async=True)` 会给出可操作的错误提示；此时应改用 `AsyncBatchExecutor.execute()`。
+- Paramiko stderr 排空线程的 join 有 5 秒上限，避免异常读取路径永久阻塞调用方。
+
 ## 目录
 
+- [v2.1.0 发布亮点](#v210-发布亮点)
 - [为什么选择 Remote CMD？](#为什么选择-remote-cmd)
 - [快速开始](#快速开始)
 - [使用场景](#使用场景)
@@ -85,8 +109,8 @@ remote-cmd host add web-01 192.168.1.10 ubuntu --key ~/.ssh/id_rsa
 # 3. 执行命令
 remote-cmd run web-01 "uptime"
 
-# 4. 在所有生产服务器上执行命令
-remote-cmd batch-run -t production "df -h /"
+# 4. 在指定生产服务器上执行命令
+remote-cmd batch-run web-01 web-02 db-01 "df -h /"
 ```
 
 ---
@@ -96,7 +120,7 @@ remote-cmd batch-run -t production "df -h /"
 ### 🖥️ 系统管理员 — 一条命令检查 20 台服务器磁盘
 
 ```bash
-remote-cmd batch-run -t production "df -h / | tail -1"
+remote-cmd batch-run web-01 web-02 db-01 "df -h / | tail -1"
 # 输出：
 #   ✓ web-01  → /dev/sda1  32G  12G  19G  40% /
 #   ✓ web-02  → /dev/sda1  32G  28G   3G  90% /   ⚠️
@@ -120,7 +144,7 @@ for host in service.list_hosts(tag="staging"):
 ### 🔥 故障应急 — 检查所有服务器日志
 
 ```bash
-remote-cmd batch-run -t web "journalctl -xe -n 50 | grep -i error"
+remote-cmd batch-run web-01 web-02 "journalctl -xe -n 50 | grep -i error"
 ```
 
 ### 🔧 配置更新 — 上传文件并重载 nginx
@@ -143,10 +167,10 @@ remote-cmd run web-01 "sudo cp /tmp/nginx.conf /etc/nginx/nginx.conf && sudo ngi
 | `remote-cmd host show <name>` | 查看单个主机详情 |
 | `remote-cmd host test <name>` | 测试主机连通性 |
 | `remote-cmd host remove <name>` | 删除主机 |
-| `remote-cmd run <name> "<cmd>"` | 在单台主机上执行命令 |
+| `remote-cmd run <name> "<cmd>" [-T SECONDS]` | 在单台主机上执行命令（`--timeout/-T` 设置 wall-clock 超时） |
 | `remote-cmd upload <name> <local> <remote>` | 通过 SFTP 上传文件 |
 | `remote-cmd download <name> <remote> <local>` | 通过 SFTP 下载文件 |
-| `remote-cmd batch-run -t <tag> "<cmd>"` | 在标签下所有主机上执行（`-C` 并发数、`-T` 超时、`--async`、`--show-failures`） |
+| `remote-cmd batch-run <name>... "<cmd>"` | 在指定主机上执行（`-C` 并发数、`-T` 超时、`-r` 重试、`--async`、`--show-failures`） |
 
 ---
 
@@ -174,7 +198,7 @@ with SSHClient(config) as client:
 
     # 列出远程目录
     for entry in client.list_remote_directory("/var/log"):
-        print(f"{entry['name']}: {entry['size']} bytes")
+        print(f"{entry.name}: {entry.size} bytes")
 ```
 
 ---
@@ -185,7 +209,7 @@ with SSHClient(config) as client:
 |---|---|
 | **SSH 认证** | 密码 + 私钥 + ssh-agent，支持可插拔凭据提供者 |
 | **凭据链** | 按优先级从环境变量、系统钥匙串或任意提供者读取密码 |
-| **凭据加密** | 静态加密 AES 加密机密数据（`CredentialEncryption`） |
+| **凭据加密** | 使用 Fernet 加密静态机密数据（`CredentialEncryption`） |
 | **命令执行** | 单条、多行、带密码的 sudo 命令 |
 | **文件传输** | 通过 SFTP 上传/下载（`remote-cmd upload/download`） |
 | **主机管理** | CRUD，支持可插拔的 JSON 或 **SQLite** 持久化 |
@@ -193,7 +217,7 @@ with SSHClient(config) as client:
 | **批量操作** | 跨任意主机组执行命令，支持同步与异步 |
 | **异步内核** | 通过 `[async]` 扩展启用 `AsyncSSHClient` / `AsyncConnectionPool` / `AsyncBatchExecutor` |
 | **任务执行器** | 跟踪并调度长时间运行的远程任务并显示状态（`TaskRunner`） |
-| **连通性测试** | 对所有主机进行 ping 并报告状态 |
+| **连通性测试** | 测试所有主机的 SSH 连接并报告状态 |
 | **安全日志** | 结构化日志自动过滤敏感数据（`SensitiveDataFilter`） |
 | **类型安全** | 完整类型注解 + mypy 严格模式 |
 
@@ -216,8 +240,8 @@ pip install -e ".[dev]"
 
 安装 `[async]` 扩展会引入 `asyncssh` 并启用原生异步执行内核：
 `AsyncSSHClient`、`AsyncConnectionPool` 和 `AsyncBatchExecutor`
-（也可通过 `BatchExecutor(use_async=True)` 使用）。即使不安装该扩展，
-`import remote_cmd` 依然可以正常工作——只是不会导出异步相关符号。
+（也可通过 `BatchExecutor(use_async=True)` 使用；该模式同样需要此扩展）。
+即使不安装该扩展，`import remote_cmd` 依然可以正常工作——只是不会导出异步相关符号。
 
 ---
 

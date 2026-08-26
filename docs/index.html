@@ -159,7 +159,7 @@
 <span class="cmd-prompt">$</span> remote-cmd host add web-02 192.168.1.11 ubuntu --key ~/.ssh/id_rsa --tag production
 <span class="cmd-prompt">$</span> remote-cmd host add db-01 192.168.1.20 ubuntu --key ~/.ssh/id_rsa --tag production --tag database
 
-<span class="cmd-prompt">$</span> remote-cmd batch-run -t production "df -h /"
+<span class="cmd-prompt">$</span> remote-cmd batch-run web-01 web-02 db-01 "df -h /"
 <span class="check">✓</span> web-01  → Disk: 32G/100G (32%)
 <span class="check">✓</span> web-02  → Disk: 45G/100G (45%)
 <span class="check">✓</span> db-01   → Disk: 12G/50G  (24%)</code></pre>
@@ -167,7 +167,7 @@
     <h2>Real-World Use Cases</h2>
 
     <h3>Incident Response</h3>
-    <pre><code><span class="cmd-prompt">$</span> remote-cmd batch-run -t web "journalctl -xe -n 50 | grep -i error"</code></pre>
+    <pre><code><span class="cmd-prompt">$</span> remote-cmd batch-run web-01 web-02 "journalctl -xe -n 50 | grep -i error"</code></pre>
 
     <h3>Deploy Code</h3>
     <pre><code><span class="cmd-prompt">$</span> cat deploy.py

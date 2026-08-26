@@ -107,8 +107,8 @@ def example_file_transfer():
         entries = client.list_remote_directory("/tmp")
         print("\n/tmp 目录内容:")
         for entry in entries:
-            type_str = "D" if entry["is_dir"] else "F"
-            print(f"  [{type_str}] {entry['name']:30} {entry['size']:>10} bytes")
+            type_str = "D" if entry.is_dir else "F"
+            print(f"  [{type_str}] {entry.name:30} {entry.size:>10} bytes")
 
 
 def example_sudo_command():

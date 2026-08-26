@@ -22,7 +22,7 @@
 
 **错误信息：**
 ```
-SSHConnectionError: Connection timeout to 192.168.1.100
+SSHTimeoutError: connection timeout: 192.168.1.100
 ```
 
 **可能原因：**
@@ -42,8 +42,8 @@ nc -zv 192.168.1.100 22
 # 或
 telnet 192.168.1.100 22
 
-# 3. 增加超时时间
-python -m remote_cmd host add my-server 192.168.1.100 admin --password pass --port 22
+# 3. 添加主机（无私钥时按提示交互输入密码）
+remote-cmd host add my-server 192.168.1.100 admin --port 22
 ```
 
 ```python
@@ -62,7 +62,7 @@ config = ConnectionConfig(
 
 **错误信息：**
 ```
-SSHConnectionError: Host not found: example.com
+SSHConnectionError: could not resolve hostname: example.com
 ```
 
 **解决方案：**
@@ -72,8 +72,8 @@ SSHConnectionError: Host not found: example.com
 nslookup example.com
 dig example.com
 
-# 2. 使用 IP 地址代替域名
-python -m remote_cmd host add my-server 192.168.1.100 admin --password pass
+# 2. 使用 IP 地址代替域名（无私钥时按提示交互输入密码）
+remote-cmd host add my-server 192.168.1.100 admin
 
 # 3. 检查 hosts 文件
 # Linux/macOS: /etc/hosts
@@ -128,7 +128,7 @@ sudo ufw disable
 
 **错误信息：**
 ```
-SSHConnectionError: Authentication failed: Authentication failed.
+SSHAuthenticationError: authentication failed: Authentication failed.
 ```
 
 **可能原因：**
@@ -167,7 +167,7 @@ ssh user@server "cat ~/.ssh/authorized_keys"
 ssh user@server "chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys"
 
 # 4. 使用绝对路径
-python -m remote_cmd host add my-server 192.168.1.100 admin \
+remote-cmd host add my-server 192.168.1.100 admin \
     --key /home/username/.ssh/id_rsa  # 使用绝对路径，不是 ~/
 ```
 
@@ -297,7 +297,7 @@ result = client.execute("ls -la /path/to/file")
 
 **错误信息：**
 ```
-socket.timeout: The read operation timed out
+SSHCommandTimeoutError: command timed out after 300 seconds
 ```
 
 **解决方案：**
@@ -656,7 +656,7 @@ python --version
 pip list
 
 # 收集错误信息
-python -m remote_cmd --verbose host test my-server 2>&1 | tee error.log
+remote-cmd --verbose host test my-server 2>&1 | tee error.log
 ```
 
 ### 2. 提交 Issue
@@ -699,4 +699,4 @@ python -m remote_cmd --verbose host test my-server 2>&1 | tee error.log
 
 ---
 
-*最后更新：2024年*
+*最后更新：2026-08-23（v2.1.0）*

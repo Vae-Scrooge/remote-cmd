@@ -60,11 +60,13 @@ with SSHClient(config) as client:
 防止长时间运行的命令阻塞：
 
 ```python
+from remote_cmd.utils.exceptions import SSHCommandTimeoutError
+
 with SSHClient(config) as client:
     # 5 秒超时
     try:
         result = client.execute("sleep 10", timeout=5)
-    except socket.timeout:
+    except SSHCommandTimeoutError:
         print("命令执行超时")
     
     # 长时间任务使用 nohup
@@ -84,29 +86,36 @@ Remote CMD 提供了详细的异常层次：
 ```python
 from remote_cmd.utils.exceptions import (
     SSHConnectionError,      # 连接错误
+    SSHAuthenticationError,  # 认证失败（永久性，不重试）
+    SSHTimeoutError,         # 连接超时（瞬态，可重试）
     SSHCommandError,         # 命令执行错误
+    SSHCommandTimeoutError,  # 命令超时（瞬态，可重试）
     SSHFileTransferError,    # 文件传输错误
+    CredentialError,         # 凭据解析/解密错误（永久性，不重试）
     ConfigError,            # 配置错误
     ValidationError         # 输入验证错误
 )
 
+# 批量执行器使用同一分类：未识别的 Exception 子类仍保持可重试，以兼容
+# 自定义 client_factory；自定义实现应优先抛出类型化的 remote_cmd 异常。
+
 def safe_execute(client, command: str, max_retries: int = 3):
-    """安全执行命令，带重试逻辑"""
-    for attempt in range(max_retries):
+    """安全执行命令，带与 Remote CMD 一致的重试分类"""
+    import time
+
+    from remote_cmd.service.retry_policy import compute_backoff_delay, is_retryable
+
+    for attempt in range(max_retries + 1):
         try:
             result = client.execute(command)
             return result
-            
-        except SSHConnectionError as e:
-            if attempt < max_retries - 1:
-                print(f"连接失败，重试 {attempt + 1}/{max_retries}...")
-                time.sleep(2 ** attempt)  # 指数退避
-            else:
+
+        except Exception as e:
+            if attempt >= max_retries or not is_retryable(e):
                 raise
-                
-        except SSHCommandError as e:
-            print(f"命令执行错误: {e}")
-            raise
+            delay = compute_backoff_delay(attempt, base_delay=1.0)
+            print(f"执行失败，{delay:.2f} 秒后重试 {attempt + 1}/{max_retries}...")
+            time.sleep(delay)
 ```
 
 ### 健壮的错误处理
@@ -168,25 +177,31 @@ def robust_batch_execute(hosts, command):
 from functools import wraps
 import time
 
-def retry_on_failure(max_retries=3, delay=1, backoff=2):
-    """重试装饰器"""
+from remote_cmd.service.retry_policy import compute_backoff_delay, is_retryable
+
+def retry_on_failure(max_retries=3, delay=1):
+    """使用 Remote CMD 分类策略的重试装饰器"""
     def decorator(func):
         @wraps(func)
         def wrapper(*args, **kwargs):
             last_exception = None
-            current_delay = delay
-            
+
             for attempt in range(max_retries):
                 try:
                     return func(*args, **kwargs)
-                except (SSHConnectionError, SSHCommandError) as e:
+                except Exception as e:
                     last_exception = e
-                    if attempt < max_retries - 1:
-                        print(f"尝试 {attempt + 1} 失败: {e}")
-                        print(f"{current_delay}秒后重试...")
-                        time.sleep(current_delay)
-                        current_delay *= backoff
-            
+                    if attempt >= max_retries - 1 or not is_retryable(e):
+                        break
+                    current_delay = compute_backoff_delay(
+                        attempt,
+                        base_delay=delay,
+                        max_delay=60.0,
+                    )
+                    print(f"尝试 {attempt + 1} 失败: {e}")
+                    print(f"{current_delay:.2f} 秒后重试...")
+                    time.sleep(current_delay)
+
             raise last_exception
         return wrapper
     return decorator
@@ -278,28 +293,32 @@ print(f"\n汇总: {success_count}/{len(results)} 成功")
 
 ```python
 import asyncio
-from concurrent.futures import ThreadPoolExecutor
+from remote_cmd.service.async_batch_executor import AsyncBatchExecutor
 
-async def async_execute(host, command, executor):
-    """异步执行命令"""
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(
-        executor, execute_on_host, host, command
+async def batch_async_execute(host_names, command, max_concurrency=5):
+    """使用原生 asyncssh 内核批量执行"""
+    executor = AsyncBatchExecutor(
+        manager,
+        max_concurrency=max_concurrency,
+        command_timeout=30,
+    )
+    return await executor.execute(
+        host_names,
+        command,
+        retry_count=1,
+        retry_delay=1.0,
     )
 
-async def batch_async_execute(hosts, command, max_workers=5):
-    """批量异步执行"""
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        tasks = [
-            async_execute(host, command, executor)
-            for host in hosts
-        ]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-    return results
-
 # 使用示例
-results = asyncio.run(batch_async_execute(web_hosts, "uptime"))
+results = asyncio.run(
+    batch_async_execute([host.name for host in web_hosts], "uptime")
+)
 ```
+
+多主机或需要重试时，`AsyncBatchExecutor` 内部按主机使用 `AsyncConnectionPool` 复用连接，
+批次结束后自动关闭内部创建的池。若通过 `pool_factory` 注入外部池，池由调用方拥有，
+执行器绝不会关闭；适合长驻服务跨批次复用。不要在已经运行的事件循环中调用
+`BatchExecutor(use_async=True)`，此时应直接 `await AsyncBatchExecutor.execute()`。
 
 ### 批量文件传输
 

@@ -12,10 +12,13 @@ SSH 客户端模块
 Author: Vae-Scrooge
 """
 
+import contextlib
 import logging
+import re
 import shlex
 import socket
 import stat
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -23,9 +26,13 @@ from typing import Any, Optional
 import paramiko
 
 from remote_cmd.utils.exceptions import (
+    SSHAuthenticationError,
     SSHCommandError,
+    SSHCommandTimeoutError,
     SSHConnectionError,
     SSHFileTransferError,
+    SSHTimeoutError,
+    ValidationError,
 )
 
 # 模块日志记录器
@@ -37,6 +44,38 @@ _SECURITY_WARNING_AUTOADD = (
     "making connections vulnerable to MITM attacks. "
     "Use RejectPolicy (default) or pre-load known_hosts in production."
 )
+
+# 环境变量键的合法 shell 标识符模式（值已 shlex.quote 转义，键直接拼入
+# export 命令，必须在拼接前校验防止命令注入）
+_ENV_KEY_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+# stderr 排空线程的有界 join 时限（秒）。正常路径下通道关闭会使阻塞读取
+# 立即返回（毫秒级）；此上限仅防御极端场景——超时回调中 channel.close()
+# 失败（异常被抑制），或主线程读取异常退出而通道仍打开——避免 join 无限
+# 等待。超时后线程仍为 daemon，不会阻止进程退出
+_READER_JOIN_TIMEOUT = 5.0
+
+
+def validate_environment(environment: Optional[dict[str, str]]) -> None:
+    """校验环境变量字典的键均为合法 shell 标识符。
+
+    安全：值会经 ``shlex.quote`` 转义，但键直接拼入
+    ``export {k}=...`` 命令前缀——含 shell 元字符的键（如
+    ``A; malicious``）会造成命令注入，必须在拼接前拒绝。
+
+    Args:
+        environment: 环境变量字典（可为 None / 空）
+
+    Raises:
+        ValidationError: 存在非法键
+    """
+    if not environment:
+        return
+    for key in environment:
+        if not _ENV_KEY_PATTERN.match(key):
+            raise ValidationError(
+                f"invalid environment variable name: {key!r} (must match [A-Za-z_][A-Za-z0-9_]*)"
+            )
 
 
 # ============================================================================
@@ -60,7 +99,8 @@ class ConnectionConfig:
         key_filename: SSH 私钥文件路径（可选）
         timeout: 连接超时时间（秒），默认 30 秒
         compress: 是否启用压缩，默认启用
-        host_key_policy: 主机密钥验证策略，默认 WarningPolicy。
+        host_key_policy: 主机密钥验证策略，默认 None（即 RejectPolicy，
+                        拒绝未知主机密钥）。
                         可设为 paramiko.AutoAddPolicy() 自动接受新主机密钥，
                         或 paramiko.RejectPolicy() 严格验证。
                          警告: AutoAddPolicy 容易受到 MITM 攻击！
@@ -279,9 +319,10 @@ class SSHClient:
             return self
 
         except paramiko.AuthenticationException as e:
-            raise SSHConnectionError(f"authentication failed: {e}") from e
+            # 永久性错误：重试同一凭据只会加剧账号锁定（见 service/retry_policy.py）
+            raise SSHAuthenticationError(f"authentication failed: {e}") from e
         except socket.timeout as e:
-            raise SSHConnectionError(f"connection timeout: {self.config.hostname}") from e
+            raise SSHTimeoutError(f"connection timeout: {self.config.hostname}") from e
         except socket.gaierror as e:
             raise SSHConnectionError(f"could not resolve hostname: {self.config.hostname}") from e
         except (OSError, paramiko.SSHException) as e:
@@ -330,6 +371,94 @@ class SSHClient:
         except (AttributeError, OSError):
             return False
 
+    def _read_output(
+        self,
+        stdout: Any,
+        stderr: Any,
+        timeout: Optional[int],
+    ) -> tuple[int, str, str]:
+        """并发排空命令输出流并返回 (exit_code, stdout, stderr)。
+
+        大输出死锁防护（paramiko 官方文档对 ``recv_exit_status`` 的警告
+        场景）：SSH 通道窗口（默认 2MB）限制远端可发送的未确认数据量。
+        若在排空输出流之前等待退出状态、或只阻塞读取其中一流，远端写满
+        窗口后会阻塞，命令永不退出 → 死锁。因此：
+
+        - stderr 由后台线程排空、stdout 在当前线程读取，两流并发消费，
+          窗口持续调整，远端永远不会因窗口耗尽而卡死；
+        - 两个流都读到 EOF（命令已退出）后再取退出状态，此时立即返回。
+
+        超时语义（wall-clock，与 AsyncSSHClient 的 ``conn.run(timeout=...)``
+        对齐）：不使用通道 ``settimeout``（其 per-recv 语义会误杀"长时间
+        静默于单一流但整体健康"的命令），改由定时器在超时后关闭通道——
+        关闭使两个阻塞读取解除（返回已缓冲数据），且 ``_set_closed`` 会
+        置位 status_event 使 ``recv_exit_status`` 立即返回，不会二次挂起。
+
+        Args:
+            stdout: exec_command 返回的 stdout 文件对象
+            stderr: exec_command 返回的 stderr 文件对象
+            timeout: wall-clock 超时（秒），None 表示不限时
+
+        Returns:
+            tuple[int, str, str]: (exit_code, stdout_text, stderr_text)
+
+        Raises:
+            SSHCommandTimeoutError: 命令在 timeout 内未完成
+        """
+        channel = stdout.channel
+        stderr_bytes = b""
+        stderr_error: Optional[BaseException] = None
+
+        def _drain_stderr() -> None:
+            nonlocal stderr_bytes, stderr_error
+            try:
+                stderr_bytes = stderr.read()
+            except BaseException as e:  # noqa: BLE001 - 线程内异常回传主线程
+                stderr_error = e
+
+        reader = threading.Thread(target=_drain_stderr, name="ssh-stderr-drain", daemon=True)
+
+        timed_out = threading.Event()
+
+        def _on_timeout() -> None:
+            timed_out.set()
+            # 关闭通道以终止远端命令，并解除两个读取的阻塞
+            with contextlib.suppress(Exception):
+                channel.close()
+
+        timer: Optional[threading.Timer] = None
+        if timeout is not None:
+            timer = threading.Timer(timeout, _on_timeout)
+            timer.daemon = True
+            timer.start()
+
+        try:
+            reader.start()
+            stdout_bytes = stdout.read()
+        finally:
+            if timer is not None:
+                timer.cancel()
+            # 有界 join：正常路径通道关闭后 reader 立即返回；极端场景下
+            # （close 失败 / 主线程读取异常而通道未关闭）reader 可能仍
+            # 阻塞在远端输出上——放弃等待其自然退出，避免调用方永久挂起
+            reader.join(timeout=_READER_JOIN_TIMEOUT)
+            if reader.is_alive():
+                logger.debug(
+                    "stderr drain thread did not finish within %.1fs", _READER_JOIN_TIMEOUT
+                )
+
+        if timed_out.is_set():
+            raise SSHCommandTimeoutError(f"command timed out after {timeout} seconds")
+        if stderr_error is not None:
+            raise stderr_error
+
+        exit_code = channel.recv_exit_status()
+        return (
+            exit_code,
+            stdout_bytes.decode("utf-8", errors="replace"),
+            stderr_bytes.decode("utf-8", errors="replace"),
+        )
+
     def _get_sftp(self) -> paramiko.SFTPClient:
         """获取 SFTP 客户端（延迟初始化）"""
         if not self._client:
@@ -377,7 +506,9 @@ class SSHClient:
 
         Args:
             command: 要执行的命令字符串
-            timeout: 命令执行超时时间（秒），None 表示使用默认超时
+            timeout: 命令执行 wall-clock 超时时间（秒），None 表示不限时。
+                超时后关闭通道终止远端命令并抛出 SSHCommandTimeoutError。
+                输出流在内部并发排空，大输出（超过 SSH 通道窗口）不会死锁
             environment: 环境变量字典，将在命令执行前设置
 
         Returns:
@@ -396,6 +527,9 @@ class SSHClient:
         if not self._client:
             raise SSHConnectionError("not connected, call connect() first")
 
+        # 安全：键必须为合法 shell 标识符（值虽已转义，键直接拼入命令）
+        validate_environment(environment)
+
         try:
             # 安全：不记录命令全文（可能含敏感参数），仅记录执行事件
             logger.debug("executing remote command")
@@ -411,13 +545,12 @@ class SSHClient:
             # 组合完整命令（切换到用户主目录执行）
             full_command = f"{env_str}cd ~ && {command}"
 
-            # 执行命令
-            stdin, stdout, stderr = self._client.exec_command(full_command, timeout=timeout)
+            # 执行命令（timeout 为 wall-clock 语义，由 _read_output 实施：
+            # 并发排空两流防大输出死锁，超时关闭通道终止远端命令）
+            stdin, stdout, stderr = self._client.exec_command(full_command)
 
-            # 获取命令执行结果
-            exit_code = stdout.channel.recv_exit_status()
-            stdout_data = stdout.read().decode("utf-8", errors="replace")
-            stderr_data = stderr.read().decode("utf-8", errors="replace")
+            # 获取命令执行结果（先排空输出流，再取退出状态）
+            exit_code, stdout_data, stderr_data = self._read_output(stdout, stderr, timeout)
 
             # 构建结果对象
             result = CommandResult(
@@ -470,15 +603,13 @@ class SSHClient:
             full_command = f"sudo -S {command}"
             # get_pty=False：避免 PTY 合并 stdout/stderr（与文档"独立分离"一致），
             # 同时关闭 PTY echo 防止 sudo 密码被回显到 stdout 造成凭据泄露
-            stdin, stdout, stderr = self._client.exec_command(
-                full_command, timeout=timeout, get_pty=False
-            )
+            stdin, stdout, stderr = self._client.exec_command(full_command, get_pty=False)
             stdin.write(password + "\n")
             stdin.flush()
 
-            exit_code = stdout.channel.recv_exit_status()
-            stdout_data = stdout.read().decode("utf-8", errors="replace")
-            stderr_data = stderr.read().decode("utf-8", errors="replace")
+            # 与 execute 一致：先并发排空两流（防大输出死锁），再取退出状态；
+            # timeout 为 wall-clock 语义
+            exit_code, stdout_data, stderr_data = self._read_output(stdout, stderr, timeout)
 
             return CommandResult(
                 command=command,

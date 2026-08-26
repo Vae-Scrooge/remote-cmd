@@ -48,12 +48,25 @@ class AsyncConnectionPool:
         max_lifetime: int = 3600,
         idle_timeout: int = 300,
         health_check_interval: int = 60,
+        client_factory: Optional[Any] = None,
     ) -> None:
+        """
+        Args:
+            config: 用于建立 SSH 连接的配置
+            max_connections: 同一最大连接数（同一配置可复用）
+            max_lifetime: 连接最大生命周期（秒），超过自动关闭
+            idle_timeout: 空闲超时（秒），超过自动关闭
+            health_check_interval: 后台清理任务周期（秒）
+            client_factory: 客户端工厂，默认为 AsyncSSHClient；测试可注入
+                mock（与 SyncConnectionPool 对齐）
+        """
         self.config = config
         self._max = max_connections
         self._max_lifetime = max_lifetime
         self._idle_timeout = idle_timeout
         self._health_check_interval = health_check_interval
+        # 客户端工厂：默认为 AsyncSSHClient；测试可注入 mock
+        self._client_factory = client_factory or AsyncSSHClient
 
         # 容器
         self._connections: list[AsyncSSHClient] = []
@@ -112,6 +125,12 @@ class AsyncConnectionPool:
         if self._closed:
             raise RuntimeError("connection pool is closed")
         await self._semaphore.acquire()
+        # 竞态守卫：等待信号量期间 close_all() 可能已完成——
+        # 取得槽位后必须复查，已关闭则归还槽位并抛出既有错误，
+        # 否则会向调用方发放来自已关闭池的连接
+        if self._closed:
+            self._semaphore.release()
+            raise RuntimeError("connection pool is closed")
         try:
             # 优先复用空闲连接
             while not self._free.empty():
@@ -168,7 +187,7 @@ class AsyncConnectionPool:
     # 内部
     # ------------------------------------------------------------------
     async def _create_connection(self) -> AsyncSSHClient:
-        client = AsyncSSHClient(self.config)
+        client = self._client_factory(self.config)
         try:
             await client.connect()
         except Exception:  # noqa: BLE001

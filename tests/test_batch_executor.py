@@ -264,7 +264,15 @@ class TestBatchExecutor:
         from remote_cmd.service.batch_executor import BatchExecutor
 
         executor = BatchExecutor(host_service=service)
-        result = executor.execute(["srv1"], "uptime", retry_count=2, retry_delay=0.01)
+        # 受控时钟：确保耗时 > 0（Windows 上真实时钟分辨率可能让瞬时失败执行算出 duration==0）
+        clock = {"t": 1000.0}
+
+        def fake_time():
+            clock["t"] += 1.0
+            return clock["t"]
+
+        with patch("time.time", side_effect=fake_time):
+            result = executor.execute(["srv1"], "uptime", retry_count=2, retry_delay=0.01)
 
         assert result.total == 1
         assert result.success == 0

@@ -68,10 +68,19 @@ class TestSyncConnectionPool:
     def test_max_lifetime_expiry(self, config, patched_client):
         pool = SyncConnectionPool(config=config, max_connections=2, max_lifetime=0)
         try:
-            conn = pool.acquire()
-            pool.release(conn)
-            # max_lifetime=0 使下次获取时一定过期
-            conn2 = pool.acquire()
+            # 受控时钟：每次 time.time() 调用递增，确保两次 acquire 之间“时间前进”，
+            # 避免依赖真实时钟分辨率（Windows 上同一 tick 内 now==created_at 会误判未过期）
+            clock = {"t": 1000.0}
+
+            def fake_time():
+                clock["t"] += 1.0
+                return clock["t"]
+
+            with patch("time.time", side_effect=fake_time):
+                conn = pool.acquire()
+                pool.release(conn)
+                # max_lifetime=0 使下次获取时一定过期
+                conn2 = pool.acquire()
             assert conn is not conn2
         finally:
             pool.close_all()

@@ -20,7 +20,7 @@ import socket
 import stat
 import threading
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Optional
 
 import paramiko
@@ -729,13 +729,16 @@ class SSHClient:
         sftp = self._get_sftp()
 
         def _makedirs(sftp_client: paramiko.SFTPClient, remote_path: str) -> None:
-            if remote_path == "/":
+            # 远端路径始终是 POSIX 语义，必须用 PurePosixPath 处理，
+            # 不能用本地 Path（在 Windows 上 WindowsPath 对 "/" 的处理会导致无限递归）。
+            p = PurePosixPath(remote_path)
+            if p == PurePosixPath("/") or p == PurePosixPath("."):
                 return
             try:
-                sftp_client.stat(remote_path)
+                sftp_client.stat(str(p))
             except OSError:
-                _makedirs(sftp_client, str(Path(remote_path).parent))
-                sftp_client.mkdir(remote_path)
+                _makedirs(sftp_client, str(p.parent))
+                sftp_client.mkdir(str(p))
 
         try:
             _makedirs(sftp, path)

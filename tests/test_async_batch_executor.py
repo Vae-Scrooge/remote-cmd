@@ -102,10 +102,17 @@ class TestAsyncConnectionPool:
     async def test_max_lifetime_expiry(self, config, patched_client):
         pool = AsyncConnectionPool(config=config, max_connections=2, max_lifetime=0)
         try:
-            conn = await pool.acquire()
-            await pool.release(conn)
-            # max_lifetime=0 使下次获取时一定过期
-            conn2 = await pool.acquire()
+            clock = {"t": 1000.0}
+
+            def fake_time():
+                clock["t"] += 1.0
+                return clock["t"]
+
+            with patch("time.time", side_effect=fake_time):
+                conn = await pool.acquire()
+                await pool.release(conn)
+                # max_lifetime=0 使下次获取时一定过期
+                conn2 = await pool.acquire()
             assert conn is not conn2
         finally:
             await pool.close_all()

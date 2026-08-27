@@ -1,5 +1,7 @@
 """凭据加密模块测试"""
 
+import sys
+
 import pytest
 
 from remote_cmd.utils.crypto import CredentialEncryption, CredentialEncryptionError
@@ -48,8 +50,12 @@ class TestCredentialEncryption:
         assert crypto.is_encrypted("plaintext") is False
         assert crypto.is_encrypted("") is False
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="0600 permission model is Unix-only; the key still stays encrypted at rest on Windows",
+    )
     def test_key_file_created_with_correct_permissions(self, tmp_path):
-        """测试：密钥文件自动创建且权限正确"""
+        """测试：密钥文件自动创建且权限正确（Unix-only 权限断言）"""
         key_path = tmp_path / ".key"
         crypto = CredentialEncryption(key_path=key_path)
 

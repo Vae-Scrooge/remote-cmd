@@ -19,11 +19,26 @@ env:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
         python-version: ["3.9", "3.10", "3.11", "3.12"]
+        exclude:
+          # Reduce matrix size: only test 3.12 on macOS/Windows, full matrix on Linux
+          - os: macos-latest
+            python-version: "3.9"
+          - os: macos-latest
+            python-version: "3.10"
+          - os: macos-latest
+            python-version: "3.11"
+          - os: windows-latest
+            python-version: "3.9"
+          - os: windows-latest
+            python-version: "3.10"
+          - os: windows-latest
+            python-version: "3.11"
 
     steps:
       - uses: actions/checkout@v5
@@ -47,7 +62,7 @@ jobs:
         run: uv run pytest -v --tb=short --cov=remote_cmd --cov-report=xml --cov-report=term-missing
 
       - name: Verify API docs generation (3.12 only)
-        if: matrix.python-version == '3.12'
+        if: matrix.python-version == '3.12' && matrix.os == 'ubuntu-latest'
         run: uv run pdoc remote_cmd -o /tmp/pdoc-check
 
       - name: Upload coverage

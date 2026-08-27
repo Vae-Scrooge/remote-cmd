@@ -262,14 +262,14 @@ are simply not exported.
 | [Changelog](./CHANGELOG.md) | Release history |
 | [Mobile Remote Guide](./MOBILE-REMOTE-GUIDE.md) | Manage servers from your phone |
 
-> **Note:** The documentation center and tutorials are maintained in **Chinese**. See
+> **Note:** The documentation center and tutorials are maintained in **English**. See
 > [README.zh-CN.md](./README.zh-CN.md) for the Chinese version of this page.
 
 ---
 
 ## Project Status
 
-**Beta.** The core API is stable. Breaking changes will be communicated via semantic versioning.
+**Stable.** The core API is stable and versioned under semantic versioning. Breaking changes are communicated via major-version bumps, and the public API surface has been stable since the 1.x line.
 
 **Roadmap:**
 - [x] Async SSH operations (parallel execution) — v1.1.0

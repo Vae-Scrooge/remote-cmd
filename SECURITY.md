@@ -7,7 +7,7 @@
 
 ## Supported Versions
 
-Remote CMD is currently in the **Beta** stage. Security vulnerabilities in the latest released version are actively fixed.
+Remote CMD is **Stable**. Security vulnerabilities in the latest released version are actively fixed.
 
 | Version | Support Status |
 |---------|----------------|

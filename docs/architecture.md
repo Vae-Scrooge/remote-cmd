@@ -1,198 +1,210 @@
-# 系统架构文档
+# System Architecture
 
-本文档详细介绍 Remote CMD 的系统架构、设计决策和技术实现细节。
+This document describes the system architecture, design decisions, and technical implementation details of Remote CMD.
 
-## 目录
+## Table of Contents
 
-- [架构概览](#架构概览)
-- [分层架构](#分层架构)
-- [核心组件](#核心组件)
-- [数据流](#数据流)
-- [设计模式](#设计模式)
-- [扩展性设计](#扩展性设计)
-- [性能考虑](#性能考虑)
-- [安全设计](#安全设计)
+- [Architecture Overview](#architecture-overview)
+- [Layered Architecture](#layered-architecture)
+- [Core Components](#core-components)
+- [Data Flow](#data-flow)
+- [Design Patterns](#design-patterns)
+- [Extensibility](#extensibility)
+- [Performance Considerations](#performance-considerations)
+- [Security Design](#security-design)
 
 ---
 
-## 架构概览
+## Architecture Overview
 
-Remote CMD 采用分层架构设计，将系统划分为多个职责清晰的层次，确保代码的可维护性和可扩展性。
+Remote CMD uses a layered architecture that divides the system into clearly separated layers with distinct responsibilities, ensuring maintainability and extensibility.
 
-### 系统架构图
+### System Architecture Diagram
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                         用户交互层                                │
+│                       User Interaction Layer                     │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────┐  │
-│  │   CLI 工具    │  │  Python API  │  │   配置文件管理        │  │
-│  │  remote-cmd   │  │  程序化调用   │  │  YAML/JSON/环境变量   │  │
+│  │   CLI Tool   │  │  Python API  │  │   Config Management   │  │
+│  │  remote-cmd  │  │ Programmatic │  │  YAML/JSON/Env Vars   │  │
 │  └──────┬───────┘  └──────┬───────┘  └──────────┬───────────┘  │
 └─────────┼──────────────────┼─────────────────────┼──────────────┘
-          │                  │                     │
-          ▼                  ▼                     ▼
+           │                  │                     │
+           ▼                  ▼                     ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                         业务逻辑层                                │
+│                       Business Logic Layer                       │
 │  ┌─────────────────────────────────────────────────────────┐   │
-│  │            HostService + HostRepository 主机服务          │   │
+│  │          HostService + HostRepository (Host Service)      │   │
 │  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐   │   │
-│  │  │   添加主机    │  │   删除主机    │  │   查询主机    │   │   │
-│  │  │   标签管理    │  │   批量操作    │  │   连接测试    │   │   │
+│  │  │   Add Host   │  │  Remove Host │  │   Query Host │   │   │
+│  │  │  Tag Manage  │  │ Batch Ops   │  │  Conn Test   │   │   │
 │  │  └──────────────┘  └──────────────┘  └──────────────┘   │   │
 │  └────────────────────┬────────────────────────────────────┘   │
 └───────────────────────┼────────────────────────────────────────┘
-                        │
-                        ▼
+                         │
+                         ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                         核心功能层                                │
+│                        Core Function Layer                       │
 │  ┌─────────────────────────────────────────────────────────┐   │
-│  │                    SSHClient SSH 客户端                   │   │
+│  │                  SSHClient (SSH Client)                  │   │
 │  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐   │   │
-│  │  │   连接管理    │  │   命令执行    │  │   文件传输    │   │   │
-│  │  │   认证处理    │  │   输出处理    │  │   SFTP 操作  │   │   │
-│  │  │   会话管理    │  │   超时控制    │  │   目录操作    │   │   │
+│  │  │  Conn Manage │  │  Cmd Execute │  │  File Transfer│   │   │
+│  │  │  Auth Handle│  │ Output Handle│  │  SFTP Ops    │   │   │
+│  │  │ Session Mgmt│  │ Timeout Ctl  │  │  Dir Ops     │   │   │
 │  │  └──────────────┘  └──────────────┘  └──────────────┘   │   │
 │  └────────────────────┬────────────────────────────────────┘   │
 └───────────────────────┼────────────────────────────────────────┘
-                        │
-                        ▼
+                         │
+                         ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                         网络传输层                                │
-│                    Paramiko (SSHv2 协议实现)                     │
-│              支持：密码认证、密钥认证、SFTP、端口转发              │
+│                        Network Transport Layer                    │
+│                   Paramiko (SSHv2 Protocol)                      │
+│         Supports: password auth, key auth, SFTP, port forward    │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 分层架构
+## Layered Architecture
 
-### 1. 用户交互层
+### 1. User Interaction Layer
 
-负责与用户交互，提供多种使用方式。
+Responsible for interacting with the user and providing multiple usage modes.
 
-#### CLI 工具 (`remote_cmd/cli/`)
-- 基于 Click 框架构建
-- 提供友好的命令行界面
-- 支持子命令和参数解析
-- 彩色输出和进度显示
+#### CLI Tool (`remote_cmd/cli/`)
+
+- Built on the Click framework
+- Provides a friendly command-line interface
+- Supports subcommands and argument parsing
+- Colorized output and progress display
 
 #### Python API (`remote_cmd/core/`)
-- 提供程序化接口
-- 支持类型提示和 IDE 自动补全
-- 上下文管理器确保资源释放
 
-#### 配置管理 (`remote_cmd/utils/config.py`)
-- 支持 YAML/JSON 格式
-- 环境变量覆盖
-- 默认配置管理
+- Provides a programmatic interface
+- Supports type hints and IDE autocomplete
+- Context managers ensure resource release
 
-### 2. 业务逻辑层
+#### Config Management (`remote_cmd/utils/config.py`)
+
+- Supports YAML/JSON formats
+- Environment variable overrides
+- Default configuration management
+
+### 2. Business Logic Layer
 
 #### HostService + HostRepository (`remote_cmd/service/host_service.py` + `remote_cmd/repository/`)
-主机服务的核心职责：
-- 主机配置的 CRUD 操作
-- 标签分类和筛选
-- 批量操作支持
-- 数据持久化（JsonHostRepository / SqliteHostRepository / 存储引擎自动切换）
 
-**设计决策：**
-- Repository 定义存储接口，Json/SQLite 实现可插拔切换
-- HostService 承载业务逻辑与凭据解析，与存储解耦
-- 存储引擎按文件扩展名自动选择（.json/.db/.sqlite）或显式 storage_backend
+Core responsibilities of the host service:
 
-### 3. 核心功能层
+- CRUD operations on host configurations
+- Tag classification and filtering
+- Batch operation support
+- Data persistence (JsonHostRepository / SqliteHostRepository / automatic storage engine switching)
+
+**Design decisions:**
+
+- `Repository` defines the storage interface; Json/SQLite implementations are pluggable and switchable
+- `HostService` carries the business logic and credential resolution, decoupled from storage
+- The storage engine is auto-selected by file extension (`.json`/`.db`/`.sqlite`) or an explicit `storage_backend`
+
+### 3. Core Function Layer
 
 #### SSHClient (`remote_cmd/core/ssh_client.py`)
-SSH 客户端的核心功能：
-- 连接管理（建立、维护、断开）
-- 命令执行（同步；异步实现见 `AsyncSSHClient`）
-- 文件传输（SFTP）
-- 会话复用
 
-**设计决策：**
-- 使用上下文管理器确保连接关闭
-- 异常转换，统一错误处理
-- 支持 `SyncConnectionPool` / `AsyncConnectionPool`，批量执行器按需复用连接
+Core functions of the SSH client:
 
-### 4. 网络传输层
+- Connection management (establish, maintain, disconnect)
+- Command execution (synchronous; see `AsyncSSHClient` for the async implementation)
+- File transfer (SFTP)
+- Session reuse
 
-使用 Paramiko 库实现 SSHv2 协议：
-- 密码认证
-- 公钥认证（RSA/ED25519）
-- SFTP 文件传输
-- 端口转发（未来扩展）
+**Design decisions:**
+
+- Use a context manager to ensure connections are closed
+- Exception translation for unified error handling
+- Supports `SyncConnectionPool` / `AsyncConnectionPool`; batch executors reuse connections on demand
+
+### 4. Network Transport Layer
+
+Uses the Paramiko library to implement the SSHv2 protocol:
+
+- Password authentication
+- Public key authentication (RSA/ED25519)
+- SFTP file transfer
+- Port forwarding (future extension)
 
 ---
 
-## 核心组件
+## Core Components
 
-### SSHClient 组件
+### SSHClient Component
 
 ```python
 class SSHClient:
     """
-    SSH 客户端组件
-    
-    职责：
-    1. 管理 SSH 连接生命周期
-    2. 执行远程命令
-    3. 传输文件
-    4. 处理异常
+    SSH Client Component
+
+    Responsibilities:
+    1. Manage the SSH connection lifecycle
+    2. Execute remote commands
+    3. Transfer files
+    4. Handle exceptions
     """
-    
+
     def __init__(self, config: ConnectionConfig):
         self.config = config
         self._client = None
         self._sftp = None
-    
+
     def connect(self) -> "SSHClient":
-        # 建立连接
+        # Establish connection
         pass
-    
+
     def execute(self, command: str) -> CommandResult:
-        # 执行命令
+        # Execute command
         pass
-    
+
     def upload_file(self, local: str, remote: str):
-        # 上传文件
+        # Upload file
         pass
 ```
 
-**组件关系：**
+**Component relationships:**
+
 ```
 SSHClient *-- ConnectionConfig
 SSHClient o-- paramiko.SSHClient
 SSHClient o-- paramiko.SFTPClient
 ```
 
-### HostService 组件
+### HostService Component
 
 ```python
 class HostService:
     """
-    主机服务组件
+    Host Service Component
 
-    职责：
-    1. 管理主机集合
-    2. 委托仓库持久化
-    3. 提供筛选和查询
-    4. 批量操作支持
+    Responsibilities:
+    1. Manage the host collection
+    2. Delegate persistence to the repository
+    3. Provide filtering and querying
+    4. Support batch operations
     """
 
     def __init__(self, repository: HostRepository):
         self._repository = repository
 
     def add_host(self, host: Host):
-        # 添加主机
+        # Add host
         pass
 
     def connect_to_host(self, name: str) -> SSHClient:
-        # 连接到指定主机
+        # Connect to the specified host
         pass
 ```
 
-**组件关系：**
+**Component relationships:**
+
 ```
 HostService o-- HostRepository
 HostService *-- "*" Host
@@ -204,141 +216,145 @@ Host *-- ConnectionConfig
 
 ---
 
-## 数据流
+## Data Flow
 
-### 命令执行数据流
+### Command Execution Data Flow
 
 ```
-用户调用
+User invocation
     │
     ▼
 ┌─────────────────┐
-│  CLI/API 入口   │  解析参数，验证输入
+│  CLI/API Entry  │  Parse arguments, validate input
 └────────┬────────┘
          │
          ▼
 ┌─────────────────┐
-│   HostService   │  查找主机配置
+│   HostService   │  Look up host config
 │   get_host()    │
 └────────┬────────┘
          │
          ▼
 ┌─────────────────┐
-│   SSHClient     │  建立连接
+│   SSHClient     │  Establish connection
 │    connect()    │
 └────────┬────────┘
          │
          ▼
 ┌─────────────────┐
-│    Paramiko     │  SSH 协议通信
+│    Paramiko     │  SSH protocol communication
 │   SSHClient     │
 └────────┬────────┘
          │
          ▼
-    远程服务器
+    Remote server
          │
          ▼
 ┌─────────────────┐
-│   SSHClient     │  接收响应
+│   SSHClient     │  Receive response
 │    execute()    │
 └────────┬────────┘
          │
          ▼
 ┌─────────────────┐
-│  CommandResult  │  封装结果
+│  CommandResult  │  Wrap the result
 └────────┬────────┘
          │
          ▼
-    返回给用户
+    Return to user
 ```
 
-### 文件传输数据流
+### File Transfer Data Flow
 
 ```
-用户调用 upload_file()
+User calls upload_file()
          │
          ▼
 ┌──────────────────┐
-│  验证本地文件存在  │
+│  Verify local     │
+│  file exists      │
 └────────┬─────────┘
          │
          ▼
 ┌──────────────────┐
-│  建立 SFTP 通道   │  使用现有 SSH 连接
+│  Open SFTP        │  Reuse the existing SSH connection
+│  channel          │
 └────────┬─────────┘
          │
          ▼
 ┌──────────────────┐
-│  Paramiko SFTP   │  SFTP put 操作
+│  Paramiko SFTP   │  SFTP put operation
 │     put()        │
 └────────┬─────────┘
          │
          ▼
 ┌──────────────────┐
-│  验证传输结果     │  检查返回值
+│  Verify transfer │  Check return value
+│  result          │
 └────────┬─────────┘
          │
          ▼
-    返回成功/失败
+    Return success/failure
 ```
 
 ---
 
-## 设计模式
+## Design Patterns
 
-### 1. 上下文管理器模式
+### 1. Context Manager Pattern
 
-用于自动管理资源生命周期：
+Used to automatically manage the resource lifecycle:
 
 ```python
-# 使用上下文管理器自动关闭连接
+# Use a context manager to auto-close the connection
 with SSHClient(config) as client:
     result = client.execute("ls -la")
-    # 连接自动关闭，无需手动调用 disconnect()
+    # Connection auto-closes; no need to call disconnect() manually
 ```
 
-**好处：**
-- 防止资源泄露
-- 代码更简洁
-- 异常安全
+**Benefits:**
 
-### 2. 策略模式
+- Prevents resource leaks
+- Cleaner code
+- Exception-safe
 
-认证方式的策略模式：
+### 2. Strategy Pattern
+
+The strategy pattern for authentication methods:
 
 ```python
-# 不同的认证策略
+# Different authentication strategies
 config1 = ConnectionConfig(
     hostname="example.com",
     username="admin",
-    password="secret"  # 密码认证策略
+    password="secret"  # Password auth strategy
 )
 
 config2 = ConnectionConfig(
     hostname="example.com",
     username="admin",
-    key_filename="~/.ssh/id_rsa"  # 密钥认证策略
+    key_filename="~/.ssh/id_rsa"  # Key auth strategy
 )
 ```
 
-### 3. 工厂模式
+### 3. Factory Pattern
 
-HostService 作为 SSHClient 的工厂：
+`HostService` acts as a factory for `SSHClient`:
 
 ```python
-# HostService 创建 SSHClient
+# HostService creates SSHClient
 from remote_cmd.repository.json_host_repository import JsonHostRepository
 from remote_cmd.service.host_service import HostService
 
 repo = JsonHostRepository("hosts.json")
 manager = HostService(repository=repo)
 client = manager.connect_to_host("web-server")
-# 返回已连接的 SSHClient 实例
+# Returns a connected SSHClient instance
 ```
 
-### 4. 数据类模式
+### 4. Dataclass Pattern
 
-使用 @dataclass 定义数据对象：
+Use `@dataclass` to define data objects:
 
 ```python
 @dataclass
@@ -347,7 +363,7 @@ class CommandResult:
     stdout: str
     stderr: str
     exit_code: int
-    
+
     @property
     def success(self) -> bool:
         return self.exit_code == 0
@@ -355,87 +371,84 @@ class CommandResult:
 
 ---
 
-## 扩展性设计
+## Extensibility
 
-### 插件架构
+### Plugin Architecture
 
-预留的扩展点：
+Reserved extension points:
 
 ```python
-# 自定义认证插件（未来）
+# Custom auth plugin (future)
 class AuthPlugin:
     def authenticate(self, client: SSHClient) -> bool:
         pass
 
-# 自定义命令处理器（未来）
+# Custom command handler (future)
 class CommandHandler:
     def before_execute(self, command: str) -> str:
         pass
-    
+
     def after_execute(self, result: CommandResult):
         pass
 ```
 
-### 钩子系统
+### Hook System
 
-事件钩子设计：
+Event hook design:
 
 ```python
-# 连接钩子
+# Connection hook
 @hooks.connect
 def on_connect(client: SSHClient):
     logger.info(f"Connected to {client.config.hostname}")
 
-# 命令执行钩子
+# Command execution hook
 @hooks.execute
 def on_execute(command: str, result: CommandResult):
     metrics.record_command(command, result.exit_code)
 ```
 
-### 自定义后端
+### Custom Backends
 
-支持自定义 SSH 后端：
+Supports custom SSH backends:
 
 ```python
-# 抽象基类
+# Abstract base class
 class SSHBackend(ABC):
     @abstractmethod
     def connect(self, config: ConnectionConfig):
         pass
 
-# 可以替换为其他实现
+# Can be replaced with other implementations
 class AsyncSSHBackend(SSHBackend):
     pass
 ```
 
 ---
 
-## 性能考虑
+## Performance Considerations
 
-### 连接复用
+### Connection Reuse
 
-当前实现：
-- 直接使用 `SSHClient` / `AsyncSSHClient` 时，每个客户端实例代表一个连接；
-  调用方可在同一客户端上连续执行多个命令。
-- 同步 `BatchExecutor` 在多主机或重试批次中按主机使用 `SyncConnectionPool`。
-- 异步 `AsyncBatchExecutor` 在多主机或重试批次中按主机使用
-  `AsyncConnectionPool`（`remote_cmd.core.async_connection_pool`），基于 asyncssh
-  复用连接并带空闲/生命周期回收与健康检查。
-- 两个执行器均支持 `pool_factory` 注入外部池；外部池由调用方拥有、执行器绝不关闭，
-  内部创建的池在批次结束后自动关闭。
+Current implementation:
+
+- When using `SSHClient` / `AsyncSSHClient` directly, each client instance represents one connection; the caller may execute multiple commands on the same client.
+- The synchronous `BatchExecutor` uses `SyncConnectionPool` per host in multi-host or retry batches.
+- The async `AsyncBatchExecutor` uses `AsyncConnectionPool` (`remote_cmd.core.async_connection_pool`) per host in multi-host or retry batches, based on asyncssh, reusing connections with idle/lifetime recycling and health checks.
+- Both executors support `pool_factory` injection of an external pool; the external pool is caller-owned and never closed by the executor, while internally created pools are closed automatically after the batch completes.
 
 ```python
-# 连接池（已实现，供异步批量执行使用）
+# Connection pool (implemented, used for async batch execution)
 from remote_cmd.core.async_connection_pool import AsyncConnectionPool
 
 pool = AsyncConnectionPool(config, max_connections=10)
-client = await pool.acquire()   # 复用现有连接或创建新连接
+client = await pool.acquire()   # Reuse an existing connection or create a new one
 await pool.release(client)
 ```
 
-### 批量操作优化
+### Batch Operation Optimization
 
-并行执行示例：
+Parallel execution example:
 
 ```python
 from concurrent.futures import ThreadPoolExecutor
@@ -446,50 +459,50 @@ def parallel_execute(hosts, command):
         for host in hosts:
             future = executor.submit(execute_on_host, host, command)
             futures.append(future)
-        
+
         results = [f.result() for f in futures]
     return results
 ```
 
-### 文件传输优化
+### File Transfer Optimization
 
-- 启用压缩传输
-- 分块传输大文件
-- 支持断点续传（计划中）
+- Enable compressed transfer
+- Transfer large files in chunks
+- Support resumable transfers (planned)
 
 ---
 
-## 安全设计
+## Security Design
 
-### 认证安全
+### Authentication Security
 
-1. **密码管理**
-   - 不在日志中记录密码
-   - 支持密码文件读取
-   - 环境变量传递
+1. **Password management**
+   - Passwords are never logged
+   - Supports reading from password files
+   - Passed via environment variables
 
-2. **密钥管理**
-   - 支持 SSH Agent
-   - 密钥文件权限检查
-   - 凭据加密存储（`CredentialEncryption`）
+2. **Key management**
+   - Supports SSH Agent
+   - Key file permission checks
+   - Encrypted credential storage (`CredentialEncryption`)
 
-### 传输安全
+### Transport Security
 
-- 使用 SSH 加密通道
-- 支持密钥指纹验证
-- 默认严格进行主机密钥检查，可按受控场景配置策略
+- Uses encrypted SSH channels
+- Supports key fingerprint verification
+- Host key checking is strict by default, configurable for controlled scenarios
 
-### 配置安全
+### Config Security
 
 ```python
-# 敏感信息处理
+# Sensitive data handling
 class SecureConfig:
     def get_password(self) -> str:
-        # 从安全存储获取
+        # Retrieved from secure storage
         pass
-    
+
     def mask_sensitive(self, data: dict) -> dict:
-        # 脱敏处理
+        # Mask sensitive data
         masked = data.copy()
         if 'password' in masked:
             masked['password'] = '***'
@@ -498,43 +511,43 @@ class SecureConfig:
 
 ---
 
-## 技术栈
+## Tech Stack
 
-### 核心依赖
+### Core Dependencies
 
-| 库 | 版本 | 用途 |
-|----|------|------|
-| paramiko | >=3.0.0 | SSH 协议实现 |
-| click | >=8.0.0 | CLI 框架 |
-| pyyaml | >=6.0 | YAML 解析 |
+| Library | Version | Purpose |
+|---------|---------|---------|
+| paramiko | >=3.0.0 | SSH protocol implementation |
+| click | >=8.0.0 | CLI framework |
+| pyyaml | >=6.0 | YAML parsing |
 
-### 开发工具
+### Development Tools
 
-| 工具 | 用途 |
-|------|------|
-| pytest | 单元测试 |
-| black | 代码格式化 |
-| flake8 | 代码检查 |
-| mypy | 类型检查 |
-
----
-
-## 未来规划
-
-### 短期计划
-
-- [x] 连接池支持
-- [x] 异步 API
-- [x] 凭据加密存储
-- [x] 批量并行执行
-
-### 长期计划
-
-- [ ] Web UI 界面
-- [ ] 跳板机/堡垒机支持
-- [ ] Ansible 集成
-- [ ] Docker 容器支持
+| Tool | Purpose |
+|------|---------|
+| pytest | Unit testing |
+| black | Code formatting |
+| flake8 | Code linting |
+| mypy | Type checking |
 
 ---
 
-**最后更新：** 2026-08-23（v2.1.0 发布审计）
+## Roadmap
+
+### Short Term
+
+- [x] Connection pool support
+- [x] Async API
+- [x] Encrypted credential storage
+- [x] Parallel batch execution
+
+### Long Term
+
+- [ ] Web UI
+- [ ] Jump host / bastion support
+- [ ] Ansible integration
+- [ ] Docker container support
+
+---
+
+**Last updated:** 2026-08-23 (v2.1.0 release audit)

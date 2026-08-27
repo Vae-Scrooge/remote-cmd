@@ -1,392 +1,415 @@
-# 手机远程操控完全指南
+# The Complete Guide to Remote Control from Your Phone
 
-<div align="center">
+<p align="center">
 
 [![Platform](https://img.shields.io/badge/platform-iOS%20%7C%20Android-blue)](.)
 [![Protocol](https://img.shields.io/badge/protocol-SSH%20%7C%20RDP%20%7C%20VNC-orange)](.)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-**从手机随时随地管理服务器、电脑和设备**
+**Manage servers, computers, and devices from your phone, anytime, anywhere**
 
-[SSH 方案](#一-ssh-远程操控方案) | [远程桌面](#二-远程桌面方案) | [手机控制手机](#三-手机控制手机方案) | [安全指南](#四-安全配置指南) | [App 对比](#五-app-对比推荐)
+[SSH](#1-ssh-remote-control) | [Remote Desktop](#2-remote-desktop) | [Phone-to-Phone](#3-phone-to-phone-control) | [Security](#4-security-configuration) | [App Comparison](#5-app-comparison)
 
-</div>
-
----
-
-## 目录
-
-- [前言](#前言)
-- [一、SSH 远程操控方案](#一-ssh-远程操控方案)
-- [二、远程桌面方案](#二-远程桌面方案)
-- [三、手机控制手机方案](#三-手机控制手机方案)
-- [四、命令行方案](#四-命令行方案)
-- [五、安全配置指南](#五-安全配置指南)
-- [六、App 对比推荐](#六-app-对比推荐)
-- [七、实战示例](#七-实战示例)
-- [八、常见问题](#八-常见问题)
+</p>
 
 ---
 
-## 前言
+## Table of Contents
 
-在移动互联网时代，手机不仅是通讯工具，更是强大的远程管理终端。无论你是：
-
-- 🖥️ **系统管理员** - 需要 7×24 小时响应服务器告警
-- 💻 **开发者** - 需要紧急修复线上 Bug
-- 🏠 **家庭用户** - 需要远程协助父母解决电脑问题
-- 📱 **极客玩家** - 希望在手机上体验完整 Linux 环境
-
-本指南将帮助你找到最适合的手机远程操控方案。
+- [Introduction](#introduction)
+- [1. SSH Remote Control](#1-ssh-remote-control)
+- [2. Remote Desktop](#2-remote-desktop)
+- [3. Phone-to-Phone Control](#3-phone-to-phone-control)
+- [4. Command-Line Approach](#4-command-line-approach)
+- [5. Security Configuration](#5-security-configuration)
+- [6. App Comparison & Recommendations](#6-app-comparison--recommendations)
+- [7. Real-World Examples](#7-real-world-examples)
+- [8. FAQ](#8-faq)
+- [9. Advanced Tips](#9-advanced-tips)
 
 ---
 
-## 一、SSH 远程操控方案
+## Introduction
 
-SSH（Secure Shell）是管理 Linux/Unix 服务器的标准协议，安全可靠。
+In the mobile era, your phone is more than a communication tool — it is a powerful remote management terminal. Whether you are:
 
-### 📱 推荐 App
+- 🖥️ **System administrator** — needs to respond to server alerts 24/7
+- 💻 **Developer** — needs to urgently fix a production bug
+- 🏠 **Home user** — needs to help parents with their computer remotely
+- 📱 **Enthusiast** — wants a full Linux environment in your pocket
 
-#### iOS 平台
+This guide will help you find the most suitable phone-based remote control solution.
 
-| App | 价格 | 评分 | 特点 |
-|-----|------|------|------|
-| **Termius** | 免费/订阅 | ⭐⭐⭐⭐⭐ | 跨平台同步，界面美观，支持 SFTP |
-| **Blink Shell** | 付费 | ⭐⭐⭐⭐⭐ | 专业级，支持 Mosh，开发者首选 |
-| **ShellFish** | 免费/订阅 | ⭐⭐⭐⭐ | 专注文件管理，集成 SFTP |
-| **SecureCRT** | 付费 | ⭐⭐⭐⭐ | 企业级，功能强大 |
+---
 
-**推荐：Termius（免费够用）或 Blink Shell（专业首选）**
+## 1. SSH Remote Control
 
-#### Android 平台
+SSH (Secure Shell) is the standard, secure protocol for managing Linux/Unix servers.
 
-| App | 价格 | 评分 | 特点 |
-|-----|------|------|------|
-| **Termius** | 免费/订阅 | ⭐⭐⭐⭐⭐ | 跨平台，功能全面 |
-| **JuiceSSH** | 免费/Pro | ⭐⭐⭐⭐⭐ | 老牌应用，插件丰富 |
-| **ConnectBot** | 开源免费 | ⭐⭐⭐⭐ | 开源轻量，无广告 |
-| **SimpleSSH** | 免费 | ⭐⭐⭐⭐ | 简洁易用 |
+### 📱 Recommended Apps
 
-**推荐：Termius 或 JuiceSSH**
+#### iOS
 
-### 🚀 快速开始（Termius）
+| App | Price | Rating | Highlights |
+|-----|-------|--------|-----------|
+| **Termius** | Free / Subscription | ⭐⭐⭐⭐⭐ | Cross-platform sync, beautiful UI, SFTP support |
+| **Blink Shell** | Paid | ⭐⭐⭐⭐⭐ | Professional grade, Mosh support, developers' first choice |
+| **ShellFish** | Free / Subscription | ⭐⭐⭐⭐ | Focused on file management, integrated SFTP |
+| **SecureCRT** | Paid | ⭐⭐⭐⭐ | Enterprise grade, powerful features |
 
-#### 1. 下载安装
-- iOS：App Store 搜索 "Termius"
-- Android：Google Play 或酷安
+**Recommendation:** Termius (free is enough) or Blink Shell (professional first choice)
 
-#### 2. 添加主机
+#### Android
+
+| App | Price | Rating | Highlights |
+|-----|-------|--------|-----------|
+| **Termius** | Free / Subscription | ⭐⭐⭐⭐⭐ | Cross-platform, full-featured |
+| **JuiceSSH** | Free / Pro | ⭐⭐⭐⭐⭐ | Long-standing, rich plugin ecosystem |
+| **ConnectBot** | Open source, free | ⭐⭐⭐⭐ | Lightweight, no ads |
+| **SimpleSSH** | Free | ⭐⭐⭐⭐ | Simple and easy to use |
+
+**Recommendation:** Termius or JuiceSSH
+
+### 🚀 Quick Start (Termius)
+
+#### 1. Install
+
+- iOS: search "Termius" in the App Store
+- Android: Google Play or Coolapk
+
+#### 2. Add a Host
+
 ```
-1. 打开 Termius → 点击右上角 "+"
-2. 选择 "New Host"
-3. 填写信息：
-   - Alias: 我的服务器（任意名称）
-   - Hostname: 192.168.1.100（IP 或域名）
-   - Port: 22（默认 SSH 端口）
-   - Username: root（或你的用户名）
-   
-4. 认证方式（二选一）：
-   
-   方式 A - 密码：
-   - Password: 输入密码
-   
-   方式 B - SSH 密钥（推荐）：
-   - 点击 "Key" → "Generate Key" 或导入已有密钥
+1. Open Termius → tap "+" in the top-right corner
+2. Choose "New Host"
+3. Fill in:
+   - Alias: My Server (any name)
+   - Hostname: 192.168.1.100 (IP or domain)
+   - Port: 22 (default SSH port)
+   - Username: root (or your username)
+
+4. Authentication (pick one):
+
+   Option A - Password:
+   - Password: enter your password
+
+   Option B - SSH key (recommended):
+   - Tap "Key" → "Generate Key" or import an existing key
 ```
 
-#### 3. 连接服务器
-- 点击保存的主机
-- 首次连接会提示保存主机密钥 → 点击 "Accept"
-- 连接成功！现在你可以输入命令了
+#### 3. Connect
 
-### 🔑 密钥认证设置
+- Tap the saved host
+- On first connect you'll be prompted to save the host key → tap "Accept"
+- Connected! You can now type commands
 
-**生成密钥对（推荐）：**
+### 🔑 Key Authentication Setup
+
+**Generate a key pair (recommended):**
+
 ```bash
-# 在 Termius 中：
+# In Termius:
 Settings → Keychain → Generate Key → RSA/Ed25519
 
-# 复制公钥到服务器：
-# 方式 1：手动复制
-1. 在 Termius 中点击密钥 → Copy Public Key
-2. 登录服务器，添加到 ~/.ssh/authorized_keys
+# Copy the public key to the server:
+# Option 1: manual copy
+1. In Termius tap the key → Copy Public Key
+2. Log into the server and append it to ~/.ssh/authorized_keys
 
-# 方式 2：使用 Termius 内置功能
-1. 连接后输入密码
-2. Termius 会提示保存密钥
-3. 点击 "Copy ID" 自动部署公钥
+# Option 2: use Termius' built-in feature
+1. Connect and enter the password
+2. Termius will prompt to save the key
+3. Tap "Copy ID" to deploy the public key automatically
 ```
 
-### 💡 高级功能
+### 💡 Advanced Features
 
-**SFTP 文件传输：**
+**SFTP file transfer:**
+
 ```
-Termius 连接后 → 左滑 → 选择 "SFTP"
-可以：
-- 上传/下载文件
-- 浏览远程文件系统
-- 编辑文本文件
+After connecting in Termius → swipe left → choose "SFTP"
+You can:
+- Upload / download files
+- Browse the remote file system
+- Edit text files
 ```
 
-**端口转发（Tunnel）：**
+**Port forwarding (Tunnel):**
+
 ```
-应用场景：访问内网服务
-设置 → Port Forwarding → Add Rule
+Use case: access an internal service
+Settings → Port Forwarding → Add Rule
 Local Port: 8080
 Remote Host: localhost
 Remote Port: 80
 
-然后手机浏览器访问 localhost:8080
+Then open localhost:8080 in your phone's browser
 ```
 
 ---
 
-## 二、远程桌面方案
+## 2. Remote Desktop
 
-远程桌面让你通过手机操控电脑的图形界面。
+Remote desktop lets you control a computer's graphical interface from your phone.
 
-### 🖥️ 协议选择
+### 🖥️ Protocol Selection
 
-| 协议 | 适用场景 | 优点 | 缺点 |
-|------|----------|------|------|
-| **RDP** | Windows 服务器 | 效率高，原生支持 | Linux 需要配置 |
-| **VNC** | Linux/Mac/Windows | 跨平台 | 较慢，不安全 |
-| **TeamViewer** | 跨平台/远程协助 | 穿透内网，易用 | 商业软件 |
-| **Chrome 远程桌面** | 个人使用 | 免费，简单 | 需要 Chrome |
+| Protocol | Use Case | Pros | Cons |
+|----------|----------|------|------|
+| **RDP** | Windows servers | Efficient, native support | Linux needs configuration |
+| **VNC** | Linux/Mac/Windows | Cross-platform | Slower, less secure |
+| **TeamViewer** | Cross-platform / remote assistance | Traverses NAT, easy to use | Commercial software |
+| **Chrome Remote Desktop** | Personal use | Free, simple | Requires Chrome |
 
-### 📱 推荐 App
+### 📱 Recommended Apps
 
 #### iOS
 
-| App | 协议 | 特点 |
-|-----|------|------|
-| **Microsoft Remote Desktop** | RDP | 微软官方，流畅 |
-| **VNC Viewer** | VNC | RealVNC 官方 |
-| **TeamViewer** | 专有 | 远程协助首选 |
-| **AnyDesk** | 专有 | 轻量快速 |
-| **Chrome 远程桌面** | 专有 | 需要 Chrome 扩展 |
+| App | Protocol | Highlights |
+|-----|---------|-----------|
+| **Microsoft Remote Desktop** | RDP | Official Microsoft, smooth |
+| **VNC Viewer** | VNC | Official RealVNC client |
+| **TeamViewer** | Proprietary | First choice for remote assistance |
+| **AnyDesk** | Proprietary | Lightweight, fast |
+| **Chrome Remote Desktop** | Proprietary | Requires Chrome extension |
 
 #### Android
 
-| App | 协议 | 特点 |
-|-----|------|------|
-| **Microsoft Remote Desktop** | RDP | 微软官方 |
-| **VNC Viewer** | VNC | 官方客户端 |
-| **TeamViewer** | 专有 | 功能全面 |
-| **AnyDesk** | 专有 | 低延迟 |
-| **RustDesk** | 专有 | 开源替代方案 |
+| App | Protocol | Highlights |
+|-----|---------|-----------|
+| **Microsoft Remote Desktop** | RDP | Official Microsoft |
+| **VNC Viewer** | VNC | Official client |
+| **TeamViewer** | Proprietary | Full-featured |
+| **AnyDesk** | Proprietary | Low latency |
+| **RustDesk** | Proprietary | Open-source alternative |
 
-### 🚀 快速开始
+### 🚀 Quick Start
 
-#### 方案 A：Windows RDP（局域网）
+#### Option A: Windows RDP (LAN)
 
-**电脑端设置：**
+**On the computer:**
+
 ```
-1. Windows 设置 → 系统 → 远程桌面 → 启用
-2. 记下计算机名或 IP 地址
-3. 确保手机和电脑在同一网络（或配置端口转发）
-```
-
-**手机端连接：**
-```
-1. 安装 Microsoft Remote Desktop
-2. 点击 "+" → "Desktop"
-3. PC Name: 192.168.1.100（或计算机名）
-4. User Account: 添加 Windows 用户名密码
-5. 点击连接
+1. Windows Settings → System → Remote Desktop → Enable
+2. Note the computer name or IP address
+3. Ensure the phone and computer are on the same network (or configure port forwarding)
 ```
 
-#### 方案 B：TeamViewer（跨网络）
+**On the phone:**
 
-**电脑端：**
 ```
-1. 下载 TeamViewer（teamviewer.com）
-2. 安装并运行
-3. 获取 ID 和密码
-```
-
-**手机端：**
-```
-1. 安装 TeamViewer App
-2. 输入电脑的 Partner ID
-3. 输入密码
-4. 连接成功！
+1. Install Microsoft Remote Desktop
+2. Tap "+" → "Desktop"
+3. PC Name: 192.168.1.100 (or computer name)
+4. User Account: add Windows username and password
+5. Tap to connect
 ```
 
-**特点：**
-- ✅ 无需配置路由器
-- ✅ 穿透内网
-- ✅ 文件传输
-- ✅ 语音通话
+#### Option B: TeamViewer (across networks)
 
-#### 方案 C：RustDesk（开源免费）
+**On the computer:**
 
-**自托管服务器（可选）：**
+```
+1. Download TeamViewer (teamviewer.com)
+2. Install and run
+3. Get the ID and password
+```
+
+**On the phone:**
+
+```
+1. Install the TeamViewer app
+2. Enter the computer's Partner ID
+3. Enter the password
+4. Connected!
+```
+
+**Highlights:**
+
+- ✅ No router configuration needed
+- ✅ Traverses NAT
+- ✅ File transfer
+- ✅ Voice call
+
+#### Option C: RustDesk (open source, free)
+
+**Self-hosted server (optional):**
+
 ```bash
-# 使用 Docker 部署
+# Deploy with Docker
 docker run --net=host rustdesk/rustdesk-server-hbbr
 docker run --net=host rustdesk/rustdesk-server-hbbs
 ```
 
-**使用方式：**
-- 类似 TeamViewer
-- 完全免费
-- 数据可控（可自建服务器）
+**Usage:**
+
+- Similar to TeamViewer
+- Completely free
+- Data is controllable (you can self-host the server)
 
 ---
 
-## 三、手机控制手机方案
+## 3. Phone-to-Phone Control
 
-用于远程协助家人、朋友解决手机问题。
+Used to remotely assist family and friends with phone issues.
 
-### 📱 推荐方案
+### 📱 Recommended Solutions
 
-#### TeamViewer QuickSupport（跨平台）
+#### TeamViewer QuickSupport (cross-platform)
 
-**被控端（需要帮助的手机）：**
+**Controlled side (the phone needing help):**
+
 ```
-1. 安装 TeamViewer QuickSupport
-2. 打开后会显示 ID
-```
-
-**控制端（你的手机）：**
-```
-1. 安装 TeamViewer
-2. 输入对方 ID
-3. 对方接受后即可控制
+1. Install TeamViewer QuickSupport
+2. Open it and it will show an ID
 ```
 
-**限制：**
-- iOS 无法被远程控制（系统限制），只能屏幕共享
-- Android 可以完整远程控制（需开启无障碍服务）
+**Controlling side (your phone):**
 
-#### AirDroid（文件+远程）
+```
+1. Install TeamViewer
+2. Enter the other party's ID
+3. Once they accept, you can control it
+```
 
-**功能：**
-- 文件传输
-- 短信管理
-- 远程相机
-- 屏幕镜像
+**Limitations:**
 
-#### Scrcpy（Android 投屏）
+- iOS cannot be remotely controlled (OS restriction), only screen sharing
+- Android can be fully controlled remotely (requires enabling accessibility services)
 
-**电脑控制手机：**
+#### AirDroid (files + remote)
+
+**Features:**
+
+- File transfer
+- SMS management
+- Remote camera
+- Screen mirroring
+
+#### Scrcpy (Android screen mirroring)
+
+**Control a phone from a computer:**
+
 ```bash
-# 需要电脑配合
+# Requires a computer
 scrcpy --tcpip=192.168.1.100:5555
 ```
 
-**然后手机可以查看投屏**
+**Then you can view the mirrored screen on the phone**
 
 ---
 
-## 四、命令行方案
+## 4. Command-Line Approach
 
-在手机上运行完整的 Linux 环境。
+Run a full Linux environment on your phone.
 
-### iOS：iSH（免费）
+### iOS: iSH (free)
 
 ```
-App Store 搜索 "iSH"
+Search "iSH" in the App Store
 
-功能：
-- 本地 Alpine Linux 环境
-- 安装软件：apk add openssh
-- 可以 SSH 连接其他服务器
-- 支持 Python、Git 等
+Features:
+- Local Alpine Linux environment
+- Install software: apk add openssh
+- Can SSH to other servers
+- Supports Python, Git, etc.
 ```
 
-**安装 SSH 客户端：**
+**Install an SSH client:**
+
 ```bash
-# 在 iSH 中
+# In iSH
 apk update
 apk add openssh-client
 
-# 连接服务器
+# Connect to a server
 ssh user@hostname
 ```
 
-### Android：Termux（开源免费）
+### Android: Termux (open source, free)
 
 ```
-F-Droid 或 GitHub 下载（Google Play 版本较旧）
+Download from F-Droid or GitHub (the Play Store version is older)
 
-功能：
-- 完整的 Linux 环境
-- 包管理器：pkg/apt
-- 支持 Python、Node.js、Git
-- 可以安装 OpenSSH
+Features:
+- Full Linux environment
+- Package managers: pkg / apt
+- Supports Python, Node.js, Git
+- Can install OpenSSH
 ```
 
-**Termux SSH 连接：**
+**Termux SSH connection:**
+
 ```bash
-# 安装 OpenSSH
+# Install OpenSSH
 pkg install openssh
 
-# 生成密钥
+# Generate a key
 ssh-keygen -t ed25519
 
-# 连接服务器
+# Connect to a server
 ssh user@hostname
 
-# 使用密钥
+# Use a key
 ssh -i ~/.ssh/id_ed25519 user@hostname
 ```
 
-**Termux 高级用法：**
+**Termux advanced usage:**
+
 ```bash
-# 安装完整开发环境
+# Install a full dev environment
 pkg install git python nodejs vim
 
-# 安装远程操控工具
+# Install remote control tools
 pkg install tmux mosh
 
-# 使用 tmux 保持会话
+# Use tmux to keep a session alive
 tmux new -s mysession
 
-# 使用 mosh 低延迟连接
+# Use mosh for low-latency connections
 mosh user@hostname
 ```
 
 ---
 
-## 五、安全配置指南
+## 5. Security Configuration
 
-### 🔐 基础安全
+### 🔐 Basic Security
 
-#### 1. 使用密钥认证（禁用密码）
+#### 1. Use key authentication (disable passwords)
 
-**服务器端设置：**
+**On the server:**
+
 ```bash
-# 编辑 SSH 配置
+# Edit the SSH config
 sudo nano /etc/ssh/sshd_config
 
-# 修改以下配置
+# Change the following
 PasswordAuthentication no
 PubkeyAuthentication yes
 PermitRootLogin prohibit-password
 
-# 重启 SSH
+# Restart SSH
 sudo systemctl restart sshd
 ```
 
-#### 2. 使用非标准端口
+#### 2. Use a non-standard port
 
 ```bash
-# 修改 SSH 端口为 2222
+# Change the SSH port to 2222
 Port 2222
 
-# 防火墙放行
+# Allow it through the firewall
 sudo ufw allow 2222/tcp
 ```
 
-#### 3. 使用 Fail2ban 防止暴力破解
+#### 3. Use Fail2ban to prevent brute force
 
 ```bash
-# 安装
+# Install
 sudo apt install fail2ban
 
-# 配置
+# Configure
 sudo nano /etc/fail2ban/jail.local
 
 [sshd]
@@ -396,207 +419,217 @@ maxretry = 3
 bantime = 3600
 ```
 
-### 🛡️ 高级安全
+### 🛡️ Advanced Security
 
-#### VPN 方案
+#### VPN approach
 
-**WireGuard（推荐）：**
+**WireGuard (recommended):**
+
 ```bash
-# 安装 WireGuard
+# Install WireGuard
 sudo apt install wireguard
 
-# 生成密钥对
+# Generate a key pair
 wg genkey | tee privatekey | wg pubkey > publickey
 
-# 配置服务器
+# Configure the server
 sudo nano /etc/wireguard/wg0.conf
 
 [Interface]
-PrivateKey = <服务器私钥>
+PrivateKey = <server private key>
 Address = 10.0.0.1/24
 ListenPort = 51820
 PostUp = iptables -A FORWARD -i wg0 -j ACCEPT
 PostDown = iptables -D FORWARD -i wg0 -j ACCEPT
 
 [Peer]
-PublicKey = <手机公钥>
+PublicKey = <phone public key>
 AllowedIPs = 10.0.0.2/32
 
-# 启动
+# Start
 sudo wg-quick up wg0
 ```
 
-**手机端：**
-- iOS：App Store 搜索 "WireGuard"
-- Android：Play Store 搜索 "WireGuard"
-- 导入配置即可
+**On the phone:**
 
-#### 跳板机（Bastion Host）
+- iOS: search "WireGuard" in the App Store
+- Android: search "WireGuard" in the Play Store
+- Import the config and you're done
+
+#### Bastion Host
 
 ```
-场景：保护内网服务器
+Scenario: protect internal servers
 
-互联网 → 跳板机（公网 IP） → 内网服务器
+Internet → Bastion Host (public IP) → Internal Server
 
-手机只连接跳板机，跳板机再连接内网
+The phone connects only to the bastion, which then connects to the internal server
 ```
 
-**SSH 配置：**
+**SSH configuration:**
+
 ```
-# 在 Termius 中配置
-1. 先添加跳板机
-2. 添加内网服务器，设置：
-   - Gateway/Jump Host: 选择跳板机
-   
-3. 连接内网服务器时，会自动通过跳板机
+# In Termius
+1. Add the bastion host first
+2. Add the internal server, set:
+   - Gateway / Jump Host: select the bastion host
+
+3. When connecting to the internal server, it goes through the bastion automatically
 ```
 
-### 📱 手机端安全
+### 📱 Phone-side Security
 
-#### 1. 开启应用锁
+#### 1. Enable an app lock
+
 ```
-iOS：设置 → 屏幕使用时间 → App 限额
-Android：设置 → 应用锁
+iOS: Settings → Screen Time → App Limits
+Android: Settings → App Lock
 ```
 
-#### 2. 使用密码管理器
+#### 2. Use a password manager
+
 - 1Password
 - Bitwarden
-- iOS 钥匙串
+- iOS Keychain
 
-#### 3. 定期清理密钥
+#### 3. Clean up keys regularly
+
 ```
-Termius：Settings → Keychain → 删除不再使用的密钥
+Termius: Settings → Keychain → delete keys you no longer use
 ```
 
 ---
 
-## 六、App 对比推荐
+## 6. App Comparison & Recommendations
 
-### 📊 综合对比表
+### 📊 Overall Comparison
 
-| App | 平台 | 协议 | 价格 | 推荐度 | 适用场景 |
-|-----|------|------|------|--------|----------|
-| **Termius** | iOS/Android | SSH | 免费/订阅 | ⭐⭐⭐⭐⭐ | SSH/SFTP 首选 |
-| **Blink Shell** | iOS | SSH/Mosh | 付费 | ⭐⭐⭐⭐⭐ | 专业开发 |
-| **JuiceSSH** | Android | SSH | 免费/Pro | ⭐⭐⭐⭐⭐ | Android SSH |
-| **TeamViewer** | 全平台 | 专有 | 免费/商业 | ⭐⭐⭐⭐⭐ | 远程协助 |
-| **AnyDesk** | 全平台 | 专有 | 免费/商业 | ⭐⭐⭐⭐ | 快速连接 |
-| **RustDesk** | 全平台 | 专有 | 开源免费 | ⭐⭐⭐⭐ | 自托管 |
-| **Microsoft RDP** | iOS/Android | RDP | 免费 | ⭐⭐⭐⭐⭐ | Windows 远程 |
-| **VNC Viewer** | 全平台 | VNC | 免费 | ⭐⭐⭐⭐ | Linux/Mac 远程 |
-| **iSH** | iOS | 本地 | 免费 | ⭐⭐⭐⭐⭐ | 本地 Linux |
-| **Termux** | Android | 本地 | 开源 | ⭐⭐⭐⭐⭐ | 本地 Linux |
+| App | Platform | Protocol | Price | Rating | Best For |
+|-----|----------|----------|-------|--------|----------|
+| **Termius** | iOS/Android | SSH | Free / Sub | ⭐⭐⭐⭐⭐ | SSH/SFTP first choice |
+| **Blink Shell** | iOS | SSH/Mosh | Paid | ⭐⭐⭐⭐⭐ | Professional dev |
+| **JuiceSSH** | Android | SSH | Free/Pro | ⭐⭐⭐⭐⭐ | Android SSH |
+| **TeamViewer** | All | Proprietary | Free/Commercial | ⭐⭐⭐⭐⭐ | Remote assistance |
+| **AnyDesk** | All | Proprietary | Free/Commercial | ⭐⭐⭐⭐ | Fast connection |
+| **RustDesk** | All | Proprietary | Open source, free | ⭐⭐⭐⭐ | Self-hosted |
+| **Microsoft RDP** | iOS/Android | RDP | Free | ⭐⭐⭐⭐⭐ | Windows remote |
+| **VNC Viewer** | All | VNC | Free | ⭐⭐⭐⭐ | Linux/Mac remote |
+| **iSH** | iOS | Local | Free | ⭐⭐⭐⭐⭐ | Local Linux |
+| **Termux** | Android | Local | Open source | ⭐⭐⭐⭐⭐ | Local Linux |
 
-### 🎯 场景推荐
+### 🎯 Recommendations by Scenario
 
-#### 系统管理员
-- **主选**：Termius + WireGuard VPN
-- **备份**：JuiceSSH（Android）+ Blink Shell（iOS）
-- **应急**：Termux（离线文档查询）
+#### System administrators
 
-#### 开发者
-- **主选**：Blink Shell（iOS）/ Termux（Android）
-- **配合**：GitHub App + Working Copy（Git 客户端）
-- **调试**：iSH（本地测试）
+- **Primary:** Termius + WireGuard VPN
+- **Backup:** JuiceSSH (Android) + Blink Shell (iOS)
+- **Emergency:** Termux (offline doc lookup)
 
-#### 家庭用户
-- **主选**：TeamViewer（简单易用）
-- **替代**：RustDesk（免费无广告）
-- **手机互控**：TeamViewer QuickSupport
+#### Developers
 
-#### 极客玩家
-- **主选**：Termux（完整 Linux）+ Termius（SSH）
-- **探索**：UserLAnd（完整 Linux 发行版）
-- **自建**：RustDesk 服务器
+- **Primary:** Blink Shell (iOS) / Termux (Android)
+- **Companion:** GitHub App + Working Copy (Git client)
+- **Debugging:** iSH (local testing)
+
+#### Home users
+
+- **Primary:** TeamViewer (simple and easy)
+- **Alternative:** RustDesk (free, no ads)
+- **Phone-to-phone:** TeamViewer QuickSupport
+
+#### Enthusiasts
+
+- **Primary:** Termux (full Linux) + Termius (SSH)
+- **Explore:** UserLAnd (full Linux distro)
+- **Self-host:** RustDesk server
 
 ---
 
-## 七、实战示例
+## 7. Real-World Examples
 
-### 场景 1：紧急修复线上 Bug
+### Scenario 1: Urgently fix a production bug
 
 ```
-时间：凌晨 2 点
-地点：家中床上
-设备：iPhone
+Time: 2 AM
+Place: in bed at home
+Device: iPhone
 
-操作步骤：
-1. 收到告警短信，服务器 CPU 100%
-2. 打开 Termius → 点击生产服务器
-3. 自动连接（密钥认证）
-4. 执行命令：
+Steps:
+1. Receive an alert SMS — server CPU at 100%
+2. Open Termius → tap the production server
+3. Auto-connect (key auth)
+4. Run commands:
    $ top
    $ ps aux | grep python
    $ kill -9 <PID>
-5. 查看日志：
+5. Check logs:
    $ tail -f /var/log/app/error.log
-6. 重启服务：
+6. Restart the service:
    $ sudo systemctl restart app
-7. 验证：
+7. Verify:
    $ curl http://localhost:8080/health
-8. 问题解决，总耗时 3 分钟
+8. Problem solved — total time 3 minutes
 ```
 
-### 场景 2：远程协助父母修电脑
+### Scenario 2: Remotely help parents fix their computer
 
 ```
-对象：父母的 Windows 电脑
-问题：不会安装打印机驱动
+Target: parents' Windows PC
+Problem: don't know how to install a printer driver
 
-操作步骤：
-1. 让父母下载 TeamViewer QuickSupport
-2. 打开后告诉 ID 和密码
-3. 你的手机上打开 TeamViewer
-4. 输入父母的 ID 连接
-5. 远程操控安装驱动
-6. 完成后断开连接
+Steps:
+1. Have parents download TeamViewer QuickSupport
+2. Open it and tell you the ID and password
+3. Open TeamViewer on your phone
+4. Enter parents' ID to connect
+5. Remotely install the driver
+6. Disconnect when done
 
-优点：
-- 父母无需懂技术
-- 可视化操作，简单直观
-- 可以语音通话指导
+Pros:
+- Parents need no technical knowledge
+- Visual operation, simple and intuitive
+- Can guide via voice call
 ```
 
-### 场景 3：地铁上部署代码
+### Scenario 3: Deploy code on the subway
 
 ```
-场景：下班路上，需要紧急发布版本
+Scenario: on the way home, need an urgent release
 
-操作步骤：
-1. 地铁上打开 Termius
-2. 连接跳板机 → 连接生产服务器
-3. 执行部署脚本：
+Steps:
+1. Open Termius on the subway
+2. Connect to bastion → connect to production server
+3. Run the deploy script:
    $ cd /var/www/app
    $ git pull origin main
    $ ./deploy.sh
-4. 查看部署日志：
+4. Check deploy logs:
    $ tail -f deploy.log
-5. 健康检查：
+5. Health check:
    $ curl -s http://localhost/health
-6. 发布完成 ✅
+6. Release complete ✅
 ```
 
-### 场景 4：手机上搭建开发环境
+### Scenario 4: Build a dev environment on your phone
 
 ```
-设备：Android 手机
-目标：完整的 Python 开发环境
+Device: Android phone
+Goal: a full Python dev environment
 
-步骤：
-1. 安装 Termux
-2. 安装开发工具：
+Steps:
+1. Install Termux
+2. Install dev tools:
    $ pkg install git python vim
-3. 克隆项目：
+3. Clone the project:
    $ git clone https://github.com/user/project.git
-4. 安装依赖：
+4. Install dependencies:
    $ cd project
    $ pip install -r requirements.txt
-5. 编辑代码：
+5. Edit code:
    $ vim main.py
-6. 运行测试：
+6. Run tests:
    $ python -m pytest
-7. 推送到 GitHub：
+7. Push to GitHub:
    $ git add .
    $ git commit -m "fix: bug"
    $ git push
@@ -604,114 +637,125 @@ Termius：Settings → Keychain → 删除不再使用的密钥
 
 ---
 
-## 八、常见问题
+## 8. FAQ
 
-### Q1: 为什么 iOS 无法像 Android 那样远程控制？
-**A:** iOS 系统安全限制，不允许后台应用控制屏幕。只能实现屏幕共享。
+### Q1: Why can't iOS be remotely controlled like Android?
 
-### Q2: SSH 连接失败怎么办？
-**排查步骤：**
+**A:** iOS security restrictions do not allow a background app to control the screen. Only screen sharing is possible.
+
+### Q2: SSH connection failed — what now?
+
+**Troubleshooting steps:**
+
 ```
-1. 检查网络：ping 服务器 IP
-2. 检查端口：nc -zv IP 22
-3. 检查服务：服务器上 systemctl status sshd
-4. 检查防火墙：ufw status / iptables -L
-5. 检查日志：服务器 /var/log/auth.log
+1. Check the network: ping <server IP>
+2. Check the port: nc -zv <IP> 22
+3. Check the service: systemctl status sshd on the server
+4. Check the firewall: ufw status / iptables -L
+5. Check logs: /var/log/auth.log on the server
 ```
 
-### Q3: 如何提高远程桌面的流畅度？
-**优化方法：**
-- 降低分辨率和色彩质量
-- 使用有线网络代替 WiFi
-- 关闭远程计算机的视觉效果
-- 使用专线/VPN（避免公网延迟）
+### Q3: How to improve remote desktop smoothness?
 
-### Q4: 手机电池消耗快怎么办？
-**建议：**
-- 不使用时就断开连接
-- 降低屏幕亮度
-- 使用深色模式
-- 携带充电宝
+**Optimizations:**
 
-### Q5: 如何确保手机丢失后服务器安全？
-**措施：**
-1. 手机设置强密码/面容 ID
-2. Termius 开启应用锁
-3. 服务器使用密钥认证（非密码）
-4. 服务器配置 Fail2ban
-5. 定期更换密钥
-6. 开启手机远程擦除功能
+- Lower resolution and color quality
+- Use a wired network instead of WiFi
+- Disable visual effects on the remote computer
+- Use a dedicated line / VPN (avoid public-internet latency)
+
+### Q4: Phone battery drains fast — what to do?
+
+**Suggestions:**
+
+- Disconnect when not in use
+- Lower screen brightness
+- Use dark mode
+- Carry a power bank
+
+### Q5: How to keep servers safe if the phone is lost?
+
+**Measures:**
+
+1. Set a strong password / Face ID on the phone
+2. Enable an app lock in Termius
+3. Use key auth (not passwords) on the server
+4. Configure Fail2ban on the server
+5. Rotate keys regularly
+6. Enable remote wipe on the phone
 
 ---
 
-## 九、进阶技巧
+## 9. Advanced Tips
 
-### 使用快捷指令（iOS）
+### Use Shortcuts (iOS)
 
 ```
-创建快捷指令实现一键连接：
+Create a shortcut for one-tap connection:
 
-1. 打开 "快捷指令" App
-2. 新建快捷指令
-3. 添加操作：
+1. Open the "Shortcuts" app
+2. Create a new shortcut
+3. Add actions:
    - URL: ssh://user@hostname
-   - 打开 URL
-4. 添加到主屏幕
-5. 点击图标直接打开 Termius 并连接
+   - Open URL
+4. Add to Home Screen
+5. Tap the icon to open Termius and connect directly
 ```
 
-### 使用 Siri 语音连接
+### Use Siri voice connection
 
 ```
-"嘿 Siri，连接我的服务器"
+"Hey Siri, connect to my server"
 
-设置方法：
-1. 创建快捷指令（如上）
-2. 点击 "设置" → "添加到 Siri"
-3. 录制语音指令
+Setup:
+1. Create a shortcut (as above)
+2. Tap "Settings" → "Add to Siri"
+3. Record the voice command
 ```
 
-### 自动化脚本（Termux）
+### Automation scripts (Termux)
 
 ```bash
-# 创建连接脚本
+# Create a connection script
 nano ~/connect.sh
 
 #!/bin/bash
-echo "正在连接服务器..."
+echo "Connecting to server..."
 ssh -i ~/.ssh/id_ed25519 user@hostname
 
-# 添加到快捷方式
+# Add to a shortcut
 termux-shortcuts
-# 然后在桌面创建快捷方式
+# Then create a shortcut on the home screen
 ```
 
 ---
 
-## 结语
+## Conclusion
 
-手机远程操控技术让"随时随地管理设备"成为可能。无论是处理紧急故障、协助家人朋友，还是单纯体验移动办公的便利，选择适合的工具都能事半功倍。
+Phone-based remote control makes "managing devices anytime, anywhere" possible. Whether handling emergencies, assisting family and friends, or just enjoying mobile productivity, the right tool makes the job far easier.
 
-**记住三个原则：**
-1. 🔐 安全第一 - 使用密钥、VPN、强密码
-2. ⚡ 效率至上 - 选择低延迟、易操作的工具
-3. 📱 场景适配 - 根据实际需求选择方案
+**Remember three principles:**
 
----
-
-## 贡献
-
-欢迎提交 PR 补充更多方案和经验！
-
-**需要补充的内容：**
-- 更多 App 的详细评测
-- 特定场景的配置教程
-- 疑难问题的解决方案
+1. 🔐 **Security first** — use keys, VPN, and strong passwords
+2. ⚡ **Efficiency above all** — choose low-latency, easy-to-operate tools
+3. 📱 **Fit the scenario** — pick a solution based on real needs
 
 ---
 
-**最后更新：** 2024年
+## Contributing
 
-**维护者：** Vae-Scrooge
+Pull requests with more solutions and experiences are welcome!
 
-**许可证：** MIT
+**Content still needed:**
+
+- Detailed reviews of more apps
+- Setup tutorials for specific scenarios
+- Solutions to tricky problems
+
+---
+
+**Last updated:** 2024
+
+**Maintainer:** Vae-Scrooge
+
+**License:** MIT

@@ -1,47 +1,47 @@
-# 高级使用教程
+# Advanced Tutorial
 
-本教程介绍 Remote CMD 的高级功能和最佳实践，帮助你更高效地管理远程服务器。
+This tutorial covers Remote CMD's advanced features and best practices to help you manage remote servers more efficiently.
 
-## 目录
+## Table of Contents
 
-- [高级连接配置](#高级连接配置)
-- [错误处理和重试](#错误处理和重试)
-- [批量并行操作](#批量并行操作)
-- [日志和监控](#日志和监控)
-- [安全最佳实践](#安全最佳实践)
-- [性能优化](#性能优化)
-- [自定义扩展](#自定义扩展)
+- [Advanced Connection Configuration](#advanced-connection-configuration)
+- [Error Handling and Retries](#error-handling-and-retries)
+- [Parallel Batch Operations](#parallel-batch-operations)
+- [Logging and Monitoring](#logging-and-monitoring)
+- [Security Best Practices](#security-best-practices)
+- [Performance Optimization](#performance-optimization)
+- [Custom Extensions](#custom-extensions)
 
 ---
 
-## 高级连接配置
+## Advanced Connection Configuration
 
-### 连接配置选项
+### Connection Options
 
 ```python
 from remote_cmd.core.ssh_client import SSHClient, ConnectionConfig
 
-# 高级连接配置
+# Advanced connection configuration
 config = ConnectionConfig(
     hostname="192.168.1.100",
     username="admin",
     password="secret",
     port=22,
-    timeout=60,           # 连接超时时间
-    compress=True,        # 启用压缩（适合慢速网络）
+    timeout=60,           # Connection timeout
+    compress=True,        # Enable compression (good for slow networks)
 )
 
 with SSHClient(config) as client:
     result = client.execute("ls -la")
 ```
 
-### 环境变量注入
+### Environment Variable Injection
 
-在命令执行时注入环境变量：
+Inject environment variables when executing a command:
 
 ```python
 with SSHClient(config) as client:
-    # 注入环境变量
+    # Inject environment variables
     result = client.execute(
         "echo $APP_ENV && echo $DB_HOST",
         environment={
@@ -50,26 +50,26 @@ with SSHClient(config) as client:
         }
     )
     print(result.stdout)
-    # 输出:
+    # Output:
     # production
     # 192.168.1.200
 ```
 
-### 命令超时控制
+### Command Timeout Control
 
-防止长时间运行的命令阻塞：
+Prevent long-running commands from blocking:
 
 ```python
 from remote_cmd.utils.exceptions import SSHCommandTimeoutError
 
 with SSHClient(config) as client:
-    # 5 秒超时
+    # 5-second timeout
     try:
         result = client.execute("sleep 10", timeout=5)
     except SSHCommandTimeoutError:
-        print("命令执行超时")
-    
-    # 长时间任务使用 nohup
+        print("Command timed out")
+
+    # Use nohup for long-running tasks
     result = client.execute(
         "nohup long_running_task > /tmp/output.log 2>&1 &"
     )
@@ -77,30 +77,31 @@ with SSHClient(config) as client:
 
 ---
 
-## 错误处理和重试
+## Error Handling and Retries
 
-### 异常类型
+### Exception Types
 
-Remote CMD 提供了详细的异常层次：
+Remote CMD provides a detailed exception hierarchy:
 
 ```python
 from remote_cmd.utils.exceptions import (
-    SSHConnectionError,      # 连接错误
-    SSHAuthenticationError,  # 认证失败（永久性，不重试）
-    SSHTimeoutError,         # 连接超时（瞬态，可重试）
-    SSHCommandError,         # 命令执行错误
-    SSHCommandTimeoutError,  # 命令超时（瞬态，可重试）
-    SSHFileTransferError,    # 文件传输错误
-    CredentialError,         # 凭据解析/解密错误（永久性，不重试）
-    ConfigError,            # 配置错误
-    ValidationError         # 输入验证错误
+    SSHConnectionError,      # Connection error
+    SSHAuthenticationError,  # Auth failure (permanent, not retried)
+    SSHTimeoutError,         # Connection timeout (transient, retried)
+    SSHCommandError,         # Command execution error
+    SSHCommandTimeoutError,  # Command timeout (transient, retried)
+    SSHFileTransferError,    # File transfer error
+    CredentialError,         # Credential parse/decrypt error (permanent, not retried)
+    ConfigError,            # Configuration error
+    ValidationError         # Input validation error
 )
 
-# 批量执行器使用同一分类：未识别的 Exception 子类仍保持可重试，以兼容
-# 自定义 client_factory；自定义实现应优先抛出类型化的 remote_cmd 异常。
+# Batch executors use the same classification: unrecognized Exception
+# subclasses remain retryable for compatibility with custom client_factory;
+# custom implementations should prefer typed remote_cmd exceptions.
 
 def safe_execute(client, command: str, max_retries: int = 3):
-    """安全执行命令，带与 Remote CMD 一致的重试分类"""
+    """Safely execute a command with retry classification consistent with Remote CMD"""
     import time
 
     from remote_cmd.service.retry_policy import compute_backoff_delay, is_retryable
@@ -114,11 +115,11 @@ def safe_execute(client, command: str, max_retries: int = 3):
             if attempt >= max_retries or not is_retryable(e):
                 raise
             delay = compute_backoff_delay(attempt, base_delay=1.0)
-            print(f"执行失败，{delay:.2f} 秒后重试 {attempt + 1}/{max_retries}...")
+            print(f"Execution failed, retrying in {delay:.2f}s ({attempt + 1}/{max_retries})...")
             time.sleep(delay)
 ```
 
-### 健壮的错误处理
+### Robust Error Handling
 
 ```python
 import logging
@@ -132,17 +133,17 @@ repo = JsonHostRepository("hosts.json")
 manager = HostService(repository=repo)
 
 def robust_batch_execute(hosts, command):
-    """健壮地批量执行命令"""
+    """Robustly execute a command across hosts"""
     results = []
     failed_hosts = []
-    
+
     for host in hosts:
         try:
-            logger.info(f"处理主机: {host.name}")
-            
+            logger.info(f"Processing host: {host.name}")
+
             with manager.connect_to_host(host.name) as client:
                 result = client.execute(command)
-                
+
                 results.append({
                     "host": host.name,
                     "success": result.success,
@@ -150,28 +151,28 @@ def robust_batch_execute(hosts, command):
                     "stderr": result.stderr,
                     "exit_code": result.exit_code
                 })
-                
+
         except SSHConnectionError as e:
-            logger.error(f"连接 {host.name} 失败: {e}")
+            logger.error(f"Connection to {host.name} failed: {e}")
             failed_hosts.append({"host": host.name, "error": str(e)})
-            
+
         except Exception as e:
-            logger.error(f"处理 {host.name} 时出错: {e}")
+            logger.error(f"Error processing {host.name}: {e}")
             failed_hosts.append({"host": host.name, "error": str(e)})
-    
-    # 生成报告
+
+    # Generate a report
     success_count = len([r for r in results if r["success"]])
-    print(f"\n执行完成: {success_count}/{len(hosts)} 成功")
-    
+    print(f"\nExecution complete: {success_count}/{len(hosts)} succeeded")
+
     if failed_hosts:
-        print(f"失败的主机: {len(failed_hosts)}")
+        print(f"Failed hosts: {len(failed_hosts)}")
         for f in failed_hosts:
             print(f"  - {f['host']}: {f['error']}")
-    
+
     return results, failed_hosts
 ```
 
-### 智能重试机制
+### Smart Retry Mechanism
 
 ```python
 from functools import wraps
@@ -180,7 +181,7 @@ import time
 from remote_cmd.service.retry_policy import compute_backoff_delay, is_retryable
 
 def retry_on_failure(max_retries=3, delay=1):
-    """使用 Remote CMD 分类策略的重试装饰器"""
+    """Retry decorator using Remote CMD's classification policy"""
     def decorator(func):
         @wraps(func)
         def wrapper(*args, **kwargs):
@@ -198,8 +199,8 @@ def retry_on_failure(max_retries=3, delay=1):
                         base_delay=delay,
                         max_delay=60.0,
                     )
-                    print(f"尝试 {attempt + 1} 失败: {e}")
-                    print(f"{current_delay:.2f} 秒后重试...")
+                    print(f"Attempt {attempt + 1} failed: {e}")
+                    print(f"Retrying in {current_delay:.2f}s...")
                     time.sleep(current_delay)
 
             raise last_exception
@@ -208,19 +209,19 @@ def retry_on_failure(max_retries=3, delay=1):
 
 @retry_on_failure(max_retries=3, delay=1)
 def deploy_to_host(host_name):
-    """部署到指定主机，带重试"""
+    """Deploy to the specified host with retries"""
     with manager.connect_to_host(host_name) as client:
         client.upload_file("./app.tar.gz", "/tmp/app.tar.gz")
         result = client.execute("cd /var/www && tar -xzf /tmp/app.tar.gz")
         if not result.success:
-            raise SSHCommandError(f"部署失败: {result.stderr}")
+            raise SSHCommandError(f"Deployment failed: {result.stderr}")
 ```
 
 ---
 
-## 批量并行操作
+## Parallel Batch Operations
 
-### 使用 ThreadPoolExecutor
+### Using ThreadPoolExecutor
 
 ```python
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -228,7 +229,7 @@ from remote_cmd.repository.json_host_repository import JsonHostRepository
 from remote_cmd.service.host_service import HostService
 
 def execute_on_host(host, command):
-    """在单个主机上执行命令"""
+    """Execute a command on a single host"""
     try:
         with manager.connect_to_host(host.name) as client:
             result = client.execute(command)
@@ -245,17 +246,17 @@ def execute_on_host(host, command):
         }
 
 def parallel_execute(hosts, command, max_workers=5):
-    """并行执行命令到多台主机"""
+    """Execute a command in parallel across multiple hosts"""
     results = []
-    
+
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        # 提交所有任务
+        # Submit all tasks
         future_to_host = {
             executor.submit(execute_on_host, host, command): host
             for host in hosts
         }
-        
-        # 处理完成的任务
+
+        # Process completed tasks
         for future in as_completed(future_to_host):
             host = future_to_host[future]
             try:
@@ -270,10 +271,10 @@ def parallel_execute(hosts, command, max_workers=5):
                     "success": False,
                     "error": str(e)
                 })
-    
+
     return results
 
-# 使用示例
+# Usage example
 repo = JsonHostRepository("hosts.json")
 manager = HostService(repository=repo)
 web_hosts = manager.list_hosts(tag="web")
@@ -284,19 +285,19 @@ results = parallel_execute(
     max_workers=5
 )
 
-# 生成汇总报告
+# Generate a summary report
 success_count = sum(1 for r in results if r["success"])
-print(f"\n汇总: {success_count}/{len(results)} 成功")
+print(f"\nSummary: {success_count}/{len(results)} succeeded")
 ```
 
-### 异步执行模式
+### Async Execution Pattern
 
 ```python
 import asyncio
 from remote_cmd.service.async_batch_executor import AsyncBatchExecutor
 
 async def batch_async_execute(host_names, command, max_concurrency=5):
-    """使用原生 asyncssh 内核批量执行"""
+    """Batch execution using the native asyncssh kernel"""
     executor = AsyncBatchExecutor(
         manager,
         max_concurrency=max_concurrency,
@@ -309,22 +310,19 @@ async def batch_async_execute(host_names, command, max_concurrency=5):
         retry_delay=1.0,
     )
 
-# 使用示例
+# Usage example
 results = asyncio.run(
     batch_async_execute([host.name for host in web_hosts], "uptime")
 )
 ```
 
-多主机或需要重试时，`AsyncBatchExecutor` 内部按主机使用 `AsyncConnectionPool` 复用连接，
-批次结束后自动关闭内部创建的池。若通过 `pool_factory` 注入外部池，池由调用方拥有，
-执行器绝不会关闭；适合长驻服务跨批次复用。不要在已经运行的事件循环中调用
-`BatchExecutor(use_async=True)`，此时应直接 `await AsyncBatchExecutor.execute()`。
+In multi-host or retry scenarios, `AsyncBatchExecutor` uses `AsyncConnectionPool` per host internally to reuse connections, and closes the internally created pool automatically after the batch. If you inject an external pool via `pool_factory`, the pool is caller-owned and is never closed by the executor; this suits long-lived services reusing pools across batches. Do not call `BatchExecutor(use_async=True)` inside an already-running event loop; use `await AsyncBatchExecutor.execute()` directly instead.
 
-### 批量文件传输
+### Batch File Transfer
 
 ```python
 def parallel_upload(hosts, local_path, remote_path, max_workers=3):
-    """并行上传文件到多台主机"""
+    """Upload a file to multiple hosts in parallel"""
     def upload_to_host(host):
         try:
             with manager.connect_to_host(host.name) as client:
@@ -332,14 +330,14 @@ def parallel_upload(hosts, local_path, remote_path, max_workers=3):
                 return {"host": host.name, "success": True}
         except Exception as e:
             return {"host": host.name, "success": False, "error": str(e)}
-    
+
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = [executor.submit(upload_to_host, host) for host in hosts]
         results = [f.result() for f in futures]
-    
+
     return results
 
-# 分发配置文件
+# Distribute a config file
 config_file = "./nginx.conf"
 web_hosts = manager.list_hosts(tag="web")
 
@@ -353,14 +351,14 @@ results = parallel_upload(
 
 ---
 
-## 日志和监控
+## Logging and Monitoring
 
-### 启用详细日志
+### Enable Verbose Logging
 
 ```python
 import logging
 
-# 配置日志
+# Configure logging
 logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -370,12 +368,12 @@ logging.basicConfig(
     ]
 )
 
-# 查看 Remote CMD 日志
+# View Remote CMD logs
 logger = logging.getLogger('remote_cmd')
 logger.setLevel(logging.DEBUG)
 ```
 
-### 执行监控
+### Execution Monitoring
 
 ```python
 from dataclasses import dataclass
@@ -394,7 +392,7 @@ class ExecutionLog:
 class ExecutionMonitor:
     def __init__(self):
         self.logs: List[ExecutionLog] = []
-    
+
     def record(self, host: str, command: str, duration: float, result):
         log = ExecutionLog(
             timestamp=datetime.now(),
@@ -405,35 +403,35 @@ class ExecutionMonitor:
             exit_code=result.exit_code
         )
         self.logs.append(log)
-    
+
     def generate_report(self):
-        """生成执行报告"""
+        """Generate an execution report"""
         if not self.logs:
-            return "没有执行记录"
-        
+            return "No execution records"
+
         total = len(self.logs)
         success = sum(1 for log in self.logs if log.success)
         avg_duration = sum(log.duration for log in self.logs) / total
-        
-        report = f"""
-执行报告
-========
-总执行次数: {total}
-成功: {success}
-失败: {total - success}
-成功率: {success/total*100:.1f}%
-平均耗时: {avg_duration:.2f}秒
 
-详细记录:
+        report = f"""
+Execution Report
+========
+Total executions: {total}
+Success: {success}
+Failure: {total - success}
+Success rate: {success/total*100:.1f}%
+Average duration: {avg_duration:.2f}s
+
+Details:
 """
         for log in self.logs:
             status = "✓" if log.success else "✗"
             report += f"\n  {status} [{log.host}] {log.command[:50]}"
             report += f" ({log.duration:.2f}s)"
-        
+
         return report
 
-# 使用示例
+# Usage example
 monitor = ExecutionMonitor()
 
 import time
@@ -442,7 +440,7 @@ for host in manager.list_hosts(tag="web"):
         start = time.time()
         result = client.execute("uptime")
         duration = time.time() - start
-        
+
         monitor.record(host.name, "uptime", duration, result)
 
 print(monitor.generate_report())
@@ -450,88 +448,88 @@ print(monitor.generate_report())
 
 ---
 
-## 安全最佳实践
+## Security Best Practices
 
-### 1. 使用 SSH Key 而非密码
+### 1. Use SSH Keys Instead of Passwords
 
 ```python
-# ✅ 推荐：使用 SSH Key
+# ✅ Recommended: use an SSH key
 config = ConnectionConfig(
     hostname="example.com",
     username="deploy",
     key_filename="~/.ssh/id_rsa"
 )
 
-# ❌ 不推荐：硬编码密码
+# ❌ Not recommended: hard-coded password
 config = ConnectionConfig(
     hostname="example.com",
     username="admin",
-    password="hardcoded_password"  # 安全隐患
+    password="hardcoded_password"  # Security risk
 )
 ```
 
-### 2. 密钥文件权限
+### 2. Key File Permissions
 
 ```python
 import os
 from pathlib import Path
 
 def check_key_permissions(key_path: str):
-    """检查 SSH 密钥文件权限"""
+    """Check SSH key file permissions"""
     key_file = Path(key_path).expanduser()
-    
+
     if not key_file.exists():
-        raise FileNotFoundError(f"密钥文件不存在: {key_path}")
-    
-    # 获取文件权限
+        raise FileNotFoundError(f"Key file does not exist: {key_path}")
+
+    # Get file permissions
     stat = key_file.stat()
     mode = oct(stat.st_mode)[-3:]
-    
-    # 检查权限是否为 600
+
+    # Check whether permissions are 600
     if mode != "600":
-        print(f"⚠️  警告: 密钥文件权限为 {mode}，建议设置为 600")
-        print(f"   运行: chmod 600 {key_path}")
-    
+        print(f"⚠️  Warning: key file permissions are {mode}, recommend setting to 600")
+        print(f"   Run: chmod 600 {key_path}")
+
     return True
 
-# 使用
+# Usage
 key_path = "~/.ssh/id_rsa"
 check_key_permissions(key_path)
 ```
 
-### 3. 敏感信息处理
+### 3. Sensitive Data Handling
 
 ```python
 import os
 from getpass import getpass
 
 def get_secure_password():
-    """安全获取密码"""
-    # 优先从环境变量获取
+    """Securely retrieve a password"""
+    # Prefer reading from an environment variable
     password = os.environ.get('SSH_PASSWORD')
-    
+
     if not password:
-        # 交互式输入（不显示）
-        password = getpass("请输入 SSH 密码: ")
-    
+        # Interactive input (hidden)
+        password = getpass("Enter SSH password: ")
+
     return password
 
 def mask_sensitive_data(data: dict) -> dict:
-    """脱敏敏感数据"""
+    """Mask sensitive data"""
     sensitive_keys = ['password', 'key_filename', 'secret']
     masked = data.copy()
-    
+
     for key in sensitive_keys:
         if key in masked:
             masked[key] = '***'
-    
+
     return masked
 ```
 
-### 4. 使用跳板机（Bastion Host）
+### 4. Using a Bastion Host
 
 ```python
-# 通过跳板机连接内网服务器
+# Connect to an internal server via a bastion host
 bastion_config = ConnectionConfig(
     hostname="bastion.example.com",
     username="jumpuser",
@@ -544,25 +542,24 @@ target_config = ConnectionConfig(
     key_filename="~/.ssh/internal_key"
 )
 
-# 先连接跳板机
+# First connect to the bastion host
 with SSHClient(bastion_config) as bastion:
-    # 配置端口转发
-    # 然后通过跳板机连接目标服务器
+    # Set up port forwarding, then connect to the target via the bastion
     pass
 ```
 
 ---
 
-## 性能优化
+## Performance Optimization
 
-### 1. 连接复用
+### 1. Connection Reuse
 
 ```python
 from contextlib import contextmanager
 
 @contextmanager
 def managed_connection(manager, host_name):
-    """管理连接，支持复用"""
+    """Manage a connection, supporting reuse"""
     client = None
     try:
         client = manager.connect_to_host(host_name)
@@ -571,7 +568,7 @@ def managed_connection(manager, host_name):
         if client:
             client.disconnect()
 
-# 在一个连接中执行多个命令
+# Execute multiple commands on a single connection
 with managed_connection(manager, "web-01") as client:
     client.execute("cd /var/www")
     client.execute("git pull")
@@ -579,34 +576,34 @@ with managed_connection(manager, "web-01") as client:
     client.execute("npm run build")
 ```
 
-### 2. 压缩传输
+### 2. Compressed Transfer
 
 ```python
-# 启用压缩（适合慢速网络）
+# Enable compression (good for slow networks)
 config = ConnectionConfig(
     hostname="example.com",
     username="admin",
     password="pass",
-    compress=True  # 启用压缩
+    compress=True  # Enable compression
 )
 
-# 大文件传输前先压缩
+# Compress before transferring large files
 commands = [
     "tar -czf /tmp/logs.tar.gz /var/log/app/",
-    # 下载压缩包
-    # 本地解压
+    # Download the archive
+    # Extract locally
 ]
 ```
 
-### 3. 批量操作优化
+### 3. Batch Optimization
 
 ```python
-# ❌ 低效：逐个连接
+# ❌ Inefficient: connect one by one
 for host in hosts:
     with manager.connect_to_host(host.name) as client:
         client.execute("command")
 
-# ✅ 高效：并行连接
+# ✅ Efficient: parallel connections
 from concurrent.futures import ThreadPoolExecutor
 
 with ThreadPoolExecutor(max_workers=10) as executor:
@@ -619,39 +616,39 @@ with ThreadPoolExecutor(max_workers=10) as executor:
 
 ---
 
-## 自定义扩展
+## Custom Extensions
 
-### 自定义命令处理器
+### Custom Command Processor
 
 ```python
 class CommandProcessor:
-    """自定义命令处理器"""
-    
-    def before_execute(self, command: str) -> str:
-        """命令执行前处理"""
-        # 添加时间戳
-        return f"echo '[{datetime.now()}] Executing: {command}' && {command}"
-    
-    def after_execute(self, result):
-        """命令执行后处理"""
-        if result.success:
-            print(f"✓ 命令成功: {result.command}")
-        else:
-            print(f"✗ 命令失败: {result.exit_code}")
+    """Custom command processor"""
 
-# 使用
+    def before_execute(self, command: str) -> str:
+        """Pre-execution processing"""
+        # Add a timestamp
+        return f"echo '[{datetime.now()}] Executing: {command}' && {command}"
+
+    def after_execute(self, result):
+        """Post-execution processing"""
+        if result.success:
+            print(f"✓ Command succeeded: {result.command}")
+        else:
+            print(f"✗ Command failed: {result.exit_code}")
+
+# Usage
 processor = CommandProcessor()
 enhanced_command = processor.before_execute("ls -la")
 result = client.execute(enhanced_command)
 processor.after_execute(result)
 ```
 
-### 插件系统示例
+### Plugin System Example
 
 ```python
 class PluginManager:
-    """简单插件管理器"""
-    
+    """Simple plugin manager"""
+
     def __init__(self):
         self.hooks = {
             'pre_connect': [],
@@ -659,51 +656,51 @@ class PluginManager:
             'pre_execute': [],
             'post_execute': []
         }
-    
+
     def register(self, hook_name, callback):
-        """注册钩子"""
+        """Register a hook"""
         if hook_name in self.hooks:
             self.hooks[hook_name].append(callback)
-    
+
     def execute(self, hook_name, *args, **kwargs):
-        """执行钩子"""
+        """Execute hooks"""
         for callback in self.hooks.get(hook_name, []):
             callback(*args, **kwargs)
 
-# 创建插件管理器
+# Create the plugin manager
 plugins = PluginManager()
 
-# 注册日志插件
+# Register a logging plugin
 def log_connection(host):
-    print(f"[LOG] 连接到: {host}")
+    print(f"[LOG] Connected to: {host}")
 
 plugins.register('post_connect', log_connection)
 
-# 使用
+# Usage
 plugins.execute('post_connect', 'web-01')
 ```
 
 ---
 
-## 总结
+## Summary
 
-本教程介绍了 Remote CMD 的高级功能：
+This tutorial covered Remote CMD's advanced features:
 
-- **高级配置**：环境变量、超时控制
-- **错误处理**：异常类型、重试机制
-- **批量操作**：并行执行、异步模式
-- **日志监控**：详细日志、执行监控
-- **安全实践**：SSH Key、敏感信息处理
-- **性能优化**：连接复用、压缩传输
-- **自定义扩展**：插件系统
+- **Advanced configuration**: environment variables, timeout control
+- **Error handling**: exception types, retry mechanisms
+- **Batch operations**: parallel execution, async patterns
+- **Logging and monitoring**: verbose logs, execution monitoring
+- **Security practices**: SSH keys, sensitive data handling
+- **Performance optimization**: connection reuse, compressed transfer
+- **Custom extensions**: plugin system
 
-掌握这些技巧后，你可以更高效、更安全地管理远程服务器。
+With these techniques you can manage remote servers more efficiently and securely.
 
 ---
 
-## 下一步
+## Next Steps
 
-- [查看 API 文档](./API.md)
-- [阅读故障排查](./TROUBLESHOOTING.md)
-- [查看示例代码](../examples/)
-- [参与贡献](../CONTRIBUTING.md)
+- [View the API Documentation](./API.md)
+- [Read Troubleshooting](./TROUBLESHOOTING.md)
+- [Browse the Examples](../examples/)
+- [Contribute](../CONTRIBUTING.md)

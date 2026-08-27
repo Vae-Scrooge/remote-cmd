@@ -1,13 +1,13 @@
-# API 使用指南
+# API Usage Guide
 
-本文档提供 Remote CMD 公共 API 的使用示例与说明（手写维护）。
+This document provides usage examples and explanations for the public API of Remote CMD (maintained by hand).
 
-> 📚 **完整 API 参考（自动生成）**：请查看 [pdoc 生成的 API 文档](./api/remote_cmd.html)。
-> 本文档聚焦用法示例，完整签名/参数/返回类型以自动生成版本为准。
+> 📚 **Complete API reference (auto-generated):** see the [pdoc-generated API docs](./api/remote_cmd.html).
+> This document focuses on usage examples; the full signatures/parameters/return types are authoritative in the auto-generated version.
 
-## 目录
+## Table of Contents
 
-- [Core 模块](#core-模块)
+- [Core Module](#core-module)
   - [ConnectionConfig](#connectionconfig)
   - [SSHClient](#sshclient)
   - [CommandResult](#commandresult)
@@ -15,25 +15,25 @@
   - [AsyncConnectionPool](#asyncconnectionpool)
   - [SyncConnectionPool](#syncconnectionpool)
   - [Host](#host)
-- [Service 模块](#service-模块)
+- [Service Module](#service-module)
   - [HostService](#hostservice)
   - [HostRepository](#hostrepository)
   - [BatchExecutor](#batchexecutor)
   - [AsyncBatchExecutor](#asyncbatchexecutor)
-- [CLI 模块](#cli-模块)
-- [Utils 模块](#utils-模块)
-- [Exceptions 异常](#exceptions-异常)
-- [版本兼容性](#版本兼容性)
+- [CLI Module](#cli-module)
+- [Utils Module](#utils-module)
+- [Exceptions](#exceptions)
+- [Version Compatibility](#version-compatibility)
 
 ---
 
-## Core 模块
+## Core Module
 
 ### ConnectionConfig
 
-SSH 连接配置类，用于配置 SSH 连接参数。
+SSH connection configuration class for setting SSH connection parameters.
 
-#### 类定义
+#### Class Definition
 
 ```python
 @dataclass
@@ -49,33 +49,33 @@ class ConnectionConfig:
     known_hosts_file: Optional[str] = None
 ```
 
-#### 参数说明
+#### Parameters
 
-| 参数 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `hostname` | `str` | 必填 | 服务器地址（IP 或域名） |
-| `username` | `str` | 必填 | SSH 用户名 |
-| `port` | `int` | 22 | SSH 端口 |
-| `password` | `Optional[str]` | None | 密码（与 `key_filename` 均可选；同时提供时密码优先） |
-| `key_filename` | `Optional[str]` | None | SSH 私钥路径 |
-| `timeout` | `int` | 30 | 连接超时时间（秒） |
-| `compress` | `bool` | True | 是否启用压缩 |
-| `host_key_policy` | `Optional[Any]` | None | 主机密钥策略；默认使用 `RejectPolicy` 拒绝未知密钥 |
-| `known_hosts_file` | `Optional[str]` | None | 可选的 known_hosts 文件路径 |
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `hostname` | `str` | required | Server address (IP or domain) |
+| `username` | `str` | required | SSH username |
+| `port` | `int` | 22 | SSH port |
+| `password` | `Optional[str]` | None | Password (either this or `key_filename` is optional; password takes precedence when both are given) |
+| `key_filename` | `Optional[str]` | None | Path to the SSH private key |
+| `timeout` | `int` | 30 | Connection timeout (seconds) |
+| `compress` | `bool` | True | Whether to enable compression |
+| `host_key_policy` | `Optional[Any]` | None | Host key policy; defaults to `RejectPolicy` rejecting unknown keys |
+| `known_hosts_file` | `Optional[str]` | None | Optional path to a known_hosts file |
 
-#### 使用示例
+#### Usage Example
 
 ```python
 from remote_cmd.core.ssh_client import ConnectionConfig
 
-# 密码认证
+# Password authentication
 config1 = ConnectionConfig(
     hostname="192.168.1.100",
     username="admin",
     password="secret123"
 )
 
-# 密钥认证
+# Key authentication
 config2 = ConnectionConfig(
     hostname="example.com",
     username="deploy",
@@ -85,28 +85,28 @@ config2 = ConnectionConfig(
 )
 ```
 
-#### 异常
+#### Exceptions
 
-- `ValueError`: 主机名、用户名或端口无效
+- `ValueError`: invalid hostname, username, or port
 
-密码和私钥均可不提供；此时客户端可使用 SSH agent。两者同时提供时，密码认证优先。
+Neither password nor key is required; in that case the client can use the SSH agent. When both are provided, password authentication takes precedence.
 
 ---
 
 ### SSHClient
 
-SSH 客户端类，用于管理 SSH 连接和执行远程操作。
+SSH client class for managing SSH connections and executing remote operations.
 
-#### 类定义
+#### Class Definition
 
 ```python
 class SSHClient:
     def __init__(self, config: ConnectionConfig)
     def connect(self) -> "SSHClient"
     def disconnect(self) -> None
-    def execute(self, command: str, timeout: Optional[int] = None, 
+    def execute(self, command: str, timeout: Optional[int] = None,
                 environment: Optional[Dict[str, str]] = None) -> CommandResult
-    def execute_sudo(self, command: str, password: Optional[str] = None, 
+    def execute_sudo(self, command: str, password: Optional[str] = None,
                      timeout: Optional[int] = None) -> CommandResult
     def upload_file(self, local_path: str, remote_path: str) -> None
     def download_file(self, remote_path: str, local_path: str) -> None
@@ -114,168 +114,189 @@ class SSHClient:
     def is_connected(self) -> bool
 ```
 
-#### 构造函数
+#### Constructor
 
 ##### `__init__(config: ConnectionConfig)`
 
-初始化 SSH 客户端。
+Initialize the SSH client.
 
-**参数：**
-- `config` (ConnectionConfig): 连接配置对象
+**Parameters:**
 
-**示例：**
+- `config` (ConnectionConfig): the connection configuration object
+
+**Example:**
+
 ```python
 config = ConnectionConfig(hostname="example.com", username="admin", password="pass")
 client = SSHClient(config)
 ```
 
-#### 方法
+#### Methods
 
 ##### `connect() -> SSHClient`
 
-建立 SSH 连接。
+Establish the SSH connection.
 
-**返回：**
-- `SSHClient`: 返回 self，支持链式调用
+**Returns:**
 
-**异常：**
-- `SSHConnectionError`: 连接失败时抛出
-- `SSHAuthenticationError`: 认证失败（`SSHConnectionError` 的永久性子类）
-- `SSHTimeoutError`: 连接建立超时（`SSHConnectionError` 的瞬态子类）
+- `SSHClient`: returns self, supporting chained calls
 
-**示例：**
+**Exceptions:**
+
+- `SSHConnectionError`: raised on connection failure
+- `SSHAuthenticationError`: authentication failure (a permanent subclass of `SSHConnectionError`)
+- `SSHTimeoutError`: connection-establishment timeout (a transient subclass of `SSHConnectionError`)
+
+**Example:**
+
 ```python
 client = SSHClient(config).connect()
-# 或
+# or
 client = SSHClient(config)
 client.connect()
 ```
 
 ##### `disconnect() -> None`
 
-关闭 SSH 连接并清理资源。
+Close the SSH connection and clean up resources.
 
-**示例：**
+**Example:**
+
 ```python
 client.disconnect()
 ```
 
 ##### `execute(command: str, timeout: Optional[int] = None, environment: Optional[Dict[str, str]] = None) -> CommandResult`
 
-在远程服务器上执行命令。
+Execute a command on the remote server.
 
-**参数：**
-- `command` (str): 要执行的命令字符串
-- `timeout` (Optional[int]): 命令执行 wall-clock 超时时间（秒），默认无超时；
-  超时会关闭通道并抛出 `SSHCommandTimeoutError`
-- `environment` (Optional[Dict[str, str]]): 环境变量字典；键必须是合法 shell 标识符
+**Parameters:**
 
-**返回：**
-- `CommandResult`: 命令执行结果对象
+- `command` (str): the command string to execute
+- `timeout` (Optional[int]): wall-clock command execution timeout (seconds); no timeout by default; on timeout the channel is closed and `SSHCommandTimeoutError` is raised
+- `environment` (Optional[Dict[str, str]]): environment variable dictionary; keys must be valid shell identifiers
 
-**异常：**
-- `SSHConnectionError`: 未连接时抛出
-- `SSHCommandError`: 命令执行失败时抛出
-- `SSHCommandTimeoutError`: 命令在 wall-clock 超时时限内未完成
-- `ValidationError`: 环境变量名无效
+**Returns:**
 
-**示例：**
+- `CommandResult`: the command execution result object
+
+**Exceptions:**
+
+- `SSHConnectionError`: raised when not connected
+- `SSHCommandError`: raised when command execution fails
+- `SSHCommandTimeoutError`: the command did not complete within the wall-clock timeout
+- `ValidationError`: invalid environment variable name
+
+**Example:**
+
 ```python
-# 简单执行
+# Simple execution
 result = client.execute("ls -la")
 
-# 带超时
+# With timeout
 result = client.execute("sleep 10", timeout=5)
 
-# 带环境变量
+# With environment variables
 result = client.execute(
     "echo $MY_VAR",
     environment={"MY_VAR": "hello"}
 )
 
-# 检查结果
+# Check the result
 if result.success:
-    print(f"输出: {result.stdout}")
+    print(f"Output: {result.stdout}")
 else:
-    print(f"错误: {result.stderr}")
+    print(f"Error: {result.stderr}")
 ```
 
 ##### `execute_sudo(command: str, password: Optional[str] = None, timeout: Optional[int] = None) -> CommandResult`
 
-使用 sudo 权限执行命令。
+Execute a command with sudo privileges.
 
-**参数：**
-- `command` (str): 要执行的命令
-- `password` (Optional[str]): sudo 密码（如配置了免密 sudo 可不传）
-- `timeout` (Optional[int]): 命令执行 wall-clock 超时时间（秒），默认无超时；
-  超时会关闭通道并抛出 `SSHCommandTimeoutError`
+**Parameters:**
 
-**返回：**
-- `CommandResult`: 命令执行结果
+- `command` (str): the command to execute
+- `password` (Optional[str]): sudo password (omit if passwordless sudo is configured)
+- `timeout` (Optional[int]): wall-clock command execution timeout (seconds); no timeout by default; on timeout the channel is closed and `SSHCommandTimeoutError` is raised
 
-**示例：**
+**Returns:**
+
+- `CommandResult`: the command execution result
+
+**Example:**
+
 ```python
-# 使用密码
+# With password
 result = client.execute_sudo("apt update", password="sudopass")
 
-# 免密 sudo
+# Passwordless sudo
 result = client.execute_sudo("systemctl restart nginx")
 ```
 
 ##### `upload_file(local_path: str, remote_path: str) -> None`
 
-上传文件到远程服务器。
+Upload a file to the remote server.
 
-**参数：**
-- `local_path` (str): 本地文件路径
-- `remote_path` (str): 远程目标路径
+**Parameters:**
 
-**异常：**
-- `SSHFileTransferError`: 传输失败时抛出
-- `SSHConnectionError`: 未连接时抛出
+- `local_path` (str): local file path
+- `remote_path` (str): remote destination path
 
-**示例：**
+**Exceptions:**
+
+- `SSHFileTransferError`: raised on transfer failure
+- `SSHConnectionError`: raised when not connected
+
+**Example:**
+
 ```python
 client.upload_file("./local_script.sh", "/tmp/remote_script.sh")
 ```
 
 ##### `download_file(remote_path: str, local_path: str) -> None`
 
-从远程服务器下载文件。
+Download a file from the remote server.
 
-**参数：**
-- `remote_path` (str): 远程文件路径
-- `local_path` (str): 本地保存路径
+**Parameters:**
 
-**异常：**
-- `SSHFileTransferError`: 传输失败时抛出
-- `SSHConnectionError`: 未连接时抛出
+- `remote_path` (str): remote file path
+- `local_path` (str): local save path
 
-**示例：**
+**Exceptions:**
+
+- `SSHFileTransferError`: raised on transfer failure
+- `SSHConnectionError`: raised when not connected
+
+**Example:**
+
 ```python
 client.download_file("/var/log/nginx/error.log", "./logs/error.log")
 ```
 
 ##### `list_remote_directory(remote_path: str = ".") -> List[RemoteFileEntry]`
 
-列出远程目录内容。
+List the contents of a remote directory.
 
-**参数：**
-- `remote_path` (str): 远程目录路径，默认为当前目录
+**Parameters:**
 
-**返回：**
-- `List[RemoteFileEntry]`: 文件/目录信息列表；每个条目通过属性访问：
-  - `name` (str): 文件名
-  - `size` (int): 文件大小（字节）
-  - `mode` (str): 权限模式（如 "644"）
-  - `mtime` (int): 修改时间戳
-  - `is_dir` (bool): 是否为目录
+- `remote_path` (str): remote directory path, defaults to the current directory
 
-**异常：**
-- `SSHFileTransferError`: 列出目录失败时抛出
-- `SSHConnectionError`: 未连接时抛出
+**Returns:**
 
-**示例：**
+- `List[RemoteFileEntry]`: list of file/directory info; each entry is accessed via attributes:
+  - `name` (str): file name
+  - `size` (int): file size (bytes)
+  - `mode` (str): permission mode (e.g. "644")
+  - `mtime` (int): modification timestamp
+  - `is_dir` (bool): whether it is a directory
+
+**Exceptions:**
+
+- `SSHFileTransferError`: raised when listing the directory fails
+- `SSHConnectionError`: raised when not connected
+
+**Example:**
+
 ```python
 entries = client.list_remote_directory("/var/www")
 for entry in entries:
@@ -285,30 +306,32 @@ for entry in entries:
 
 ##### `is_connected() -> bool`
 
-检查 SSH 连接是否活跃。
+Check whether the SSH connection is active.
 
-**返回：**
-- `bool`: 连接状态
+**Returns:**
 
-**示例：**
+- `bool`: connection status
+
+**Example:**
+
 ```python
 if client.is_connected():
-    print("连接正常")
+    print("Connected")
 else:
-    print("连接已断开")
+    print("Disconnected")
 ```
 
-#### 上下文管理器
+#### Context Manager
 
-SSHClient 支持上下文管理器，确保资源正确释放：
+`SSHClient` supports the context manager protocol, ensuring resources are released correctly:
 
 ```python
-# 推荐用法
+# Recommended usage
 with SSHClient(config) as client:
     result = client.execute("uptime")
-    # 连接会自动关闭
+    # Connection auto-closes
 
-# 等价于
+# Equivalent to
 try:
     client = SSHClient(config).connect()
     result = client.execute("uptime")
@@ -320,9 +343,9 @@ finally:
 
 ### CommandResult
 
-命令执行结果类。
+Command execution result class.
 
-#### 类定义
+#### Class Definition
 
 ```python
 @dataclass
@@ -331,43 +354,42 @@ class CommandResult:
     stdout: str
     stderr: str
     exit_code: int
-    
+
     @property
     def success(self) -> bool
 ```
 
-#### 属性
+#### Attributes
 
-| 属性 | 类型 | 说明 |
-|------|------|------|
-| `command` | `str` | 执行的命令 |
-| `stdout` | `str` | 标准输出 |
-| `stderr` | `str` | 标准错误 |
-| `exit_code` | `int` | 退出码 |
-| `success` | `bool` | 是否成功（exit_code == 0） |
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `command` | `str` | The executed command |
+| `stdout` | `str` | Standard output |
+| `stderr` | `str` | Standard error |
+| `exit_code` | `int` | Exit code |
+| `success` | `bool` | Whether successful (exit_code == 0) |
 
-#### 使用示例
+#### Usage Example
 
 ```python
 result = client.execute("ls -la")
 
-# 检查是否成功
+# Check success
 if result.success:
-    print(f"命令输出:\n{result.stdout}")
+    print(f"Command output:\n{result.stdout}")
 else:
-    print(f"命令失败 (exit code: {result.exit_code})")
-    print(f"错误信息:\n{result.stderr}")
+    print(f"Command failed (exit code: {result.exit_code})")
+    print(f"Error info:\n{result.stderr}")
 
-# 打印结果摘要
-print(result)  # 输出: ✓ [0] ls -la
+# Print a result summary
+print(result)  # Output: ✓ [0] ls -la
 ```
 
 ---
 
 ### RemoteFileEntry
 
-`SSHClient.list_remote_directory()` 与 `AsyncSSHClient.list_remote_directory()` 返回的
-远程文件/目录条目数据类。请使用属性访问字段，而不是字典下标。
+A dataclass for remote file/directory entries returned by `SSHClient.list_remote_directory()` and `AsyncSSHClient.list_remote_directory()`. Access fields via attributes, not dict subscripting.
 
 ```python
 for entry in client.list_remote_directory("/var/log"):
@@ -378,9 +400,9 @@ for entry in client.list_remote_directory("/var/log"):
 
 ### Host
 
-主机配置数据类。
+Host configuration dataclass.
 
-#### 类定义
+#### Class Definition
 
 ```python
 from dataclasses import dataclass, field
@@ -395,36 +417,38 @@ class Host:
     key_filename: Optional[str] = None
     tags: List[str] = field(default_factory=list)
     description: str = ""
-    
+
     def to_connection_config(self) -> ConnectionConfig
     def to_dict(self) -> Dict[str, Any]
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Host"
 ```
 
-#### 参数说明
+#### Parameters
 
-| 参数 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `name` | `str` | 必填 | 主机别名（唯一标识） |
-| `hostname` | `str` | 必填 | 服务器地址 |
-| `username` | `str` | 必填 | SSH 用户名 |
-| `port` | `int` | 22 | SSH 端口 |
-| `password` | `Optional[str]` | None | 密码 |
-| `key_filename` | `Optional[str]` | None | SSH 密钥路径 |
-| `tags` | `List[str]` | `[]` | 标签列表 |
-| `description` | `str` | "" | 描述信息 |
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `name` | `str` | required | Host alias (unique identifier) |
+| `hostname` | `str` | required | Server address |
+| `username` | `str` | required | SSH username |
+| `port` | `int` | 22 | SSH port |
+| `password` | `Optional[str]` | None | Password |
+| `key_filename` | `Optional[str]` | None | SSH key path |
+| `tags` | `List[str]` | `[]` | Tag list |
+| `description` | `str` | "" | Description |
 
-#### 方法
+#### Methods
 
 ##### `to_connection_config() -> ConnectionConfig`
 
-转换为 ConnectionConfig 对象。
+Convert to a `ConnectionConfig` object.
 
-**返回：**
-- `ConnectionConfig`: 连接配置对象
+**Returns:**
 
-**示例：**
+- `ConnectionConfig`: the connection configuration object
+
+**Example:**
+
 ```python
 host = Host(name="web", hostname="192.168.1.10", username="admin")
 config = host.to_connection_config()
@@ -433,22 +457,26 @@ client = SSHClient(config)
 
 ##### `to_dict() -> Dict[str, Any]`
 
-转换为字典。
+Convert to a dictionary.
 
-**返回：**
-- `Dict[str, Any]`: 主机配置字典
+**Returns:**
+
+- `Dict[str, Any]`: the host configuration dictionary
 
 ##### `from_dict(data: Dict[str, Any]) -> Host`
 
-从字典创建 Host 对象。
+Create a `Host` object from a dictionary.
 
-**参数：**
-- `data` (Dict[str, Any]): 主机配置字典
+**Parameters:**
 
-**返回：**
-- `Host`: Host 对象
+- `data` (Dict[str, Any]): the host configuration dictionary
 
-**示例：**
+**Returns:**
+
+- `Host`: the Host object
+
+**Example:**
+
 ```python
 data = {
     "name": "web",
@@ -463,9 +491,9 @@ host = Host.from_dict(data)
 
 ### HostService
 
-主机服务类，承载主机管理的业务逻辑，委托 `HostRepository` 持久化。
+Host service class carrying the business logic of host management, delegating persistence to `HostRepository`.
 
-#### 类定义
+#### Class Definition
 
 ```python
 class HostService:
@@ -483,40 +511,45 @@ class HostService:
     def test_all_connections(self) -> Dict[str, bool]
 ```
 
-#### 构造函数
+#### Constructor
 
 ##### `__init__(repository: HostRepository, encryption=None, credential_provider=None)`
 
-初始化主机服务。
+Initialize the host service.
 
-**参数：**
-- `repository` (HostRepository): 存储仓库（`JsonHostRepository` / `SqliteHostRepository`）
-- `encryption` (Optional[CredentialEncryption]): 密码加密器（可选）
-- `credential_provider` (Optional[CredentialProvider]): 凭据提供链（可选）
+**Parameters:**
 
-**示例：**
+- `repository` (HostRepository): the storage repository (`JsonHostRepository` / `SqliteHostRepository`)
+- `encryption` (Optional[CredentialEncryption]): password encryptor (optional)
+- `credential_provider` (Optional[CredentialProvider]): credential provider chain (optional)
+
+**Example:**
+
 ```python
 from remote_cmd.repository.json_host_repository import JsonHostRepository
 from remote_cmd.service.host_service import HostService
 
-# 从文件加载
+# Load from a file
 repo = JsonHostRepository("hosts.json")
 manager = HostService(repository=repo)
 ```
 
-#### 方法
+#### Methods
 
 ##### `add_host(host: Host) -> None`
 
-添加主机。
+Add a host.
 
-**参数：**
-- `host` (Host): Host 对象
+**Parameters:**
 
-**异常：**
-- `ValueError`: 主机名已存在
+- `host` (Host): the Host object
 
-**示例：**
+**Exceptions:**
+
+- `ValueError`: host name already exists
+
+**Example:**
+
 ```python
 host = Host(
     name="web-server",
@@ -531,15 +564,18 @@ repo.flush()
 
 ##### `remove_host(name: str) -> None`
 
-删除主机。
+Remove a host.
 
-**参数：**
-- `name` (str): 主机名
+**Parameters:**
 
-**异常：**
-- `KeyError`: 主机不存在
+- `name` (str): the host name
 
-**示例：**
+**Exceptions:**
+
+- `KeyError`: host does not exist
+
+**Example:**
+
 ```python
 manager.remove_host("web-server")
 repo.flush()
@@ -547,73 +583,86 @@ repo.flush()
 
 ##### `get_host(name: str) -> Host`
 
-获取主机。
+Get a host.
 
-**参数：**
-- `name` (str): 主机名
+**Parameters:**
 
-**返回：**
-- `Host`: 主机对象
+- `name` (str): the host name
 
-**异常：**
-- `KeyError`: 主机不存在
+**Returns:**
 
-**示例：**
+- `Host`: the host object
+
+**Exceptions:**
+
+- `KeyError`: host does not exist
+
+**Example:**
+
 ```python
 host = manager.get_host("web-server")
-print(f"主机地址: {host.hostname}")
+print(f"Host address: {host.hostname}")
 ```
 
 ##### `list_hosts(tag: Optional[str] = None) -> List[Host]`
 
-列出所有主机，可按标签筛选。
+List all hosts, optionally filtered by tag.
 
-**参数：**
-- `tag` (Optional[str]): 标签筛选（可选）
+**Parameters:**
 
-**返回：**
-- `List[Host]`: 主机列表
+- `tag` (Optional[str]): tag filter (optional)
 
-**示例：**
+**Returns:**
+
+- `List[Host]`: the host list
+
+**Example:**
+
 ```python
-# 所有主机
+# All hosts
 all_hosts = manager.list_hosts()
 
-# 生产环境主机
+# Production hosts
 prod_hosts = manager.list_hosts(tag="production")
 
-# Web 服务器
+# Web servers
 web_hosts = manager.list_hosts(tag="web")
 ```
 
 ##### `list_tags() -> List[str]`
 
-列出所有标签。
+List all tags.
 
-**返回：**
-- `List[str]`: 标签列表（已排序）
+**Returns:**
 
-**示例：**
+- `List[str]`: the tag list (sorted)
+
+**Example:**
+
 ```python
 tags = manager.list_tags()
-print(f"可用标签: {', '.join(tags)}")
+print(f"Available tags: {', '.join(tags)}")
 ```
 
 ##### `connect_to_host(name: str) -> SSHClient`
 
-连接到指定主机。
+Connect to the specified host.
 
-**参数：**
-- `name` (str): 主机名
+**Parameters:**
 
-**返回：**
-- `SSHClient`: 已连接的 SSHClient 实例
+- `name` (str): the host name
 
-**异常：**
-- `KeyError`: 主机不存在
-- `SSHConnectionError`: 连接失败
+**Returns:**
 
-**示例：**
+- `SSHClient`: a connected SSHClient instance
+
+**Exceptions:**
+
+- `KeyError`: host does not exist
+- `SSHConnectionError`: connection failed
+
+**Example:**
+
 ```python
 with manager.connect_to_host("web-server") as client:
     result = client.execute("uptime")
@@ -622,30 +671,35 @@ with manager.connect_to_host("web-server") as client:
 
 ##### `test_connection(name: str) -> bool`
 
-测试连接。
+Test the connection.
 
-**参数：**
-- `name` (str): 主机名
+**Parameters:**
 
-**返回：**
-- `bool`: 连接是否成功
+- `name` (str): the host name
 
-**示例：**
+**Returns:**
+
+- `bool`: whether the connection succeeded
+
+**Example:**
+
 ```python
 if manager.test_connection("web-server"):
-    print("连接成功")
+    print("Connection succeeded")
 else:
-    print("连接失败")
+    print("Connection failed")
 ```
 
 ##### `test_all_connections() -> Dict[str, bool]`
 
-测试所有主机连接。
+Test all host connections.
 
-**返回：**
-- `Dict[str, bool]`: 主机名到连接状态的映射
+**Returns:**
 
-**示例：**
+- `Dict[str, bool]`: mapping of host name to connection status
+
+**Example:**
+
 ```python
 results = manager.test_all_connections()
 for name, success in results.items():
@@ -657,9 +711,9 @@ for name, success in results.items():
 
 ### HostRepository
 
-主机存储仓库抽象接口，定义主机配置的持久化契约。
+The abstract interface for host storage, defining the persistence contract for host configuration.
 
-#### 类定义
+#### Class Definition
 
 ```python
 class HostRepository(ABC):
@@ -673,41 +727,40 @@ class HostRepository(ABC):
     def flush(self) -> None
 ```
 
-#### 实现
+#### Implementations
 
-| 类 | 存储格式 | 适用场景 |
-|----|---------|---------|
-| `JsonHostRepository` | JSON 文件（原子写入、可选加密） | 默认、轻量配置 |
-| `SqliteHostRepository` | SQLite 数据库（索引、分页、搜索） | 大批量主机 |
+| Class | Storage Format | Use Case |
+|-------|----------------|----------|
+| `JsonHostRepository` | JSON file (atomic write, optional encryption) | Default, lightweight config |
+| `SqliteHostRepository` | SQLite database (indexing, pagination, search) | Large host counts |
 
-#### 存储引擎自动切换
+#### Automatic Storage Engine Switching
 
-可通过 `remote_cmd.service.storage_factory.build_repository` 根据文件扩展名
-（`.json` / `.db` / `.sqlite`）自动选择存储引擎，或显式指定 `storage_backend`：
+You can use `remote_cmd.service.storage_factory.build_repository` to auto-select the storage engine by file extension (`.json` / `.db` / `.sqlite`), or explicitly specify `storage_backend`:
 
 ```python
 from remote_cmd.service.storage_factory import build_repository
 
 repo = build_repository("hosts.json")          # JsonHostRepository
 repo = build_repository("hosts.db")            # SqliteHostRepository
-repo = build_repository("hosts.json", storage_backend="sqlite")  # 显式优先
+repo = build_repository("hosts.json", storage_backend="sqlite")  # explicit wins
 ```
 
 ---
 
-## 异步模块（v1.1.0+）
+## Async Module (v1.1.0+)
 
-> 异步模块基于 `asyncssh`，需要额外安装：
+> The async module is based on `asyncssh` and requires an extra install:
 > ```bash
 > pip install "remote_cmd_manager[async]"
 > ```
-> 未安装 asyncssh 时，`import remote_cmd` 仍可用，但异步符号不会被导出。
+> When asyncssh is not installed, `import remote_cmd` still works, but the async symbols are not exported.
 
 ### AsyncSSHClient
 
-原生异步 SSH 客户端，基于 asyncssh 实现，API 与同步 `SSHClient` 保持一致。
+Native async SSH client based on asyncssh, with an API consistent with the synchronous `SSHClient`.
 
-#### 类定义
+#### Class Definition
 
 ```python
 class AsyncSSHClient:
@@ -724,16 +777,16 @@ class AsyncSSHClient:
     async def list_remote_directory(self, remote_path: str = ".") -> List[RemoteFileEntry]
 ```
 
-#### 构造函数
+#### Constructor
 
 ##### `__init__(config: ConnectionConfig, loop: Optional[Any] = None)`
 
-| 参数 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `config` | `ConnectionConfig` | 必填 | SSH 连接配置（与同步版一致） |
-| `loop` | `Optional[Any]` | None | 已忽略；asyncssh 自行从当前事件循环取用，保留仅为向后兼容 |
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `config` | `ConnectionConfig` | required | SSH connection config (same as the sync version) |
+| `loop` | `Optional[Any]` | None | Ignored; asyncssh takes the running event loop itself, kept only for backward compatibility |
 
-#### 使用示例
+#### Usage Example
 
 ```python
 import asyncio
@@ -753,35 +806,34 @@ async def main():
 asyncio.run(main())
 ```
 
-#### 与同步 SSHClient 的差异
+#### Differences from Synchronous SSHClient
 
-| 特性 | `SSHClient` | `AsyncSSHClient` |
-|------|-------------|------------------|
-| 底层 | paramiko | asyncssh |
-| 调用方式 | 同步阻塞 | `async`/`await` |
-| 上下文管理器 | 同步 | 异步（`async with`） |
-| 适用场景 | 简单脚本、CLI | 高并发批量执行 |
-| 返回类型 | `CommandResult` | `CommandResult`（一致） |
+| Feature | `SSHClient` | `AsyncSSHClient` |
+|---------|-------------|------------------|
+| Underlying | paramiko | asyncssh |
+| Invocation | synchronous blocking | `async`/`await` |
+| Context manager | synchronous | asynchronous (`async with`) |
+| Use case | simple scripts, CLI | high-concurrency batch |
+| Return type | `CommandResult` | `CommandResult` (consistent) |
 
-`AsyncSSHClient.execute` 的 `timeout` 由 asyncssh 作为命令执行超时处理；
-`environment` 的键必须是合法 shell 标识符，值会安全转义。
+`AsyncSSHClient.execute`'s `timeout` is treated by asyncssh as a command execution timeout; `environment` keys must be valid shell identifiers and values are safely escaped.
 
-#### 异常
+#### Exceptions
 
-- `SSHConnectionError`: 连接失败（含 `SSHTimeoutError` 与密钥文件不存在）
-- `SSHAuthenticationError`: 认证失败（`SSHConnectionError` 的永久性子类）
-- `SSHTimeoutError`: 连接建立超时（`SSHConnectionError` 的瞬态子类）
-- `SSHCommandError`: 命令执行失败
-- `SSHFileTransferError`: 文件传输失败
-- `ValidationError`: 环境变量名无效
+- `SSHConnectionError`: connection failure (includes `SSHTimeoutError` and missing key file)
+- `SSHAuthenticationError`: authentication failure (a permanent subclass of `SSHConnectionError`)
+- `SSHTimeoutError`: connection-establishment timeout (a transient subclass of `SSHConnectionError`)
+- `SSHCommandError`: command execution failure
+- `SSHFileTransferError`: file transfer failure
+- `ValidationError`: invalid environment variable name
 
 ---
 
 ### AsyncConnectionPool
 
-原生异步 SSH 连接池，复用连接并带空闲/生命周期回收与健康检查。
+Native async SSH connection pool that reuses connections with idle/lifetime recycling and health checks.
 
-#### 类定义
+#### Class Definition
 
 ```python
 class AsyncConnectionPool:
@@ -797,21 +849,20 @@ class AsyncConnectionPool:
     async def close_all(self) -> None
 ```
 
-#### 参数说明
+#### Parameters
 
-| 参数 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `config` | `ConnectionConfig` | 必填 | 用于建立 SSH 连接的配置 |
-| `max_connections` | `int` | 10 | 最大连接数 |
-| `max_lifetime` | `int` | 3600 | 连接最大生命周期（秒），超过自动关闭 |
-| `idle_timeout` | `int` | 300 | 空闲超时（秒），超过自动关闭 |
-| `health_check_interval` | `int` | 60 | 后台清理任务周期（秒） |
-| `client_factory` | `Optional[Any]` | `None` | 可选客户端工厂，默认 `AsyncSSHClient` |
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `config` | `ConnectionConfig` | required | Config used to establish SSH connections |
+| `max_connections` | `int` | 10 | Maximum number of connections |
+| `max_lifetime` | `int` | 3600 | Maximum connection lifetime (seconds), auto-closed when exceeded |
+| `idle_timeout` | `int` | 300 | Idle timeout (seconds), auto-closed when exceeded |
+| `health_check_interval` | `int` | 60 | Background cleanup task interval (seconds) |
+| `client_factory` | `Optional[Any]` | `None` | Optional client factory, defaults to `AsyncSSHClient` |
 
-`close_all()` 后连接池不可再次借用；如果 `acquire()` 已在等待信号量，
-池关闭后被唤醒时也会抛出 `RuntimeError("connection pool is closed")`。
+After `close_all()` the pool cannot be borrowed from again; if `acquire()` was already waiting on the semaphore, it will raise `RuntimeError("connection pool is closed")` when woken after the pool closes.
 
-#### 使用示例
+#### Usage Example
 
 ```python
 import asyncio
@@ -828,32 +879,31 @@ async def main():
         async with pool.acquire_context() as client:
             result = await client.execute("uptime")
             print(result.stdout)
-    # 也可手动管理：
+    # Or manage manually:
     # client = await pool.acquire()
     # await pool.release(client)
 
 asyncio.run(main())
 ```
 
-#### `get_metrics()` 返回的指标
+#### Metrics Returned by `get_metrics()`
 
-| 键 | 说明 |
-|----|------|
-| `active` | 当前活跃连接数 |
-| `idle` | 空闲连接数 |
-| `total_connections` | 连接池持有的总连接数 |
-| `total_created` | 累计创建数 |
-| `reconnects` | 累计重连数 |
-| `failed` | 累计失败数 |
+| Key | Description |
+|-----|-------------|
+| `active` | Current active connections |
+| `idle` | Idle connections |
+| `total_connections` | Total connections held by the pool |
+| `total_created` | Cumulative created count |
+| `reconnects` | Cumulative reconnect count |
+| `failed` | Cumulative failure count |
 
 ---
 
 ### SyncConnectionPool
 
-同步 SSH 连接池，为反复执行的短命令场景（批量执行、连接测试）复用连接，
-避免每次操作都重新握手。与 `AsyncConnectionPool` 对称设计。
+Synchronous SSH connection pool for reusing connections in frequently repeated short-command scenarios (batch execution, connection tests), avoiding a new handshake each time. Symmetric design with `AsyncConnectionPool`.
 
-#### 类定义
+#### Class Definition
 
 ```python
 class SyncConnectionPool:
@@ -868,7 +918,7 @@ class SyncConnectionPool:
     def close_all(self) -> None
 ```
 
-#### 使用示例
+#### Usage Example
 
 ```python
 from remote_cmd.core.ssh_client import ConnectionConfig
@@ -883,38 +933,32 @@ with pool.acquire_context() as client:
 pool.close_all()
 ```
 
-#### 参数说明
+#### Parameters
 
-| 参数 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `config` | `ConnectionConfig` | 必填 | 连接配置 |
-| `max_connections` | `int` | 10 | 最大连接数 |
-| `max_lifetime` | `int` | 3600 | 连接最大生命周期（秒） |
-| `idle_timeout` | `int` | 300 | 空闲超时（秒） |
-| `health_check_interval` | `int` | 60 | 后台清理线程周期（秒） |
-| `client_factory` | `Optional[Any]` | `None` | 可选客户端工厂，默认 `SSHClient` |
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `config` | `ConnectionConfig` | required | Connection config |
+| `max_connections` | `int` | 10 | Maximum number of connections |
+| `max_lifetime` | `int` | 3600 | Maximum connection lifetime (seconds) |
+| `idle_timeout` | `int` | 300 | Idle timeout (seconds) |
+| `health_check_interval` | `int` | 60 | Background cleanup thread interval (seconds) |
+| `client_factory` | `Optional[Any]` | `None` | Optional client factory, defaults to `SSHClient` |
 
-`close_all()` 后连接池不可再次借用；如果 `acquire()` 已在等待信号量，
-池关闭后被唤醒时也会抛出 `RuntimeError("connection pool is closed")`。
+After `close_all()` the pool cannot be borrowed from again; if `acquire()` was already waiting on the semaphore, it will raise `RuntimeError("connection pool is closed")` when woken after the pool closes.
 
-#### 指标（get_metrics）
+#### Metrics (get_metrics)
 
-与 `AsyncConnectionPool` 相同的键：`active` / `idle` / `total_connections` /
-`total_created` / `reconnects` / `failed`。
+Same keys as `AsyncConnectionPool`: `active` / `idle` / `total_connections` / `total_created` / `reconnects` / `failed`.
 
-> **Note**: `BatchExecutor`（同步内核）与 `AsyncBatchExecutor`（异步内核）在多主机或
-> 需要重试的批处理中自动按主机复用连接，单个批次结束后关闭内部创建的连接池。
-> 通过 `pool_factory` 注入的外部连接池由调用方负责生命周期，执行器绝不关闭。
+> **Note**: `BatchExecutor` (sync kernel) and `AsyncBatchExecutor` (async kernel) automatically reuse per-host connections in multi-host or retry batches, and close the internally created pool after a single batch completes. An external pool injected via `pool_factory` is the caller's responsibility for lifecycle; the executor never closes it.
 
 ---
 
 ### BatchExecutor
 
-同步批量命令执行器，使用 `ThreadPoolExecutor`；多主机或需要重试时默认按主机使用
-`SyncConnectionPool`。传入 `use_async=True` 时，对外仍保持同步 `execute()` 接口，但内部委托给
-`AsyncBatchExecutor` 的原生 asyncssh 内核。
+Synchronous batch command executor using `ThreadPoolExecutor`; in multi-host or retry scenarios it uses `SyncConnectionPool` per host by default. When `use_async=True` is passed, it keeps a synchronous `execute()` interface externally but internally delegates to `AsyncBatchExecutor`'s native asyncssh kernel.
 
-#### 类定义
+#### Class Definition
 
 ```python
 class BatchExecutor:
@@ -926,29 +970,23 @@ class BatchExecutor:
                 progress_callback: Optional[ProgressCallback] = None) -> BatchResult
 ```
 
-#### 连接池所有权
+#### Connection Pool Ownership
 
-- 多主机或需要重试时，未提供 `pool_factory` 则由执行器按主机创建内部连接池，
-  `execute()` 结束后自动关闭。
-- 提供 `pool_factory` 时，工厂返回的池由调用方拥有，执行器只借用、绝不关闭，
-  适合长驻服务跨批次复用。
-- `use_async=True` 时工厂必须返回异步池；同步内核必须返回同步池。
+- In multi-host or retry scenarios, when `pool_factory` is not provided the executor creates an internal per-host pool, closed automatically after `execute()` completes.
+- When `pool_factory` is provided, the pool returned by the factory is caller-owned; the executor only borrows it and never closes it, suitable for long-lived services reusing pools across batches.
+- With `use_async=True` the factory must return an async pool; the sync kernel must return a sync pool.
 
-#### 重试行为
+#### Retry Behavior
 
-认证、凭据、配置、校验和编程错误不会重试。未知的 `Exception` 子类仍保持可重试，
-以兼容自定义客户端工厂；自定义工厂应优先抛出类型化的 `remote_cmd` 异常。
-`retry_delay` 是指数退避的基础延迟，实际等待包含 full jitter，并限制在 60 秒以内。
-未知主机会成为单独的失败结果，不会中止其他主机；重复主机名只执行一次。
+Authentication, credential, configuration, validation, and programming errors are not retried. Unrecognized `Exception` subclasses remain retryable to stay compatible with custom client factories; custom factories should prefer raising typed `remote_cmd` exceptions. `retry_delay` is the exponential-backoff base delay, with full jitter applied and capped at 60 seconds. Unknown hosts become individual failure results and do not abort other hosts; duplicate host names are executed once.
 
-`use_async=True` 不能在已经运行的事件循环中调用；此时请直接使用
-`await AsyncBatchExecutor.execute()`。
+`use_async=True` must not be called inside an already-running event loop; use `await AsyncBatchExecutor.execute()` directly instead.
 
 ### AsyncBatchExecutor
 
-原生异步批量命令执行器，基于 `asyncio.Semaphore` 控制并发。
+Native async batch command executor based on `asyncio.Semaphore` to control concurrency.
 
-#### 类定义
+#### Class Definition
 
 ```python
 class AsyncBatchExecutor:
@@ -960,24 +998,20 @@ class AsyncBatchExecutor:
                       progress_callback: Optional[ProgressCallback] = None) -> BatchResult
 ```
 
-#### 参数说明
+#### Parameters
 
-| 参数 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `host_service` | `HostService` | 必填 | 主机服务（提供主机配置与凭据解析） |
-| `max_concurrency` | `int` | 10 | 最大并发主机数 |
-| `command_timeout` | `int` | 30 | 单条命令超时（秒） |
-| `pool_factory` | `Optional[Callable]` | `None` | 外部异步连接池工厂；返回的池由调用方拥有，执行器不关闭 |
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `host_service` | `HostService` | required | Host service (provides host config and credential resolution) |
+| `max_concurrency` | `int` | 10 | Maximum concurrent hosts |
+| `command_timeout` | `int` | 30 | Single-command timeout (seconds) |
+| `pool_factory` | `Optional[Callable]` | `None` | External async connection pool factory; the returned pool is caller-owned and not closed by the executor |
 
-`execute` 参数与同步 `BatchExecutor.execute` 一致：`retry_count` 失败重试次数、
-`retry_delay` 为指数退避基础延迟（含 full jitter，上限 60 秒）、`progress_callback` 进度回调
-`(completed, total, host_name)`（可为同步或 async 函数）。
+The `execute` parameters are identical to the synchronous `BatchExecutor.execute`: `retry_count` is the number of retries on failure, `retry_delay` is the exponential-backoff base delay (with full jitter, capped at 60s), and `progress_callback` is a progress callback `(completed, total, host_name)` (may be sync or async).
 
-多主机或需要重试时，未提供 `pool_factory` 则执行器按主机创建内部
-`AsyncConnectionPool`，批次结束后自动关闭；提供 `pool_factory` 时外部池由调用方负责
-生命周期，执行器绝不关闭。未知主机返回单独的失败结果，重复主机名只执行一次。
+In multi-host or retry scenarios, when `pool_factory` is not provided the executor creates an internal `AsyncConnectionPool` per host, closed automatically after the batch; when `pool_factory` is provided the external pool is the caller's responsibility for lifecycle and is never closed by the executor. Unknown hosts return individual failure results, and duplicate host names are executed once.
 
-#### 使用示例
+#### Usage Example
 
 ```python
 import asyncio
@@ -1003,66 +1037,62 @@ async def main():
 asyncio.run(main())
 ```
 
-#### 返回值
+#### Return Value
 
-`BatchResult`，与同步 `BatchExecutor` 完全一致（`total` / `success` / `failed` /
-`duration` / `results`，以及 `success_rate` / `failed_hosts` / `summary()`）。
+`BatchResult`, identical to the synchronous `BatchExecutor` (`total` / `success` / `failed` / `duration` / `results`, plus `success_rate` / `failed_hosts` / `summary()`).
 
-#### 异常
+#### Exceptions
 
-- `ValueError`: `host_names` 为空，或 `retry_count` / `retry_delay` 为负
+- `ValueError`: `host_names` is empty, or `retry_count` / `retry_delay` is negative
 
-#### 与同步 BatchExecutor 的关系
+#### Relationship to Synchronous BatchExecutor
 
-`BatchExecutor(host_service, use_async=True)` 在内部委托给 `AsyncBatchExecutor`，
-对外保持同步接口。两者数据契约（`BatchResult` / `BatchHostResult`）完全一致，
-可无差别切换。但 `BatchExecutor(use_async=True)` 不能在活动事件循环中调用；
-此时请直接 `await AsyncBatchExecutor.execute()`。
+`BatchExecutor(host_service, use_async=True)` delegates internally to `AsyncBatchExecutor`, keeping a synchronous interface externally. Both share the exact same data contract (`BatchResult` / `BatchHostResult`) and are interchangeable. But `BatchExecutor(use_async=True)` must not be called inside an active event loop; use `await AsyncBatchExecutor.execute()` directly in that case.
 
 ---
 
-## CLI 模块
+## CLI Module
 
-### 命令行接口
+### Command Line Interface
 
-Remote CMD 提供完整的命令行工具。
+Remote CMD provides a complete command-line tool.
 
-#### 全局选项
+#### Global Options
 
 ```bash
-# 版本信息
+# Version info
 remote-cmd --version
 
-# 帮助信息
+# Help
 remote-cmd --help
 
-# 指定配置文件
+# Specify a config file
 remote-cmd --config /path/to/config.yaml <command>
 
-# 详细输出
+# Verbose output
 remote-cmd --verbose <command>
 ```
 
-#### host 命令组
+#### host command group
 
 ##### host add
 
-添加主机。
+Add a host.
 
 ```bash
 remote-cmd host add <name> <hostname> <username> [options]
 
-选项：
-  -p, --port INTEGER          SSH 端口 (默认: 22)
-  -k, --key TEXT              SSH 私钥文件路径
-  -t, --tag TEXT              标签（可多次使用）
-  -d, --description TEXT      描述信息
+Options:
+  -p, --port INTEGER          SSH port (default: 22)
+  -k, --key TEXT              SSH private key file path
+  -t, --tag TEXT              Tag (repeatable)
+  -d, --description TEXT      Description
 ```
 
-无私钥时，命令会通过 `getpass` 交互提示密码；也可使用
-`REMOTE_CMD_PASSWORD` 环境变量，不通过命令行参数传递密码。
+When no key is provided, the command prompts for the password interactively via `getpass`; you can also use the `REMOTE_CMD_PASSWORD` environment variable — passwords are never passed as command-line arguments.
 
-**示例：**
+**Example:**
+
 ```bash
 remote-cmd host add web-server 192.168.1.10 ubuntu \
     --key ~/.ssh/id_rsa \
@@ -1073,184 +1103,193 @@ remote-cmd host add web-server 192.168.1.10 ubuntu \
 
 ##### host list
 
-列出主机。
+List hosts.
 
 ```bash
 remote-cmd host list [options]
 
-选项：
-  -t, --tag TEXT              按标签筛选
+Options:
+  -t, --tag TEXT              Filter by tag
 ```
 
-**示例：**
+**Example:**
+
 ```bash
-# 列出所有主机
+# List all hosts
 remote-cmd host list
 
-# 只列出 Web 服务器
+# Only web servers
 remote-cmd host list --tag web
 ```
 
 ##### host remove
 
-删除主机。
+Remove a host.
 
 ```bash
 remote-cmd host remove <name>
 ```
 
-**注意：** 会要求确认。
+**Note:** confirmation is required.
 
-**示例：**
+**Example:**
+
 ```bash
 remote-cmd host remove web-server
 ```
 
 ##### host test
 
-测试连接。
+Test the connection.
 
 ```bash
 remote-cmd host test <name>
 ```
 
-**示例：**
+**Example:**
+
 ```bash
 remote-cmd host test web-server
 ```
 
-#### run 命令
+#### run command
 
-执行远程命令。
+Execute a remote command.
 
 ```bash
 remote-cmd run <host_name> <command>
 ```
 
-选项：
+Options:
 
 ```text
-  -T, --timeout INTEGER       命令执行 wall-clock 超时（默认：无超时）
+  -T, --timeout INTEGER       Command execution wall-clock timeout (default: none)
 ```
 
-**示例：**
+**Example:**
+
 ```bash
 remote-cmd run my-server "ls -la"
 remote-cmd run my-server "systemctl status nginx"
 remote-cmd run my-server "df -h"
 ```
 
-#### batch-run 命令
+#### batch-run command
 
-在指定主机上批量执行命令；当前命令接收主机名列表，不接收标签筛选参数。
+Execute a command in batch across specified hosts; the command currently accepts a list of host names, not a tag filter argument.
 
 ```bash
 remote-cmd batch-run <host_name>... <command> [options]
 ```
 
-选项包括 `-C/--concurrency`、`-T/--timeout`、`-r/--retry`、
-`--retry-delay`、`--async` 和 `--show-failures`。其中 `--retry-delay` 是
-指数退避基础延迟，实际等待包含 full jitter，且上限为 60 秒。
+Options include `-C/--concurrency`, `-T/--timeout`, `-r/--retry`, `--retry-delay`, `--async`, and `--show-failures`. `--retry-delay` is the exponential-backoff base delay, with full jitter applied and capped at 60 seconds.
 
-#### upload 命令
+#### upload command
 
-上传文件。
+Upload a file.
 
 ```bash
 remote-cmd upload <host_name> <local_path> <remote_path>
 ```
 
-**示例：**
+**Example:**
+
 ```bash
 remote-cmd upload my-server ./app.tar.gz /tmp/app.tar.gz
 ```
 
-#### download 命令
+#### download command
 
-下载文件。
+Download a file.
 
 ```bash
 remote-cmd download <host_name> <remote_path> <local_path>
 ```
 
-**示例：**
+**Example:**
+
 ```bash
 remote-cmd download my-server /var/log/nginx/error.log ./logs/
 ```
 
 ---
 
-## Utils 模块
+## Utils Module
 
-### Config 配置管理
+### Config Management
 
 ```python
 from remote_cmd.utils.config import load_config, save_config, get_default_config_path
 
-# 加载配置
+# Load config
 config = load_config("config.yaml")
 
-# 保存配置
+# Save config
 save_config(config, "config.yaml")
 
-# 获取默认配置路径
+# Get the default config path
 path = get_default_config_path()
 ```
 
 #### load_config(config_path: str) -> Dict[str, Any]
 
-加载配置文件。
+Load a config file.
 
-**参数：**
-- `config_path` (str): 配置文件路径
+**Parameters:**
 
-**返回：**
-- `Dict[str, Any]`: 配置字典
+- `config_path` (str): the config file path
 
-**支持格式：**
+**Returns:**
+
+- `Dict[str, Any]`: the config dictionary
+
+**Supported formats:**
+
 - YAML (.yaml, .yml)
 - JSON (.json)
 
 #### save_config(config: Dict[str, Any], config_path: str) -> None
 
-保存配置文件。
+Save a config file.
 
-**参数：**
-- `config` (Dict[str, Any]): 配置字典
-- `config_path` (str): 配置文件路径
+**Parameters:**
+
+- `config` (Dict[str, Any]): the config dictionary
+- `config_path` (str): the config file path
 
 #### get_default_config_path() -> str
 
-获取默认配置文件路径。
+Get the default config file path.
 
-**返回：**
-- `str`: 配置文件路径
+**Returns:**
+
+- `str`: the config file path
 
 ---
 
-## Exceptions 异常
+## Exceptions
 
-### 异常层次结构
+### Exception Hierarchy
 
 ```
 RemoteCmdError (Base)
 ├── SSHError
 │   ├── SSHConnectionError
-│   │   ├── SSHAuthenticationError (永久性，不重试)
-│   │   └── SSHTimeoutError (瞬态，可重试)
+│   │   ├── SSHAuthenticationError (permanent, not retried)
+│   │   └── SSHTimeoutError (transient, retried)
 │   ├── SSHCommandError
-│   │   └── SSHCommandTimeoutError (瞬态，可重试)
+│   │   └── SSHCommandTimeoutError (transient, retried)
 │   └── SSHFileTransferError
 ├── ConfigError (= ConfigurationError)
 ├── CredentialError
 └── ValidationError
 ```
 
-### 异常类
+### Exception Classes
 
 #### RemoteCmdError
 
-所有异常的基类。
+Base class for all exceptions.
 
 ```python
 from remote_cmd.utils.exceptions import RemoteCmdError
@@ -1258,21 +1297,22 @@ from remote_cmd.utils.exceptions import RemoteCmdError
 try:
     # ...
 except RemoteCmdError as e:
-    print(f"Remote CMD 错误: {e}")
+    print(f"Remote CMD error: {e}")
 ```
 
 #### SSHError
 
-SSH 相关异常的基类。
+Base class for SSH-related exceptions.
 
 #### SSHConnectionError
 
-SSH 连接失败时抛出。
+Raised when an SSH connection fails.
 
-**常见原因：**
-- 主机不可达
-- 认证失败
-- 网络超时（细分为 `SSHTimeoutError`）
+**Common causes:**
+
+- Host unreachable
+- Authentication failure
+- Network timeout (subdivided into `SSHTimeoutError`)
 
 ```python
 from remote_cmd.utils.exceptions import SSHConnectionError
@@ -1280,19 +1320,18 @@ from remote_cmd.utils.exceptions import SSHConnectionError
 try:
     client.connect()
 except SSHConnectionError as e:
-    print(f"连接失败: {e}")
-    # 可能的处理：
-    # - 检查网络连接
-    # - 验证凭据
-    # - 检查防火墙设置
+    print(f"Connection failed: {e}")
+    # Possible handling:
+    # - check network connectivity
+    # - verify credentials
+    # - check firewall settings
 ```
 
-`SSHAuthenticationError` 是认证失败的永久性子类，不会被批量执行器重试；
-`SSHTimeoutError` 是连接超时的瞬态子类，可按策略重试。
+`SSHAuthenticationError` is a permanent subclass for auth failure and is not retried by batch executors; `SSHTimeoutError` is a transient subclass for connection timeout and may be retried per policy.
 
 #### SSHCommandError
 
-命令执行失败时抛出。
+Raised when command execution fails.
 
 ```python
 from remote_cmd.utils.exceptions import SSHCommandError
@@ -1300,23 +1339,22 @@ from remote_cmd.utils.exceptions import SSHCommandError
 try:
     result = client.execute("invalid_command")
 except SSHCommandError as e:
-    print(f"命令执行失败: {e}")
+    print(f"Command execution failed: {e}")
 ```
 
-命令执行超时会抛出 `SSHCommandTimeoutError`（`SSHCommandError` 的瞬态子类）。
+Command execution timeout raises `SSHCommandTimeoutError` (a transient subclass of `SSHCommandError`).
 
 #### CredentialError
 
-本地凭据解析或解密失败时抛出，属于永久性错误，不会重试。
-`CredentialEncryptionError` 是其子类。
+Raised when local credential parsing or decryption fails; it is a permanent error and is not retried. `CredentialEncryptionError` is its subclass.
 
 #### ConfigurationError
 
-`ConfigurationError` 是 `ConfigError` 的兼容别名。
+`ConfigurationError` is a compatibility alias of `ConfigError`.
 
 #### SSHFileTransferError
 
-文件传输失败时抛出。
+Raised when a file transfer fails.
 
 ```python
 from remote_cmd.utils.exceptions import SSHFileTransferError
@@ -1324,41 +1362,41 @@ from remote_cmd.utils.exceptions import SSHFileTransferError
 try:
     client.upload_file("./local.txt", "/remote/path/")
 except SSHFileTransferError as e:
-    print(f"文件传输失败: {e}")
+    print(f"File transfer failed: {e}")
 ```
 
 #### ConfigError
 
-配置错误时抛出。
+Raised on a configuration error.
 
 #### ValidationError
 
-输入验证失败时抛出。
+Raised on input validation failure.
 
 ---
 
-## 版本兼容性
+## Version Compatibility
 
-| API | 版本 | 状态 |
-|-----|------|------|
-| SSHClient | 1.0.0+ | ✅ 稳定 |
-| ConnectionConfig | 1.0.0+ | ✅ 稳定 |
-| CommandResult | 1.0.0+ | ✅ 稳定 |
-| HostManager | 1.0.0+ | ⚠️ 弃用（向后兼容层，委托 HostService + JsonHostRepository；新代码用 HostService） |
-| AsyncSSHClient | 1.1.0+ | ✅ 稳定（需 `[async]` extra） |
-| AsyncConnectionPool | 1.1.0+ | ✅ 稳定（需 `[async]` extra） |
-| AsyncBatchExecutor | 1.1.0+ | ✅ 稳定（需 `[async]` extra） |
-| SyncConnectionPool | 1.1.1+ | ✅ 稳定 |
-| BatchExecutor | 1.0.0+ | ✅ 稳定（v2.1 支持 `pool_factory`） |
-| HostService | 1.0.0+ | ✅ 稳定（推荐架构） |
-| CLI | 1.0.0+ | ✅ 稳定 |
-
----
-
-## 反馈
-
-如果您发现 API 文档有误或需要补充，请提交 [Issue](https://github.com/Vae-Scrooge/remote-cmd/issues)。
+| API | Version | Status |
+|-----|---------|--------|
+| SSHClient | 1.0.0+ | ✅ Stable |
+| ConnectionConfig | 1.0.0+ | ✅ Stable |
+| CommandResult | 1.0.0+ | ✅ Stable |
+| HostManager | 1.0.0+ | ⚠️ Deprecated (backward-compat layer delegating to HostService + JsonHostRepository; new code should use HostService) |
+| AsyncSSHClient | 1.1.0+ | ✅ Stable (requires the `[async]` extra) |
+| AsyncConnectionPool | 1.1.0+ | ✅ Stable (requires the `[async]` extra) |
+| AsyncBatchExecutor | 1.1.0+ | ✅ Stable (requires the `[async]` extra) |
+| SyncConnectionPool | 1.1.1+ | ✅ Stable |
+| BatchExecutor | 1.0.0+ | ✅ Stable (v2.1 supports `pool_factory`) |
+| HostService | 1.0.0+ | ✅ Stable (recommended architecture) |
+| CLI | 1.0.0+ | ✅ Stable |
 
 ---
 
-**最后更新：** 2026-08-23（v2.1.0 发布审计）
+## Feedback
+
+If you find errors in the API documentation or want to supplement it, please open an [Issue](https://github.com/Vae-Scrooge/remote-cmd/issues).
+
+---
+
+**Last updated:** 2026-08-23 (v2.1.0 release audit)

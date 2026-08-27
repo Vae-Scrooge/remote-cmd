@@ -1,228 +1,238 @@
-# 开发指南
+# Development Guide
 
-本文档面向希望参与 Remote CMD 开发或扩展其功能的开发者。
+This document is for developers who want to contribute to Remote CMD or extend its functionality.
 
-## 目录
+## Table of Contents
 
-- [开发环境搭建](#开发环境搭建)
-- [项目结构](#项目结构)
-- [代码规范](#代码规范)
-- [测试](#测试)
-- [调试技巧](#调试技巧)
-- [发布流程](#发布流程)
+- [Setting Up the Dev Environment](#setting-up-the-dev-environment)
+- [Project Structure](#project-structure)
+- [Code Standards](#code-standards)
+- [Testing](#testing)
+- [Debugging Tips](#debugging-tips)
+- [Release Process](#release-process)
 
 ---
 
-## 开发环境搭建
+## Setting Up the Dev Environment
 
-### 1. 克隆仓库
+### 1. Clone the Repository
 
 ```bash
 git clone https://github.com/Vae-Scrooge/remote-cmd.git
 cd remote-cmd
 ```
 
-### 2. 创建虚拟环境
+### 2. Create a Virtual Environment
 
 ```bash
-# 创建虚拟环境
+# Create the virtual environment
 python -m venv venv
 
-# 激活虚拟环境
+# Activate the virtual environment
 # Windows:
 venv\Scripts\activate
 # Linux/macOS:
 source venv/bin/activate
 ```
 
-### 3. 安装开发依赖
+### 3. Install Dev Dependencies
 
 ```bash
-# 安装开发模式
+# Install in development mode
 pip install -e ".[dev]"
 
-# 或者手动安装
+# Or install manually
 pip install -r requirements.txt
 pip install pytest pytest-cov ruff mypy
 ```
 
-### 4. 验证环境
+### 4. Verify the Environment
 
 ```bash
-# 运行测试
+# Run the tests
 pytest tests/ -v
 
-# 检查代码风格
+# Check code style
 ruff format --check remote_cmd/ tests/
 ruff check remote_cmd/ tests/
 
-# 类型检查
+# Type checking
 mypy remote_cmd/
 ```
 
 ---
 
-## 项目结构
+## Project Structure
 
 ```
 remote-cmd/
-├── remote_cmd/                 # 主代码包
-│   ├── __init__.py            # 包初始化
-│   ├── core/                  # 核心功能
+├── remote_cmd/                 # Main code package
+│   ├── __init__.py            # Package init
+│   ├── core/                  # Core functionality
 │   │   ├── __init__.py
-│   │   ├── ssh_client.py      # SSH 客户端
-│   │   └── host.py            # 主机数据模型
-│   ├── repository/            # 存储仓库
-│   │   ├── host_repository.py # 仓库抽象接口
+│   │   ├── ssh_client.py      # SSH client
+│   │   └── host.py            # Host data model
+│   ├── repository/            # Storage repositories
+│   │   ├── host_repository.py # Repository abstract interface
 │   │   ├── json_host_repository.py
 │   │   └── sqlite_host_repository.py
-│   ├── service/                   # 业务服务
-│   │   ├── host_service.py    # 主机服务
+│   ├── service/               # Business services
+│   │   ├── host_service.py    # Host service
 │   │   ├── batch_executor.py
 │   │   ├── async_batch_executor.py
 │   │   ├── storage_factory.py
 │   │   ├── credential_provider.py
 │   │   └── ssh_service.py
-│   ├── cli/                   # 命令行接口
+│   ├── cli/                   # Command-line interface
 │   │   ├── __init__.py
-│   │   └── main.py            # CLI 入口
-│   └── utils/                 # 工具模块
+│   │   └── main.py            # CLI entry point
+│   └── utils/                 # Utility modules
 │       ├── __init__.py
-│       ├── config.py          # 配置管理
-│       └── exceptions.py      # 异常定义
-├── tests/                      # 测试代码
+│       ├── config.py          # Config management
+│       └── exceptions.py      # Exception definitions
+├── tests/                      # Test code
 │   ├── test_ssh_client.py
 │   ├── test_host_service.py
 │   ├── test_repository.py
 │   ├── test_sqlite_repository.py
 │   └── test_storage_factory.py
-├── examples/                   # 示例代码
+├── examples/                   # Example code
 │   └── basic_usage.py
-├── docs/                       # 文档
+├── docs/                       # Documentation
 │   ├── architecture.md
 │   ├── tutorial-quickstart.md
 │   └── tutorial-advanced.md
-├── .github/                    # GitHub 配置
+├── .github/                    # GitHub config
 │   └── workflows/
-│       └── ci.yml              # CI 配置
-├── README.md                   # 项目说明
-├── CONTRIBUTING.md             # 贡献指南
-├── CHANGELOG.md               # 更新日志
-├── LICENSE                    # 许可证
-├── pyproject.toml             # 安装与打包配置
-├── requirements.txt           # 依赖列表
-└── config.example.yaml        # 配置示例
+│       └── ci.yml              # CI config
+├── README.md                   # Project description
+├── CONTRIBUTING.md             # Contributing guide
+├── CHANGELOG.md               # Changelog
+├── LICENSE                    # License
+├── pyproject.toml             # Install and packaging config
+├── requirements.txt           # Dependencies
+└── config.example.yaml        # Example config
 ```
 
-### 模块说明
+### Module Descriptions
 
-#### Core 模块
+#### Core Module
 
 **ssh_client.py**
-- `SSHClient` 类：管理 SSH 连接
-- `ConnectionConfig` 类：连接配置
-- `CommandResult` 类：命令执行结果
+
+- `SSHClient` class: manages SSH connections
+- `ConnectionConfig` class: connection config
+- `CommandResult` class: command execution result
 
 **host.py**
-- `Host` 类：主机配置数据类
+
+- `Host` class: host configuration dataclass
 
 **host_service.py**
-- `HostService` 类：主机业务逻辑（CRUD、凭据解析、连接测试）
 
-#### Repository 模块
+- `HostService` class: host business logic (CRUD, credential resolution, connection tests)
+
+#### Repository Module
 
 **host_repository.py**
-- `HostRepository` 抽象接口：定义主机持久化契约
+
+- `HostRepository` abstract interface: defines the host persistence contract
 
 **json_host_repository.py**
-- `JsonHostRepository` 类：JSON 文件存储（原子写入、可选加密）
+
+- `JsonHostRepository` class: JSON file storage (atomic write, optional encryption)
 
 **sqlite_host_repository.py**
-- `SqliteHostRepository` 类：SQLite 数据库存储（索引、分页、搜索）
+
+- `SqliteHostRepository` class: SQLite database storage (indexing, pagination, search)
 
 **storage_factory.py**
-- `build_repository` 函数：按扩展名/显式配置自动选择存储引擎
 
-#### CLI 模块
+- `build_repository` function: auto-selects the storage engine by extension/explicit config
+
+#### CLI Module
 
 **main.py**
-- 使用 Click 框架构建命令行界面
-- 定义命令组和子命令
-- 处理参数解析和验证
 
-#### Utils 模块
+- Builds the command-line interface with the Click framework
+- Defines command groups and subcommands
+- Handles argument parsing and validation
+
+#### Utils Module
 
 **config.py**
-- 配置文件的加载和保存
-- 支持 YAML 和 JSON 格式
+
+- Loads and saves config files
+- Supports YAML and JSON formats
 
 **exceptions.py**
-- 定义自定义异常层次结构
-- 统一的错误处理
+
+- Defines the custom exception hierarchy
+- Unified error handling
 
 ---
 
-## 代码规范
+## Code Standards
 
-### Python 代码风格
+### Python Code Style
 
-我们使用以下工具保持代码风格一致：
+We use the following tools to keep code style consistent:
 
-#### Ruff - 代码格式化
+#### Ruff - Code Formatting
 
 ```bash
-# 格式化代码
+# Format code
 ruff format remote_cmd/ tests/
 
-# 检查代码格式
+# Check code format
 black --check remote_cmd/ tests/
 ```
 
-#### Ruff - 导入排序检查
+#### Ruff - Import Sorting
 
 ```bash
-# 排序导入
+# Sort imports
 ruff check --select I remote_cmd/ tests/
 ```
 
-#### Ruff - 代码检查
+#### Ruff - Linting
 
 ```bash
-# 检查代码
+# Lint code
 ruff check remote_cmd/ tests/ --max-line-length=100
 ```
 
-#### MyPy - 类型检查
+#### MyPy - Type Checking
 
 ```bash
-# 类型检查
+# Type check
 mypy remote_cmd/
 ```
 
-### 命名规范
+### Naming Conventions
 
 ```python
-# 模块名：小写，下划线分隔
+# Module names: lowercase, underscore-separated
 my_module.py
 
-# 类名：大驼峰
+# Class names: PascalCase
 class MyClass:
     pass
 
-# 函数名：小写，下划线分隔
+# Function names: lowercase, underscore-separated
 def my_function():
     pass
 
-# 常量：全大写
+# Constants: all uppercase
 MAX_CONNECTIONS = 100
 
-# 私有变量：下划线前缀
+# Private variables: underscore prefix
 _private_var = 10
 ```
 
-### 文档字符串
+### Docstrings
 
-所有公共 API 都需要文档字符串：
+All public APIs require docstrings:
 
 ```python
 def execute_command(
@@ -231,19 +241,19 @@ def execute_command(
     timeout: Optional[int] = None
 ) -> CommandResult:
     """
-    在远程服务器上执行命令。
+    Execute a command on the remote server.
 
     Args:
-        command: 要执行的命令字符串
-        timeout: 命令执行超时时间（秒），默认无超时
+        command: The command string to execute
+        timeout: Command execution timeout (seconds), no timeout by default
 
     Returns:
-        CommandResult 对象，包含 stdout、stderr 和退出码
+        A CommandResult object containing stdout, stderr, and exit code
 
     Raises:
-        SSHConnectionError: 当 SSH 连接失败时
-        SSHCommandError: 当命令执行失败时
-        SSHCommandTimeoutError: 当命令执行 wall-clock 超时时
+        SSHConnectionError: When the SSH connection fails
+        SSHCommandError: When command execution fails
+        SSHCommandTimeoutError: When the command exceeds the wall-clock timeout
 
     Example:
         >>> result = client.execute("ls -la")
@@ -255,9 +265,9 @@ def execute_command(
     pass
 ```
 
-### 类型注解
+### Type Annotations
 
-使用类型注解提高代码可读性：
+Use type annotations to improve code readability:
 
 ```python
 from typing import Optional, List, Dict, Any
@@ -275,29 +285,29 @@ def process_hosts(
 
 ---
 
-## 测试
+## Testing
 
-### 运行测试
+### Running Tests
 
 ```bash
-# 运行所有测试
+# Run all tests
 pytest tests/ -v
 
-# 运行特定测试文件
+# Run a specific test file
 pytest tests/test_ssh_client.py -v
 
-# 运行特定测试类
+# Run a specific test class
 pytest tests/test_ssh_client.py::TestSSHClient -v
 
-# 运行特定测试方法
+# Run a specific test method
 pytest tests/test_ssh_client.py::TestSSHClient::test_connect_with_password -v
 
-# 生成覆盖率报告
+# Generate a coverage report
 pytest --cov=remote_cmd --cov-report=html
 pytest --cov=remote_cmd --cov-report=term-missing
 ```
 
-### 测试结构
+### Test Structure
 
 ```python
 # test_example.py
@@ -305,28 +315,28 @@ import pytest
 from unittest.mock import Mock, patch
 
 class TestClassName:
-    """测试类"""
-    
+    """Test class"""
+
     def test_method_name(self):
-        """测试方法"""
+        """Test method"""
         # Arrange
         input_data = "test"
-        
+
         # Act
         result = function_under_test(input_data)
-        
+
         # Assert
         assert result == expected_value
-    
+
     @patch('module.name')
     def test_with_mock(self, mock_obj):
-        """使用 Mock 的测试"""
+        """Test using a Mock"""
         mock_obj.return_value = "mocked"
         result = function_under_test()
         assert result == "mocked"
 ```
 
-### Mock 最佳实践
+### Mock Best Practices
 
 ```python
 from unittest.mock import Mock, patch, MagicMock
@@ -334,72 +344,72 @@ from unittest.mock import Mock, patch, MagicMock
 # Mock Paramiko SSHClient
 @patch('remote_cmd.core.ssh_client.paramiko.SSHClient')
 def test_ssh_operations(self, mock_ssh_class):
-    # 设置 Mock
+    # Set up the Mock
     mock_ssh = MagicMock()
     mock_ssh_class.return_value = mock_ssh
-    
-    # 配置返回值
+
+    # Configure return values
     mock_transport = MagicMock()
     mock_transport.is_active.return_value = True
     mock_ssh.get_transport.return_value = mock_transport
-    
-    # 执行测试
+
+    # Run the test
     client = SSHClient(config)
     client.connect()
-    
-    # 验证
+
+    # Verify
     mock_ssh.connect.assert_called_once()
     assert client.is_connected() is True
 ```
 
-### 测试覆盖率
+### Test Coverage
 
-目标：核心模块覆盖率 > 80%
+Target: core module coverage > 80%
 
 ```bash
-# 查看覆盖率
+# View coverage
 pytest --cov=remote_cmd --cov-report=html
 
-# 打开报告
+# Open the report
 open htmlcov/index.html  # macOS
 start htmlcov/index.html  # Windows
 ```
 
 ---
 
-## 调试技巧
+## Debugging Tips
 
-### 启用调试日志
+### Enable Debug Logging
 
 ```python
 import logging
 
-# 启用调试日志
+# Enable debug logging
 logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 
-# 设置 Remote CMD 日志级别
+# Set the Remote CMD log level
 logger = logging.getLogger('remote_cmd')
 logger.setLevel(logging.DEBUG)
 ```
 
-### 使用断点
+### Use Breakpoints
 
 ```python
 import pdb
 
 def some_function():
     client = SSHClient(config)
-    pdb.set_trace()  # 设置断点
+    pdb.set_trace()  # Set a breakpoint
     client.connect()
     result = client.execute("ls -la")
 ```
 
-### IDE 调试
+### IDE Debugging
 
-**VS Code 配置：**
+**VS Code configuration:**
 
 ```json
 // .vscode/launch.json
@@ -418,36 +428,36 @@ def some_function():
 }
 ```
 
-### 常见问题调试
+### Debugging Common Problems
 
-**连接问题：**
+**Connection issues:**
 
 ```python
-# 检查连接详情
+# Inspect connection details
 with SSHClient(config) as client:
     print(f"Connected: {client.is_connected()}")
     print(f"Transport: {client._client.get_transport()}")
-    
-    # 执行简单命令测试
+
+    # Run a simple command to test
     result = client.execute("echo 'Connection test'")
     print(f"Result: {result}")
 ```
 
 ---
 
-## 发布流程
+## Release Process
 
-### 版本号管理
+### Version Number Management
 
-遵循 [语义化版本](https://semver.org/lang/zh-CN/)：
+Follow [Semantic Versioning](https://semver.org/):
 
-- MAJOR：不兼容的 API 修改
-- MINOR：向下兼容的功能新增
-- PATCH：向下兼容的问题修复
+- MAJOR: incompatible API changes
+- MINOR: backward-compatible functionality additions
+- PATCH: backward-compatible bug fixes
 
-### 发布步骤
+### Release Steps
 
-1. **更新版本号**
+1. **Bump the version**
 
 ```python
 # remote_cmd/__init__.py
@@ -457,22 +467,22 @@ __version__ = "1.1.0"
 version = "1.1.0"
 ```
 
-2. **更新 CHANGELOG**
+2. **Update the CHANGELOG**
 
 ```markdown
 ## [1.1.0] - 2024-01-20
 
 ### Added
-- 新功能描述
+- Description of new feature
 
 ### Changed
-- 变更描述
+- Description of change
 
 ### Fixed
-- Bug 修复描述
+- Description of bug fix
 ```
 
-3. **创建 Git 标签**
+3. **Create a Git tag**
 
 ```bash
 git add .
@@ -481,45 +491,45 @@ git tag v1.1.0
 git push origin main --tags
 ```
 
-4. **构建分发包**
+4. **Build the distribution**
 
 ```bash
-# 安装构建工具
+# Install build tools
 pip install build twine
 
-# 构建
+# Build
 python -m build
 
-# 检查
+# Check
 python -m twine check dist/*
 
-# 测试发布到 TestPyPI
+# Test publishing to TestPyPI
 python -m twine upload --repository testpypi dist/*
 
-# 正式发布到 PyPI
+# Publish to PyPI
 python -m twine upload dist/*
 ```
 
 ---
 
-## 扩展开发
+## Extension Development
 
-### 添加新命令
+### Adding a New Command
 
-在 `remote_cmd/cli/main.py` 中添加：
+Add to `remote_cmd/cli/main.py`:
 
 ```python
 @cli.command()
 @click.argument("host_name")
-@click.option("--option", "-o", help="选项说明")
+@click.option("--option", "-o", help="Option description")
 @click.pass_context
 def new_command(ctx, host_name, option):
-    """新命令描述"""
+    """New command description"""
     service: HostService = ctx.obj["service"]
 
     try:
         with service.connect_to_host(host_name) as client:
-            # 实现命令逻辑
+            # Implement command logic
             result = client.execute("some command")
             click.echo(result.stdout)
     except Exception as e:
@@ -527,7 +537,7 @@ def new_command(ctx, host_name, option):
         sys.exit(1)
 ```
 
-### 添加新功能到 SSHClient
+### Adding a New Feature to SSHClient
 
 ```python
 # remote_cmd/core/ssh_client.py
@@ -535,61 +545,61 @@ def new_command(ctx, host_name, option):
 class SSHClient:
     def new_feature(self, param: str) -> Result:
         """
-        新功能描述。
-        
+        New feature description.
+
         Args:
-            param: 参数说明
-            
+            param: Parameter description
+
         Returns:
-            Result: 结果说明
-            
+            Result: Result description
+
         Raises:
-            SSHConnectionError: 连接错误
+            SSHConnectionError: Connection error
         """
         if not self._client:
             raise SSHConnectionError("Not connected")
-        
-        # 实现功能
+
+        # Implement the feature
         pass
 ```
 
 ---
 
-## 常用命令
+## Common Commands
 
 ```bash
-# 格式化代码
+# Format code
 ruff format remote_cmd/ tests/
 ruff check --select I remote_cmd/ tests/
 
-# 代码检查
+# Lint
 ruff check remote_cmd/ tests/
 mypy remote_cmd/
 
-# 运行测试
+# Run tests
 pytest tests/ -v
 pytest tests/ -v --cov=remote_cmd
 
-# 本地安装测试
+# Local install test
 pip install -e .
 remote-cmd --version
 
-# 构建包
+# Build the package
 python -m build
 
-# 清理构建文件
+# Clean build artifacts
 rm -rf build/ dist/ *.egg-info
 ```
 
 ---
 
-## 获取帮助
+## Getting Help
 
-- 查看 [API 文档](./API.md)
-- 阅读 [架构文档](./architecture.md)
-- 参考 [贡献指南](../CONTRIBUTING.md)
-- 提交 [Issue](https://github.com/Vae-Scrooge/remote-cmd/issues)
+- View the [API Documentation](./API.md)
+- Read the [Architecture Document](./architecture.md)
+- Refer to the [Contributing Guide](../CONTRIBUTING.md)
+- Open an [Issue](https://github.com/Vae-Scrooge/remote-cmd/issues)
 
 ---
 
-**祝你开发愉快！** 🚀
+**Happy developing!** 🚀

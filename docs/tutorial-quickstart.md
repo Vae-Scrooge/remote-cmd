@@ -1,132 +1,135 @@
-# 快速入门教程
+# Quick Start Tutorial
 
-本教程将帮助你在 15 分钟内掌握 Remote CMD 的基本用法。
+This tutorial will help you master the basics of Remote CMD within 15 minutes.
 
-## 目录
+## Table of Contents
 
-- [环境准备](#环境准备)
-- [安装](#安装)
-- [第一个连接](#第一个连接)
-- [管理多台服务器](#管理多台服务器)
-- [文件传输](#文件传输)
-- [批量操作](#批量操作)
-- [下一步](#下一步)
+- [Prerequisites](#prerequisites)
+- [Installation](#installation)
+- [Your First Connection](#your-first-connection)
+- [Managing Multiple Servers](#managing-multiple-servers)
+- [File Transfer](#file-transfer)
+- [Batch Operations](#batch-operations)
+- [Next Steps](#next-steps)
 
 ---
 
-## 环境准备
+## Prerequisites
 
-### 系统要求
+### System Requirements
 
-- **Python**: 3.9 或更高版本
-- **操作系统**: Windows、macOS、Linux
-- **网络**: 能够连接到目标 SSH 服务器
+- **Python**: 3.9 or higher
+- **OS**: Windows, macOS, Linux
+- **Network**: Ability to reach the target SSH server
 
-### 检查 Python 版本
+### Check Your Python Version
 
 ```bash
 python --version
-# 或
+# or
 python3 --version
 ```
 
-如果版本低于 3.8，请先升级 Python。
+If your version is below 3.8, upgrade Python first.
 
-### 准备测试服务器
+### Prepare a Test Server
 
-你需要至少一台可以通过 SSH 访问的服务器。可以是：
-- 本地虚拟机（VirtualBox、VMware）
-- 云服务器（AWS、Azure、阿里云等）
-- Docker 容器
-- 局域网内的物理机
+You need at least one server reachable over SSH. It can be:
 
-确保你有：
-- 服务器的 IP 地址或主机名
-- 用户名和密码 或 SSH 私钥
-- SSH 端口（默认 22）
+- A local VM (VirtualBox, VMware)
+- A cloud server (AWS, Azure, Alibaba Cloud, etc.)
+- A Docker container
+- A physical machine on the LAN
+
+Make sure you have:
+
+- The server's IP address or hostname
+- A username and password, or an SSH private key
+- The SSH port (default 22)
 
 ---
 
-## 安装
+## Installation
 
-### 方式一：从 PyPI 安装（推荐）
+### Option 1: Install from PyPI (recommended)
 
 ```bash
 pip install remote-cmd
 ```
 
-### 方式二：从源代码安装
+### Option 2: Install from Source
 
 ```bash
-# 克隆仓库
+# Clone the repository
 git clone https://github.com/Vae-Scrooge/remote-cmd.git
 cd remote-cmd
 
-# 创建虚拟环境（可选但推荐）
+# Create a virtual environment (optional but recommended)
 python -m venv venv
 
-# 激活虚拟环境
+# Activate the virtual environment
 # Windows:
 venv\Scripts\activate
 # Linux/macOS:
 source venv/bin/activate
 
-# 安装
+# Install
 pip install -e .
 ```
 
-### 验证安装
+### Verify Installation
 
 ```bash
-# 检查版本
+# Check the version
 remote-cmd --version
 
-# 查看帮助
+# View help
 remote-cmd --help
 ```
 
 ---
 
-## 第一个连接
+## Your First Connection
 
-### 场景
+### Scenario
 
-连接到你的第一台服务器并执行一些基本命令。
+Connect to your first server and run a few basic commands.
 
-### 使用 CLI
+### Using the CLI
 
 ```bash
-# 1. 添加主机配置
-# 无私钥时按安全提示交互输入密码（不使用命令行参数传递密码）
+# 1. Add a host configuration
+# When no key is provided, enter the password interactively at the secure prompt
+# (password is never passed as a command-line argument)
 remote-cmd host add my-server 192.168.1.100 ubuntu
 
-# 查看已添加的主机
+# View added hosts
 remote-cmd host list
 
-# 2. 测试连接
+# 2. Test the connection
 remote-cmd host test my-server
 
-# 3. 执行命令
+# 3. Run commands
 remote-cmd run my-server "whoami"
 remote-cmd run my-server "pwd"
 remote-cmd run my-server "ls -la"
-# 可选：为可能挂起的命令设置 wall-clock 超时
+# Optional: set a wall-clock timeout for commands that may hang
 remote-cmd run my-server "uptime" --timeout 30
 
-# 4. 查看系统信息
+# 4. View system info
 remote-cmd run my-server "uptime"
 remote-cmd run my-server "df -h"
 remote-cmd run my-server "free -h"
 ```
 
-### 使用 Python API
+### Using the Python API
 
-创建一个 Python 脚本 `first_connection.py`：
+Create a Python script `first_connection.py`:
 
 ```python
 from remote_cmd.core.ssh_client import SSHClient, ConnectionConfig
 
-# 配置连接
+# Configure the connection
 config = ConnectionConfig(
     hostname="192.168.1.100",
     username="ubuntu",
@@ -134,30 +137,30 @@ config = ConnectionConfig(
     port=22
 )
 
-# 建立连接并执行命令
+# Connect and run commands
 with SSHClient(config) as client:
-    print("✅ 连接成功！")
-    
-    # 执行命令
+    print("✅ Connected!")
+
+    # Run a command
     result = client.execute("whoami")
-    print(f"当前用户: {result.stdout.strip()}")
-    
+    print(f"Current user: {result.stdout.strip()}")
+
     result = client.execute("pwd")
-    print(f"当前目录: {result.stdout.strip()}")
-    
+    print(f"Current directory: {result.stdout.strip()}")
+
     result = client.execute("uptime")
-    print(f"系统运行时间: {result.stdout.strip()}")
+    print(f"System uptime: {result.stdout.strip()}")
 ```
 
-运行脚本：
+Run the script:
 
 ```bash
 python first_connection.py
 ```
 
-### 使用 SSH Key
+### Using an SSH Key
 
-如果你有 SSH 私钥，可以更安全地连接：
+If you have an SSH private key, you can connect more securely:
 
 ```bash
 # CLI
@@ -173,64 +176,64 @@ config = ConnectionConfig(
 
 ---
 
-## 管理多台服务器
+## Managing Multiple Servers
 
-### 场景
+### Scenario
 
-管理一个包含 Web 服务器和数据库服务器的集群。
+Manage a cluster that includes web servers and database servers.
 
-### 添加多台服务器
+### Add Multiple Servers
 
 ```bash
-# Web 服务器 1
+# Web server 1
 remote-cmd host add web-01 192.168.1.10 ubuntu \
     --key ~/.ssh/id_rsa \
     --tag web \
     --tag production \
     --description "Primary web server"
 
-# Web 服务器 2
+# Web server 2
 remote-cmd host add web-02 192.168.1.11 ubuntu \
     --key ~/.ssh/id_rsa \
     --tag web \
     --tag production \
     --description "Secondary web server"
 
-# 数据库服务器
+# Database server
 remote-cmd host add db-01 192.168.1.20 admin \
     --tag database \
     --tag production \
     --description "MySQL database server"
-# 无私钥时执行上一条命令后按提示交互输入密码
+# Enter the password interactively at the prompt when no key is provided
 ```
 
-### 查看和筛选
+### View and Filter
 
 ```bash
-# 列出所有主机
+# List all hosts
 remote-cmd host list
 
-# 只查看 Web 服务器
+# Only web servers
 remote-cmd host list --tag web
 
-# 只查看生产环境服务器
+# Only production servers
 remote-cmd host list --tag production
 ```
 
-### Python API 管理
+### Manage via the Python API
 
 ```python
 from remote_cmd.core.host import Host
 from remote_cmd.repository.json_host_repository import JsonHostRepository
 from remote_cmd.service.host_service import HostService
 
-# 创建仓库与主机服务
+# Create the repository and host service
 repo = JsonHostRepository("my-hosts.json")
 manager = HostService(repository=repo)
 
-# 批量添加
+# Add in bulk
 servers = [
-    Host(name="web-01", hostname="192.168.1.10", username="ubuntu", 
+    Host(name="web-01", hostname="192.168.1.10", username="ubuntu",
          key_filename="~/.ssh/id_rsa", tags=["web", "production"]),
     Host(name="web-02", hostname="192.168.1.11", username="ubuntu",
          key_filename="~/.ssh/id_rsa", tags=["web", "production"]),
@@ -241,47 +244,47 @@ servers = [
 for server in servers:
     manager.add_host(server)
 
-# 保存配置
+# Persist the configuration
 repo.flush()
 
-# 查看所有标签
-print("可用标签:", manager.list_tags())
+# View all tags
+print("Available tags:", manager.list_tags())
 
-# 按标签筛选
+# Filter by tag
 web_servers = manager.list_hosts(tag="web")
 for host in web_servers:
-    print(f"Web 服务器: {host.name} ({host.hostname})")
+    print(f"Web server: {host.name} ({host.hostname})")
 ```
 
 ---
 
-## 文件传输
+## File Transfer
 
-### 场景
+### Scenario
 
-上传应用代码到服务器，或下载日志文件到本地分析。
+Upload application code to a server, or download log files locally for analysis.
 
-### 上传文件
+### Upload a File
 
 ```bash
 # CLI
 remote-cmd upload my-server ./deploy.sh /tmp/deploy.sh
 
-# 验证上传
+# Verify the upload
 remote-cmd run my-server "ls -la /tmp/deploy.sh"
 ```
 
-### 下载文件
+### Download a File
 
 ```bash
 # CLI
 remote-cmd download my-server /var/log/nginx/access.log ./logs/
 
-# 下载到当前目录
+# Download to the current directory
 remote-cmd download my-server /etc/nginx/nginx.conf ./
 ```
 
-### Python API 文件操作
+### Python API File Operations
 
 ```python
 from remote_cmd.core.ssh_client import SSHClient, ConnectionConfig
@@ -293,35 +296,35 @@ config = ConnectionConfig(
 )
 
 with SSHClient(config) as client:
-    # 上传文件
-    print("📤 上传 deploy.sh...")
+    # Upload a file
+    print("📤 Uploading deploy.sh...")
     client.upload_file("./deploy.sh", "/tmp/deploy.sh")
-    
-    # 验证上传
+
+    # Verify the upload
     result = client.execute("ls -la /tmp/deploy.sh")
-    print(f"远程文件: {result.stdout}")
-    
-    # 下载日志
-    print("📥 下载日志文件...")
+    print(f"Remote file: {result.stdout}")
+
+    # Download a log
+    print("📥 Downloading log file...")
     client.download_file("/var/log/syslog", "./syslog")
-    
-    # 列出远程目录
-    print("📂 远程 /tmp 目录内容:")
+
+    # List a remote directory
+    print("📂 Contents of remote /tmp:")
     entries = client.list_remote_directory("/tmp")
-    for entry in entries[:5]:  # 只显示前 5 个
+    for entry in entries[:5]:  # Show only the first 5
         icon = "📁" if entry.is_dir else "📄"
         print(f"  {icon} {entry.name}")
 ```
 
 ---
 
-## 批量操作
+## Batch Operations
 
-### 场景
+### Scenario
 
-同时在多台服务器上执行相同的操作。
+Run the same operation across multiple servers at once.
 
-### 批量执行命令
+### Batch Execute Commands
 
 ```python
 from remote_cmd.repository.json_host_repository import JsonHostRepository
@@ -330,28 +333,28 @@ from remote_cmd.service.host_service import HostService
 repo = JsonHostRepository("my-hosts.json")
 manager = HostService(repository=repo)
 
-# 在所有 Web 服务器上执行
+# Run on all web servers
 for host in manager.list_hosts(tag="web"):
     print(f"\n🖥️  {host.name} ({host.hostname})")
-    
+
     try:
         with manager.connect_to_host(host.name) as client:
-            # 检查 Nginx 状态
+            # Check Nginx status
             result = client.execute("systemctl status nginx")
-            
-            if result.success:
-                print("  ✅ Nginx 运行正常")
-            else:
-                print("  ⚠️  Nginx 状态异常")
-                print(f"     {result.stderr[:100]}")
-    
-    except Exception as e:
-        print(f"  ❌ 连接失败: {e}")
 
-print("\n✨ 批量操作完成")
+            if result.success:
+                print("  ✅ Nginx is running normally")
+            else:
+                print("  ⚠️  Nginx status abnormal")
+                print(f"     {result.stderr[:100]}")
+
+    except Exception as e:
+        print(f"  ❌ Connection failed: {e}")
+
+print("\n✨ Batch operation complete")
 ```
 
-### 并行执行（高级）
+### Parallel Execution (Advanced)
 
 ```python
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -362,7 +365,7 @@ repo = JsonHostRepository("my-hosts.json")
 manager = HostService(repository=repo)
 
 def check_host(host):
-    """检查单个主机的状态"""
+    """Check the status of a single host"""
     try:
         with manager.connect_to_host(host.name) as client:
             result = client.execute("uptime")
@@ -372,16 +375,16 @@ def check_host(host):
 
 hosts = manager.list_hosts()
 
-print(f"🚀 并行检查 {len(hosts)} 台服务器...\n")
+print(f"🚀 Checking {len(hosts)} servers in parallel...\n")
 
 with ThreadPoolExecutor(max_workers=5) as executor:
-    # 提交所有任务
+    # Submit all tasks
     future_to_host = {
-        executor.submit(check_host, host): host 
+        executor.submit(check_host, host): host
         for host in hosts
     }
-    
-    # 处理结果
+
+    # Process results
     for future in as_completed(future_to_host):
         host_name, success, message = future.result()
         status = "✅" if success else "❌"
@@ -390,16 +393,16 @@ with ThreadPoolExecutor(max_workers=5) as executor:
 
 ---
 
-## 实战：自动化部署脚本
+## Hands-On: Automated Deployment Script
 
-创建一个完整的部署脚本：
+Create a complete deployment script:
 
 ```python
 #!/usr/bin/env python3
 """
-deploy.py - 简单的自动化部署脚本
+deploy.py - A simple automated deployment script
 
-使用方式：
+Usage:
     python deploy.py <host_name>
 """
 
@@ -409,25 +412,25 @@ from remote_cmd.repository.json_host_repository import JsonHostRepository
 from remote_cmd.service.host_service import HostService
 
 def deploy(host_name: str):
-    """部署应用到指定服务器"""
+    """Deploy the application to the specified server"""
     repo = JsonHostRepository("my-hosts.json")
     manager = HostService(repository=repo)
-    
-    print(f"🚀 开始部署到 {host_name}...")
+
+    print(f"🚀 Starting deployment to {host_name}...")
     print("=" * 50)
-    
+
     try:
         with manager.connect_to_host(host_name) as client:
-            # 1. 上传代码
-            print("📤 上传应用代码...")
+            # 1. Upload code
+            print("📤 Uploading application code...")
             client.upload_file("./app.tar.gz", "/tmp/app.tar.gz")
-            
-            # 2. 停止服务
-            print("🛑 停止应用服务...")
+
+            # 2. Stop the service
+            print("🛑 Stopping the application service...")
             result = client.execute("sudo systemctl stop myapp")
-            
-            # 3. 部署代码
-            print("📦 解压并部署...")
+
+            # 3. Deploy code
+            print("📦 Extracting and deploying...")
             commands = [
                 "cd /var/www && tar -xzf /tmp/app.tar.gz",
                 "cd /var/www/app && pip install -r requirements.txt",
@@ -435,41 +438,41 @@ def deploy(host_name: str):
             for cmd in commands:
                 result = client.execute(cmd)
                 if not result.success:
-                    print(f"❌ 部署失败: {result.stderr}")
+                    print(f"❌ Deployment failed: {result.stderr}")
                     sys.exit(1)
-            
-            # 4. 启动服务
-            print("▶️  启动应用服务...")
+
+            # 4. Start the service
+            print("▶️  Starting the application service...")
             result = client.execute("sudo systemctl start myapp")
-            
-            # 5. 健康检查
-            print("🔍 健康检查...")
+
+            # 5. Health check
+            print("🔍 Health check...")
             result = client.execute("curl -s http://localhost:8080/health")
-            
+
             if "ok" in result.stdout.lower():
-                print("\n✅ 部署成功！")
+                print("\n✅ Deployment successful!")
             else:
-                print("\n⚠️  部署完成但健康检查失败")
-                
+                print("\n⚠️  Deployment complete but health check failed")
+
     except Exception as e:
-        print(f"\n❌ 部署失败: {e}")
+        print(f"\n❌ Deployment failed: {e}")
         sys.exit(1)
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="部署脚本")
-    parser.add_argument("host", help="目标主机名称")
+    parser = argparse.ArgumentParser(description="Deployment script")
+    parser.add_argument("host", help="Target host name")
     args = parser.parse_args()
-    
+
     deploy(args.host)
 ```
 
-使用方法：
+Usage:
 
 ```bash
-# 部署到单台服务器
+# Deploy to a single server
 python deploy.py web-01
 
-# 部署到所有 Web 服务器
+# Deploy to all web servers
 for host in web-01 web-02; do
     python deploy.py $host
 done
@@ -477,75 +480,81 @@ done
 
 ---
 
-## 常见问题
+## Frequently Asked Questions
 
-### 1. 连接超时
+### 1. Connection Timeout
 
-**问题：**
+**Problem:**
+
 ```
 SSHTimeoutError: connection timeout: 192.168.1.100
 ```
 
-**解决方案：**
-- 检查网络连接：`ping <hostname>`
-- 检查 SSH 端口：`nc -zv <hostname> 22`
-- 增加超时时间：
+**Solutions:**
+
+- Check network connectivity: `ping <hostname>`
+- Check the SSH port: `nc -zv <hostname> 22`
+- Increase the timeout:
 
 ```python
 config = ConnectionConfig(
     hostname="192.168.1.100",
     username="ubuntu",
     password="pass",
-    timeout=60  # 增加超时时间
+    timeout=60  # Increase the timeout
 )
 ```
 
-### 2. 认证失败
+### 2. Authentication Failed
 
-**问题：**
+**Problem:**
+
 ```
 SSHAuthenticationError: authentication failed: Authentication failed.
 ```
 
-**解决方案：**
-- 检查用户名和密码
-- 检查 SSH 密钥权限：`chmod 600 ~/.ssh/id_rsa`
-- 检查 authorized_keys 配置
+**Solutions:**
 
-### 3. 权限不足
+- Check the username and password
+- Check SSH key permissions: `chmod 600 ~/.ssh/id_rsa`
+- Check the `authorized_keys` configuration
 
-**问题：**
+### 3. Insufficient Permissions
+
+**Problem:**
+
 ```
 Permission denied
 ```
 
-**解决方案：**
+**Solution:**
+
 ```python
-# 使用 sudo
+# Use sudo
 result = client.execute_sudo("systemctl restart nginx", password="sudopass")
 ```
 
 ---
 
-## 下一步
+## Next Steps
 
-恭喜你完成了快速入门！接下来你可以：
+Congratulations on completing the quick start! Next you can:
 
-1. **[阅读 API 文档](./API.md)** - 了解所有可用的 API
-2. **[查看高级教程](./tutorial-advanced.md)** - 学习更多高级功能
-3. **[查看示例代码](../examples/)** - 参考更多使用示例
-4. **[阅读故障排查](./TROUBLESHOOTING.md)** - 解决常见问题
-
----
-
-## 获取帮助
-
-如果你遇到问题：
-
-1. 查看 [故障排查指南](./TROUBLESHOOTING.md)
-2. 搜索 [GitHub Issues](https://github.com/Vae-Scrooge/remote-cmd/issues)
-3. 提交新的 Issue
+1. **[Read the API Documentation](./API.md)** - Learn about all available APIs
+2. **[Read the Advanced Tutorial](./tutorial-advanced.md)** - Learn more advanced features
+3. **[Browse the Examples](../examples/)** - Reference more usage examples
+4. **[Read Troubleshooting](./TROUBLESHOOTING.md)** - Solve common problems
 
 ---
 
-**祝你使用愉快！** 🎉
+## Getting Help
+
+If you run into problems:
+
+1. Check the [Troubleshooting Guide](./TROUBLESHOOTING.md)
+2. Search [GitHub Issues](https://github.com/Vae-Scrooge/remote-cmd/issues)
+3. Open a new Issue
+
+---
+
+**Happy using!** 🎉

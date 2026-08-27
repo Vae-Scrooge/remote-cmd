@@ -1,275 +1,379 @@
-# 更新日志
+# Changelog
 
-所有 notable 的更改都将记录在此文件中。
+All notable changes to this project will be documented in this file.
 
-格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，
-并且本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/).
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-## [2.1.0] - 2026-08-22
+## [2.1.0] - 2026-08-26
 
-本版本包含两层范围：未特别标注的 `Added` / `Changed` / `Fixed` / `Security` 条目记录
-v2.1.0 的主要实现变更（Paramiko 可靠性、异步连接池、重试策略、异常模型、安全与 CLI）；
-标注 **[发布加固]** 的条目记录发布前最终加固，不是“仅文档变更”。
+This release contains two layers of changes: the main implementation changes for v2.1.0
+(Paramiko reliability, async connection pooling, retry policy, exception model, security, and CLI);
+entries marked **[Release Hardening]** record final hardening before release and are not
+"documentation-only" changes.
 
 ### Added
 
-- **AsyncConnectionPool 正式接入 AsyncBatchExecutor**（此前该池在生产路径零消费，异步内核每次
-  尝试都新建连接）：多主机或需重试时内部按主机创建池、跨重试复用连接、批结束后自动
-  `close_all`，与同步 `BatchExecutor` 的 `SyncConnectionPool` 行为完全对齐。
-- `AsyncBatchExecutor` / `BatchExecutor` 新增 `pool_factory` 构造参数（外部连接池注入）：
-  提供时执行器从工厂获取池并复用连接，**绝不关闭**（所有权归调用方，适合长驻服务跨批次
-  复用）；内部创建的池仍由执行器在单次 `execute` 结束后自动关闭。
-- 新增重试策略模块 `remote_cmd.service.retry_policy`（`is_retryable` / `compute_backoff_delay`）：
-  显式区分瞬态（可重试）与永久性（绝不重试）错误；指数退避 + full jitter。
-- 异常层次新增细分类型（保留既有父类捕获行为，向后兼容）：
-  `SSHAuthenticationError(SSHConnectionError)`、`SSHTimeoutError(SSHConnectionError)`、
-  `SSHCommandTimeoutError(SSHCommandError)`、`CredentialError(RemoteCmdError)`、
-  `ConfigurationError`（`ConfigError` 别名）；`CredentialEncryptionError` 改为继承
-  `CredentialError`（归入 `RemoteCmdError` 层级，既有导入路径不变）。
-- `AsyncConnectionPool` 新增 `client_factory` 参数（与 `SyncConnectionPool` 对齐，测试可注入）。
-- CLI `run` 命令新增 `--timeout/-T` 选项（此前未提供命令执行超时，挂起的远端命令会永久阻塞 CLI）。
-- `SSHClient` / `AsyncSSHClient` 环境变量注入新增键名校验（`validate_environment`）。
+- **AsyncConnectionPool now properly integrated into AsyncBatchExecutor** (previously the pool
+  had zero production-path consumption; the async kernel created a new connection on every
+  attempt): for multi-host or retry workloads, pools are now created per host, connections
+  are reused across retries, and `close_all()` is called automatically after batch completion,
+  fully aligning with the synchronous `BatchExecutor`'s `SyncConnectionPool` behavior.
+- `AsyncBatchExecutor` / `BatchExecutor` new `pool_factory` constructor parameter
+  (external pool injection): when provided, the executor obtains the pool from the factory
+  and reuses connections, **never closing it** (ownership remains with the caller, suitable
+  for long-lived services reusing pools across batches); internally created pools are still
+  closed automatically after a single `execute()` call.
+- New retry policy module `remote_cmd.service.retry_policy` (`is_retryable` /
+  `compute_backoff_delay`): explicitly distinguishes transient (retryable) from permanent
+  (never retry) errors; exponential backoff with full jitter.
+- Exception hierarchy extended with granular types (preserving existing parent-class
+  catch behavior for backward compatibility):
+  `SSHAuthenticationError(SSHConnectionError)`, `SSHTimeoutError(SSHConnectionError)`,
+  `SSHCommandTimeoutError(SSHCommandError)`, `CredentialError(RemoteCmdError)`,
+  `ConfigurationError` (alias of `ConfigError`); `CredentialEncryptionError` now also
+  inherits `CredentialError` (unified under `RemoteCmdError` hierarchy; existing imports
+  unchanged).
+- `AsyncConnectionPool` new `client_factory` parameter (aligned with `SyncConnectionPool`,
+  enables test injection).
+- CLI `run` command new `--timeout/-T` option (previously no command execution timeout was
+  available; hanging remote commands would block the CLI indefinitely).
+- `SSHClient` / `AsyncSSHClient` environment variable injection now validates key names
+  (`validate_environment`).
 
 ### Changed
 
-- **重试语义收紧**（`BatchExecutor` / `AsyncBatchExecutor`）：认证、凭据、配置、校验及
-  编程错误（`ValueError` / `TypeError` / `KeyError` / `RuntimeError`）立即失败不再重试；
-  未识别的 `Exception` 保持历史可重试行为（兼容注入自定义 client_factory 的调用方）。
-- **重试等待改为指数退避 + full jitter**：`retry_delay` 语义由"固定间隔"变为"基础延迟"，
-  第 n 次失败后等待 `0` 到 `min(60s, retry_delay * 2^n)`（含端点）内的随机值，避免多主机同步重试的
-  惊群效应。
-- `SSHClient.execute` / `execute_sudo` 的 `timeout` 明确为 **wall-clock 语义**（与
-  `AsyncSSHClient` 的 `conn.run(timeout=...)` 对齐）：超时后关闭通道终止远端命令并抛出
-  `SSHCommandTimeoutError`。此前 timeout 对静默挂起的命令完全不生效（永久阻塞）。
-- `AsyncSSHClient.execute` 不再通过 `conn.run(env=...)` 重复注入环境变量（该路径依赖
-  服务端 `AcceptEnv` 且与同步实现语义分叉），统一仅保留命令前缀 `export` 注入。
-- **[发布加固] `BatchExecutor(use_async=True)` 在运行中的事件循环内调用**时，抛出可操作
-  的项目级 `RuntimeError`（提示改用 `AsyncBatchExecutor.execute()` 直接调用），替代
-  `asyncio.run` 的通用 Python 错误；其余来源的 `RuntimeError` 不受影响。
+- **Retry semantics tightened** (`BatchExecutor` / `AsyncBatchExecutor`): authentication,
+  credential, configuration, validation, and programming errors (`ValueError` /
+  `TypeError` / `KeyError` / `RuntimeError`) now fail immediately without retry; unknown
+  `Exception` subclasses retain historical retryable behavior (backward compatibility for
+  callers injecting custom `client_factory`).
+- **Retry wait changed to exponential backoff + full jitter**: `retry_delay` semantics
+  changed from "fixed interval" to "base delay"; after the nth failure, wait a random
+  value in `0` to `min(60s, retry_delay * 2^n)` (inclusive), avoiding thundering herd
+  from synchronized multi-host retries.
+- `SSHClient.execute` / `execute_sudo` `timeout` is now explicitly **wall-clock semantics**
+  (aligned with `AsyncSSHClient`'s `conn.run(timeout=...)`): timeout closes the channel,
+  terminates the remote command, and raises `SSHCommandTimeoutError`. Previously timeout
+  had no effect on silent/hanging commands (permanent blocking).
+- `AsyncSSHClient.execute` no longer re-injects environment variables via `conn.run(env=...)`
+  (that path depends on server-side `AcceptEnv` and diverged from synchronous semantics);
+  unified to command-prefix `export` injection only.
+- **[Release Hardening] `BatchExecutor(use_async=True)` called within a running event loop**
+  now raises an actionable project-level `RuntimeError` (advising use of
+  `AsyncBatchExecutor.execute()` directly), replacing the generic `asyncio.run` Python
+  error; other sources of `RuntimeError` are unaffected.
 
 ### Fixed
 
-- **[Critical] Paramiko 大输出死锁**：`SSHClient.execute` / `execute_sudo` 此前在读取输出流
-  之前调用 `recv_exit_status()`——当命令输出超过 SSH 通道窗口（默认 2MB）时远端阻塞写入、
-  命令永不退出、调用永久挂起（paramiko 官方文档明确警告的场景）。现在 stderr 由后台线程
-  排空、stdout 在当前线程读取，两流并发消费后获取退出状态。
-- **[High] 多主机批次含未知主机时 `execute` 抛 `KeyError`**：`_prepare_pool` 在池准备阶段
-  解析主机失败会上抛异常导致整批失败；现在返回 None 并由单主机路径记录
-  "host not found" 错误条目（契约与单主机路径一致）。
-- **[发布加固] 连接池关闭竞态**：`SyncConnectionPool.acquire` / `AsyncConnectionPool.acquire`
-  阻塞在信号量期间 `close_all()` 完成时，取得槽位后现在复查关闭状态——归还槽位并抛出
-  既有 `RuntimeError("connection pool is closed")`，而不是从已关闭的池发放游离连接。
-- **[发布加固] `SSHClient._read_output` 的 stderr 排空线程 join 改为有界**（5 秒）：
-  极端场景下（超时回调中 `channel.close()` 失败，或主线程读取异常退出而通道仍打开），
-  排空线程可能仍阻塞——无界 join 会让调用方永久挂起。
+- **[Critical] Paramiko large-output deadlock**: `SSHClient.execute` / `execute_sudo`
+  previously called `recv_exit_status()` before reading output streams—when command output
+  exceeded the SSH channel window (default 2 MB), the remote end blocked on write, the
+  command never exited, and the call hung permanently (a scenario explicitly warned in
+  Paramiko documentation). Now stderr is drained by a background thread, stdout is read
+  on the current thread, both streams are consumed concurrently before retrieving the exit
+  status.
+- **[High] Multi-host batch containing unknown host raised `KeyError` in `execute`**:
+  `_prepare_pool` failed to resolve a host during pool preparation, causing the entire batch
+  to fail; now returns `None` and the single-host path records a "host not found" error
+  entry (consistent with single-host contract).
+- **[Release Hardening] Connection pool close race**: `SyncConnectionPool.acquire` /
+  `AsyncConnectionPool.acquire` blocked on semaphore while `close_all()` completed; after
+  acquiring the slot, the closed state is now re-checked—slot is returned and existing
+  `RuntimeError("connection pool is closed")` is raised, instead of dispensing a stray
+  connection from a closed pool.
+- **[Release Hardening] `SSHClient._read_output` stderr drain thread join is now bounded**
+  (5 seconds): in extreme scenarios (timeout callback `channel.close()` failure, or main
+  thread exits with exception while channel remains open), the drain thread could remain
+  blocked—unbounded join would hang the caller indefinitely.
 
 ### Security
 
-- 环境变量**键名**注入防护：值虽经 `shlex.quote` 转义，但键直接拼入 `export {k}=...`
-  命令前缀，含 shell 元字符的键（如 `A; malicious`）可造成命令注入；现在键必须匹配
-  `[A-Za-z_][A-Za-z0-9_]*`，否则抛 `ValidationError`（拼接前拒绝）。
-- `ConnectionConfig` 文档修正：默认主机密钥策略实为 `RejectPolicy`（原文档误写
-  `WarningPolicy`）。
+- Environment variable **key name** injection protection: values were escaped via
+  `shlex.quote`, but keys were directly interpolated into `export {k}=...` command prefix;
+  keys containing shell metacharacters (e.g., `A; malicious`) could lead to command
+  injection; keys must now match `[A-Za-z_][A-Za-z0-9_]*`, otherwise `ValidationError` is
+  raised (rejected before concatenation).
+- `ConnectionConfig` documentation corrected: default host key policy is `RejectPolicy`
+  (previously incorrectly documented as `WarningPolicy`).
 
-### 迁移说明（v2.0 → v2.1）
+### Migration Guide (v2.0 → v2.1)
 
-- **异常**：既有异常名称与导入路径保持不变，新增 SSH 异常均为既有类型的子类（或别名），
-  因此 `except SSHConnectionError` / `except SSHCommandError` / `except Exception` 等既有
-  捕获行为完全兼容；需要精细处理时可改为捕获新子类。例外是
-  `CredentialEncryptionError` 现在额外继承 `CredentialError`，以归入统一的凭据异常层级，
-  但原有 `except CredentialEncryptionError` 捕获仍有效。
-- **重试**：依赖"认证失败也会重试"的调用方（不推荐）会观察到认证错误现在只执行一次；
-  依赖固定重试间隔的调用方会观察到间隔变为指数退避随机值；第 n 次失败后的期望等待时间
-  约为 `min(60s, retry_delay * 2^n) / 2`。未知的 `Exception` 子类仍保持可重试，以兼容
-  自定义 `client_factory`；自定义实现应优先抛出类型化的 `remote_cmd` 异常以获得精确分类。
-- **超时**：`SSHClient.execute(cmd, timeout=N)` 对静默挂起命令从"永久阻塞"变为
-  "N 秒后抛 `SSHCommandTimeoutError`"——这是超时参数的文档语义，此前是缺陷。
-- **环境变量**：`execute(..., environment={"bad key": v})` 此前会拼出损坏的 shell 命令，
-  现在抛 `ValidationError`。
-- **连接池**：多主机或重试批次现在会复用 `AsyncConnectionPool` / `SyncConnectionPool`；
-  `pool_factory` 提供的外部池由调用方负责生命周期，执行器绝不关闭，内部创建的池则在
-  `execute()` 结束后自动关闭。
-- **事件循环**：`BatchExecutor(use_async=True)` 不能在活动事件循环内调用；请在该场景
-  直接 `await AsyncBatchExecutor.execute()`。
+- **Exceptions**: existing exception names and import paths unchanged; new SSH exceptions
+  are all subclasses (or aliases) of existing types, so `except SSHConnectionError` /
+  `except SSHCommandError` / `except Exception` etc. remain fully compatible; fine-grained
+  handling can switch to catching new subclasses. Exception: `CredentialEncryptionError`
+  now additionally inherits `CredentialError` to unify under the credential exception
+  hierarchy; existing `except CredentialEncryptionError` catches still work.
+- **Retry**: callers relying on "authentication failures also retry" (not recommended) will
+  observe auth errors now execute only once; callers relying on fixed retry intervals will
+  observe intervals changed to exponential backoff with random values; expected wait after
+  nth failure is approximately `min(60s, retry_delay * 2^n) / 2`. Unknown `Exception`
+  subclasses remain retryable for compatibility with custom `client_factory`; custom
+  implementations should prefer throwing typed `remote_cmd` exceptions for precise
+  classification.
+- **Timeout**: `SSHClient.execute(cmd, timeout=N)` for silent/hanging commands changed
+  from "permanent block" to "raise `SSHCommandTimeoutError` after N seconds"—this is the
+  documented timeout semantics, previously a defect.
+- **Environment variables**: `execute(..., environment={"bad key": v})` previously
+  produced a broken shell command; now raises `ValidationError`.
+- **Connection pools**: multi-host or retry batches now reuse `AsyncConnectionPool` /
+  `SyncConnectionPool`; `pool_factory` external pools are caller-owned (executor never
+  closes); internally created pools are closed automatically after `execute()`.
+- **Event loop**: `BatchExecutor(use_async=True)` cannot be called within an active
+  asyncio event loop; use `await AsyncBatchExecutor.execute()` directly in that context.
+
+---
 
 ## [2.0.0] - 2026-08-13
 
 ### Added
 
-- `BatchExecutor` 新增 `use_async: bool = False` 构造参数：开启后同步 `execute` 内部切换到
-  既有的 `AsyncBatchExecutor` 原生异步内核（asyncssh），以在大规模并发下降低线程/CPU 开销。
-  新增 CLI `--async` 开关透传。对外 `execute` 签名与返回类型不变，便于上层无差别切换。
-  调用方须确保开启时当前线程未运行 asyncio 事件循环。
-- CLI `--async`/`use_async` 透传已有单元测试覆盖（`TestBatchExecutorUseAsyncSwitch`）。
+- `BatchExecutor` new `use_async: bool = False` constructor parameter: when enabled,
+  the synchronous `execute` internally switches to the existing `AsyncBatchExecutor`
+  native async kernel (asyncssh) to reduce thread/CPU overhead at high concurrency.
+  New CLI `--async` switch passes through. External `execute` signature and return types
+  unchanged, enabling seamless upper-layer switching. Caller must ensure no asyncio event
+  loop is running on the current thread when enabled.
+- CLI `--async` / `use_async` passthrough covered by existing unit tests
+  (`TestBatchExecutorUseAsyncSwitch`).
 
 ### Changed
 
-- 安全：`SSHClient` / `AsyncSSHClient` 的命令执行不再将命令全文写入 debug 日志
-  （改为记录无命令的执行事件）；命令执行失败异常消息去掉命令明文，仅保留失败原因。
-  防止命令中的敏感参数（密码、token 等）进入日志或异常链。
-- 修复：`AsyncSSHClient.execute_sudo` 的 `timeout` 现在覆盖整个命令执行 wall-clock
-  （`proc.wait(timeout=...)`），与 `execute` 的 `conn.run(timeout=...)` 语义对齐；
-  避免挂起的 sudo（如等待密码）无限等待。未传 timeout 时行为不变（无限等待）。
-- 校验：`BatchExecutor` / `AsyncBatchExecutor` 构造参数增加守卫——`max_concurrency` 必须
-  `>= 1`、`command_timeout` 必须 `> 0`；`execute` 的 `retry_count` 必须 `>= 0`、
-  `retry_delay` 必须 `>= 0`，非法值抛 `ValueError`（此前非法值会在运行时以晦涩错误暴露，
-  如 `ThreadPoolExecutor(max_workers=0)` 或 `Semaphore(0)` 死锁）。
-- 安全：批量执行开始日志不再包含命令全文（与命令执行脱敏原则一致）。
-- 版本号收敛为单一来源：新增轻量无副作用模块 `remote_cmd/_version.py` 作为版本唯一真相源；
-  `remote_cmd/__init__.py` 的 `__version__` 改从 `_version` 导入；`pyproject.toml` 的
-  `version` 改为动态读取（`[tool.setuptools.dynamic]`）。开发者只需修改 `_version.py` 一处，
-  打包自动取用，且 setuptools 解析版本时不会触发 `remote_cmd` 包级 import（避免干净构建
-  环境缺依赖时 ImportError）。公共 API（`__all__` 中的 `__version__` 条目）保持不变。
-- 修复：`SyncConnectionPool` / `AsyncConnectionPool` 增加生命周期守卫——`close_all()` 之后
-  再 `acquire` 抛 `RuntimeError("connection pool is closed")`，`release` 在关闭后直接关闭
-  连接而非放回空闲队列（避免游离连接与关闭后池"复活"泄漏）。
+- **Security**: `SSHClient` / `AsyncSSHClient` command execution no longer writes full
+  command text to debug logs (now logs command-less execution events); command execution
+  failure exception messages remove command plaintext, retaining only failure reason.
+  Prevents sensitive parameters (passwords, tokens) from entering logs or exception chains.
+- **Fix**: `AsyncSSHClient.execute_sudo` `timeout` now covers entire command execution
+  wall-clock (`proc.wait(timeout=...)`), aligned with `execute`'s `conn.run(timeout=...)`;
+  avoids indefinite wait on hanging sudo (e.g., waiting for password). Behavior unchanged
+  when timeout not provided (indefinite wait).
+- **Validation**: `BatchExecutor` / `AsyncBatchExecutor` constructor parameters add
+  guards—`max_concurrency` must be `>= 1`, `command_timeout` must be `> 0`; `execute`'s
+  `retry_count` must be `>= 0`, `retry_delay` must be `>= 0`; invalid values raise
+  `ValueError` (previously invalid values surfaced at runtime as cryptic errors, e.g.,
+  `ThreadPoolExecutor(max_workers=0)` or `Semaphore(0)` deadlock).
+- **Security**: batch execution start log no longer includes full command text (consistent
+  with command desensitization principle).
+- **Version single source**: new lightweight no-side-effect module `remote_cmd/_version.py`
+  as sole version source; `remote_cmd/__init__.py`'s `__version__` now imports from
+  `_version`; `pyproject.toml` `version` changed to dynamic read (`[tool.setuptools.dynamic]`).
+  Developers only modify `_version.py` once; packaging auto-picks it up; setuptools
+  version parsing no longer triggers `remote_cmd` package-level import (avoids `ImportError`
+  in clean build environments missing dependencies). Public API (`__all__` entry for
+  `__version__`) remains unchanged.
+- **Fix**: `SyncConnectionPool` / `AsyncConnectionPool` add lifecycle guards—`acquire`
+  after `close_all()` raises `RuntimeError("connection pool is closed")`; `release` after
+  close closes the connection directly instead of returning to idle queue (prevents stray
+  connections and post-close pool "resurrection" leaks).
 
 ### Fixed
 
-- 修复：`BatchExecutor.execute` / `AsyncBatchExecutor.execute` 对 `host_names` 去重
-  （保留首次出现顺序）——重复主机名只执行一次。此前重复主机会因 `results` 被后完成结果覆盖，
-  导致 `total`/`success`/`failed` 统计错位（如 `["srv1","srv1"]` 报 success=0 但实际成功 1 台）。
+- **Fix**: `BatchExecutor.execute` / `AsyncBatchExecutor.execute` deduplicate `host_names`
+  (preserving first-occurrence order)—duplicate host names execute only once. Previously
+  duplicates caused `results` to be overwritten by later completions, skewing
+  `total`/`success`/`failed` statistics (e.g., `["srv1","srv1"]` reported success=0 but
+  actually succeeded on 1 host).
 
 ### Changed
 
-- 重构：8 步小步增量（详见 `REFACTORING_PLAN.md`），纯结构/类型收紧，现有行为不变，测试 410→424：
-  - `core/host.py`：`Host.tags` 收紧为 `list[str] = field(default_factory=list)`（构造器仍兼容
-    外部传入 `None` 的历史数据）
-  - 新增 `utils/credential_guard.PasswordGuard`：统一 JSON/SQLite 仓库的密码加解密策略
-  - 新增 `service/_pool_policy`（`ConnectionMeta` + 纯时间判断）与 `service/_host_runner`、
-    `service/_types`：消除 sync/async 连接池与执行器的重复逻辑
-  - CLI 命令补齐 `ctx: click.Context` 与返回类型；各模块 `__init__ -> None` 补齐
-  - mypy 全量校验通过（31 source files, 0 error）
+- **Refactor**: 8 incremental steps (see `REFACTORING_PLAN.md`), pure structural/type
+  tightening, existing behavior unchanged, tests 410→424:
+  - `core/host.py`: `Host.tags` tightened to `list[str] = field(default_factory=list)`
+    (constructor still accepts historical `None` data)
+  - New `utils/credential_guard.PasswordGuard`: unifies JSON/SQLite repository password
+    encryption/decryption strategy
+  - New `service/_pool_policy` (`ConnectionMeta` + pure time judgment),
+    `service/_host_runner`, `service/_types`: eliminate duplicate logic between sync/async
+    connection pools and executors
+  - CLI commands add `ctx: click.Context` and return types; modules add `__init__ ->
+    None`
+  - mypy full pass (31 source files, 0 errors)
 
 ### Breaking
 
-- `SSHClient.list_remote_directory` 与 `AsyncSSHClient.list_remote_directory` 返回类型由
-  `list[dict]` 改为 `list[RemoteFileEntry]`（新增 dataclass）。
-  外部调用方需由 `entry["name"]` 改为 `entry.name`。建议随 v2.0 发版。
+- `SSHClient.list_remote_directory` and `AsyncSSHClient.list_remote_directory` return
+  type changed from `list[dict]` to `list[RemoteFileEntry]` (new dataclass). External
+  callers must change `entry["name"]` to `entry.name`. Recommended to ship with v2.0.
+
+---
 
 ## [1.2.3] - 2026-08-11
 
 ### Added
-- `storage_factory.build_repository` 新增 `encryption` 参数并透传至 JSON/SQLite 仓库：
-  作为防御深度，即使调用方绕过 `HostService` 直接 `save()` 明文密码，落盘仍是密文
-- CLI 构建 `HostService` 时传入 `CredentialEncryption`，开启仓库级加密
+
+- `storage_factory.build_repository` new `encryption` parameter, passed through to
+  JSON/SQLite repositories: as defense-in-depth, even if caller bypasses `HostService`
+  and directly `save()`s plaintext passwords, persisted data remains encrypted.
+- CLI constructs `HostService` with `CredentialEncryption`, enabling repository-level
+  encryption.
 
 ### Changed
-- `EnvCredentialProvider._host_env_suffix` 补充文档：非字母数字字符统一归一化为
-  下划线，`web-1` 与 `web_1` 会映射到同一环境变量（需统一主机命名）
+
+- `EnvCredentialProvider._host_env_suffix` documentation added: non-alphanumeric
+  characters normalized to underscores; `web-1` and `web_1` map to the same environment
+  variable (requires consistent host naming).
 
 ### Fixed
-- `tests/integration/conftest.py` 缺失的 `# noqa: ARG002` 标注
-- ruff format 全仓库统一格式
+
+- Missing `# noqa: ARG002` annotation in `tests/integration/conftest.py`.
+- `ruff format` applied across entire repository.
+
+---
 
 ## [1.2.2] - 2026-08-06
 
 ### Added
-- `EnvCredentialProvider` 支持主机专属环境变量（`REMOTE_CMD_PASSWORD_<HOST>`，优先于全局 `REMOTE_CMD_PASSWORD`），避免全局变量被误应用到所有主机
-- `SqliteHostRepository` 支持 `encryption` 参数：配置后密码自动加密落库、读取时自动解密
+
+- `EnvCredentialProvider` supports host-specific environment variables
+  (`REMOTE_CMD_PASSWORD_<HOST>`, takes precedence over global `REMOTE_CMD_PASSWORD`),
+  preventing global variable from being misapplied to all hosts.
+- `SqliteHostRepository` supports `encryption` parameter: when configured, passwords are
+  automatically encrypted at rest and decrypted on read.
 
 ### Changed
-- `AsyncConnectionPool._check_connection` 增加空闲 fast-path：连接刚使用过（空闲未超时）时跳过探活，与 `SyncConnectionPool` 行为对齐，减少高并发下的多余往返
+
+- `AsyncConnectionPool._check_connection` adds idle fast-path: connections recently used
+  (idle not timed out) skip health check, aligning with `SyncConnectionPool` behavior,
+  reducing redundant round-trips under high concurrency.
 
 ### Fixed
-- `BatchExecutor` / `AsyncBatchExecutor` 重试全部失败时 `BatchHostResult.duration` 恒为 0，现在保留最后一次尝试的实际耗时
-- `JsonHostRepository` / `SqliteHostRepository` 的 `save()` 补充文档警告：不加密直接持久化明文密码须由调用方负责
+
+- `BatchExecutor` / `AsyncBatchExecutor` retry-all-failed case: `BatchHostResult.duration`
+  was always 0; now retains last attempt's actual duration.
+- `JsonHostRepository` / `SqliteHostRepository` `save()` documentation warns: persisting
+  plaintext passwords without encryption is caller's responsibility.
+
+---
 
 ## [1.2.1] - 2026-08-06
 
 ### Fixed
-- 恢复被 v1.2.0 意外移除的 `HostManager` 公共 API（作为向后兼容层重新导出，内部委托给 `HostService` + `JsonHostRepository`），避免破坏 `from remote_cmd import HostManager` 的既有兼容性
-- 恢复 `tests/test_host_manager.py` 测试覆盖
+
+- Restored `HostManager` public API accidentally removed in v1.2.0 (re-exported as
+  backward-compatibility layer, internally delegates to `HostService` + `JsonHostRepository`),
+  avoiding breakage of `from remote_cmd import HostManager` existing compatibility.
+- Restored `tests/test_host_manager.py` test coverage.
+
+---
 
 ## [1.1.1] - 2026-08-01
 
 ### Fixed
-- 修复 `import remote_cmd` 在未安装 asyncssh（`[async]` extra）时直接失败的问题：
-  `__init__.py` 顶层无条件导入原生异步模块导致基础安装崩溃，改为 try/except
-  优雅降级——未装 asyncssh 时异步符号不导出，同步 API 不受影响
+
+- Fixed `import remote_cmd` crash when asyncssh (`[async]` extra) not installed:
+  `__init__.py` unconditionally imported native async modules at top level, causing base
+  install to crash; changed to try/except graceful degradation—async symbols not exported
+  when asyncssh absent, synchronous API unaffected.
+
+---
 
 ## [1.1.0] - 2026-07-31
 
 ### Added
-- 原生异步 SSH 客户端 `AsyncSSHClient`（基于 asyncssh），替代线程池包装版本
-- `AsyncConnectionPool` 连接池（信号量并发控制、元数据副表、空闲/生命周期回收、健康检查）
-- `AsyncBatchExecutor` 原生异步批量执行器（asyncio.Semaphore 并发调度）
-- 集成测试框架（paramiko ServerInterface mock SSH server）
-- CI 工作流（Python 3.9-3.12 矩阵，uv + ruff + mypy + pytest）
-- PyPI auto-publish workflow（release published 触发）
-- 文档体系：架构文档、快速入门、高级教程、安全策略、故障排查
+
+- Native async SSH client `AsyncSSHClient` (based on asyncssh), replacing thread-pool
+  wrapper version.
+- `AsyncConnectionPool` connection pool (semaphore concurrency control, metadata side
+  table, idle/lifecycle recycling, health checks).
+- `AsyncBatchExecutor` native async batch executor (asyncio.Semaphore concurrency
+  scheduling).
+- Integration test framework (paramiko `ServerInterface` mock SSH server).
+- CI workflow (Python 3.9–3.12 matrix, uv + ruff + mypy + pytest).
+- PyPI auto-publish workflow (triggered on release published).
+- Documentation system: architecture docs, quickstart, advanced tutorial, security
+  policy, troubleshooting.
 
 ### Changed
-- 架构合并：删除 executor 包装版 `AsyncSSHClient`，统一为原生 asyncssh 实现
-- `ConnectionPool` 统一为 `AsyncConnectionPool`（`ConnectionPool` 保留为向后兼容别名）
-- `BatchExecutor` 与 `AsyncBatchExecutor` 契约统一：
-  - `HostService._resolve_host` 提升为公共 `resolve_host`
-  - 进度回调类型共享 `ProgressCallback`
-  - 异步版本补齐 `KeyboardInterrupt` 处理（对齐同步语义）
-- 依赖注入类型精确化（`host_service: Any` → `HostService`）
-- 安装方式优化：pip install 成为首选安装方式
-- README 结构调整与国际化（英文简介、asciinema demo）
+
+- Architecture merge: removed executor-wrapper `AsyncSSHClient`, unified to native
+  asyncssh implementation.
+- `ConnectionPool` unified to `AsyncConnectionPool` (`ConnectionPool` retained as
+  backward-compatibility alias).
+- `BatchExecutor` and `AsyncBatchExecutor` contract unified:
+  - `HostService._resolve_host` promoted to public `resolve_host`
+  - Progress callback type shared as `ProgressCallback`
+  - Async version adds `KeyboardInterrupt` handling (aligned with synchronous semantics)
+- Dependency injection types precise (`host_service: Any` → `HostService`).
+- Installation method optimized: pip install becomes preferred installation method.
+- README structure adjusted and internationalized (English intro, asciinema demo).
 
 ### Fixed
-- **[P0 安全]** CLI 密码改用 `getpass`（避免 shell 历史泄露）
-- **[P0 安全]** 凭据加密格式三重校验防碰撞
-- **[P4]** CLI `click.exceptions.Exit` 继承 `RuntimeError` 被 `except Exception` 误捕获
-- **[P5]** `ConnectionPool.release` 空闲超时死代码（先刷新 `_last_used` 导致 idle 恒为 0）
-- **[P5]** `ConnectionPool.release` `QueueFull` 不可达分支（`await put` 改 `put_nowait`）
-- **[P5]** sqlite `_txn()` 连接泄漏
-- **[P5]** 凭据链未命中时解密断裂兜底机制
-- **[P1]** 13 处 B904 异常链断裂、8 处 E501 行长超限、examples 多处 lint
+
+- **[P0 Security]** CLI password switched to `getpass` (avoids shell history leakage).
+- **[P0 Security]** Credential encryption format triple-validation prevents collisions.
+- **[P4]** CLI `click.exceptions.Exit` inherits `RuntimeError`, mistakenly caught by
+  `except Exception`.
+- **[P5]** `ConnectionPool.release` idle timeout dead code (refreshing `_last_used` first
+  caused idle to always be 0).
+- **[P5]** `ConnectionPool.release` `QueueFull` unreachable branch (`await put` →
+  `put_nowait`).
+- **[P5]** sqlite `_txn()` connection leak.
+- **[P5]** Credential chain miss decryption fallback mechanism.
+- **[P1]** 13 B904 exception chain breaks, 8 E501 line-length violations, multiple
+  examples lint issues.
 
 ### Security
-- 命令行密码暴露风险修复（改用交互式 getpass）
-- 凭据加密格式碰撞风险修复（前缀 + 明文长度 + 加密格式三重校验）
+
+- Command-line password exposure risk fixed (switched to interactive getpass).
+- Credential encryption format collision risk fixed (prefix + plaintext length + encrypted
+  format triple validation).
+
+---
 
 ## [1.0.0] - 2026-05-31
 
 ### Added
-- 发布到 PyPI，支持 `pip install remote_cmd_manager`
-- 添加 PyPI 版本和下载量 badge
-- README 添加英文简介，方便海外用户
-- setup.py 添加 PyPI 下载链接和项目 URL
 
-## [0.1.0] - 2024-01-15 (初始开发版)
+- Published to PyPI, supports `pip install remote_cmd_manager`.
+- Added PyPI version and download count badges.
+- README added English introduction for international users.
+- `setup.py` added PyPI download link and project URLs.
+
+---
+
+## [0.1.0] - 2024-01-15 (Initial Development Release)
 
 ### Added
-- 初始版本发布
-- ✅ SSH 连接管理（密码和密钥认证）
-- ✅ 远程命令执行（同步/异步）
-- ✅ 文件传输（SFTP 上传/下载）
-- ✅ 主机管理系统（JSON 持久化）
-- ✅ 标签分类系统
-- ✅ 完整的 CLI 工具
+
+- Initial release
+- ✅ SSH connection management (password and key authentication)
+- ✅ Remote command execution (sync/async)
+- ✅ File transfer (SFTP upload/download)
+- ✅ Host management system (JSON persistence)
+- ✅ Tag categorization system
+- ✅ Complete CLI tool
 - ✅ Python API
-- ✅ 上下文管理器支持
-- ✅ Sudo 命令执行
-- ✅ 连接健康检查
-- ✅ 配置管理（YAML/JSON）
-- ✅ 完善的错误处理
-- ✅ 日志系统
-- ✅ 单元测试
+- ✅ Context manager support
+- ✅ Sudo command execution
+- ✅ Connection health checks
+- ✅ Configuration management (YAML/JSON)
+- ✅ Comprehensive error handling
+- ✅ Logging system
+- ✅ Unit tests
 
 ### Core Features
-- `SSHClient` - SSH 连接客户端
-- `HostManager` - 主机管理器
-- `ConnectionConfig` - 连接配置
-- `CommandResult` - 命令执行结果
-- `Host` - 主机配置数据类
+
+- `SSHClient` — SSH connection client
+- `HostManager` — Host manager
+- `ConnectionConfig` — Connection configuration
+- `CommandResult` — Command execution result
+- `Host` — Host configuration dataclass
 
 ### CLI Commands
-- `host add` - 添加主机
-- `host list` - 列出主机
-- `host remove` - 删除主机
-- `host test` - 测试连接
-- `run` - 执行远程命令
-- `upload` - 上传文件
-- `download` - 下载文件
+
+- `host add` — Add a host
+- `host list` — List hosts
+- `host remove` — Remove a host
+- `host test` — Test connection
+- `run` — Execute remote command
+- `upload` — Upload file
+- `download` — Download file
 
 ### Documentation
+
 - README.md
 - API.md
 - CONTRIBUTING.md
@@ -278,24 +382,35 @@ v2.1.0 的主要实现变更（Paramiko 可靠性、异步连接池、重试策�
 
 ---
 
-## 版本说明
+## Version Notes
 
-### 语义化版本规则
+### Semantic Versioning Rules
 
-- **MAJOR** - 不兼容的 API 修改
-- **MINOR** - 向下兼容的功能新增
-- **PATCH** - 向下兼容的问题修复
+- **MAJOR** — Incompatible API changes
+- **MINOR** — Backward-compatible functionality additions
+- **PATCH** — Backward-compatible bug fixes
 
-### 版本标签说明
+### Version Section Labels
 
-- `[Unreleased]` - 未发布的更改
-- `Added` - 新增功能
-- `Changed` - 变更
-- `Deprecated` - 弃用
-- `Removed` - 移除
-- `Fixed` - 修复
-- `Security` - 安全相关
+- `[Unreleased]` — Unreleased changes
+- `Added` — New features
+- `Changed` — Changes in existing functionality
+- `Deprecated` — Soon-to-be removed features
+- `Removed` — Removed features
+- `Fixed` — Bug fixes
+- `Security` — Security improvements
 
 ---
 
-**查看完整历史：** [GitHub Releases](https://github.com/Vae-Scrooge/remote-cmd/releases)
+**View full history:** [GitHub Releases](https://github.com/Vae-Scrooge/remote-cmd/releases)
+
+[Unreleased]: https://github.com/Vae-Scrooge/remote-cmd/compare/v2.1.0...HEAD
+[2.1.0]: https://github.com/Vae-Scrooge/remote-cmd/compare/v2.0.0...v2.1.0
+[2.0.0]: https://github.com/Vae-Scrooge/remote-cmd/compare/v1.2.3...v2.0.0
+[1.2.3]: https://github.com/Vae-Scrooge/remote-cmd/compare/v1.2.2...v1.2.3
+[1.2.2]: https://github.com/Vae-Scrooge/remote-cmd/compare/v1.2.1...v1.2.2
+[1.2.1]: https://github.com/Vae-Scrooge/remote-cmd/compare/v1.2.0...v1.2.1
+[1.1.1]: https://github.com/Vae-Scrooge/remote-cmd/compare/v1.1.0...v1.1.1
+[1.1.0]: https://github.com/Vae-Scrooge/remote-cmd/compare/v1.0.0...v1.1.0
+[1.0.0]: https://github.com/Vae-Scrooge/remote-cmd/compare/v0.1.0...v1.0.0
+[0.1.0]: https://github.com/Vae-Scrooge/remote-cmd/releases/tag/v0.1.0

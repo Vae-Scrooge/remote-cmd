@@ -25,6 +25,9 @@ classifiers = [
     "Topic :: System :: Systems Administration",
     "Topic :: System :: Networking",
     "Environment :: Console",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
 ]
 dependencies = [
     "paramiko>=3.0",

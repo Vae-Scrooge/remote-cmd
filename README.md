@@ -217,6 +217,20 @@ with SSHClient(config) as client:
 
 ---
 
+## Cross-Platform Support
+
+`remote-cmd` is a pure-Python client, **tested and supported on Linux, macOS, and Windows**. No native dependencies or platform-specific builds are required.
+
+| Platform | Status | Notes |
+|----------|--------|-------|
+| Linux | ✅ Fully tested | Primary development platform |
+| macOS | ✅ Supported | Use `brew install openssh` for a newer OpenSSH |
+| Windows | ✅ Supported | PowerShell / CMD / WSL all work |
+
+> **Note on Windows file permissions:** Credential encryption keys are protected with `0600` permissions on Unix. On Windows this restriction is not enforced by the filesystem — the key file is still encrypted at rest. For production Windows use, consider adding filesystem-level ACLs.
+
+---
+
 ## Installation
 
 ```bash

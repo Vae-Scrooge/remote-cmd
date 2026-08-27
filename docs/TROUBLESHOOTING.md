@@ -599,6 +599,32 @@ remote_path = PurePosixPath("/home/user/file.txt")
 
 ---
 
+### 4. macOS-Specific Issues
+
+#### Issue: Outdated system OpenSSH
+
+macOS ships with an older OpenSSH. For best compatibility, install a newer version:
+
+```bash
+brew install openssh
+```
+
+Then ensure `/opt/homebrew/bin/ssh` (Apple Silicon) or `/usr/local/bin/ssh` (Intel) is first in your `PATH`.
+
+#### Keychain / ssh-agent integration
+
+`remote-cmd` works with the macOS `ssh-agent` automatically. If you store SSH keys in Keychain, ensure `UseKeychain yes` is set in your `~/.ssh/config`.
+
+#### Gatekeeper / quarantine
+
+Installing via `pip install remote_cmd_manager` (not a standalone binary) avoids Gatekeeper issues. If you ever distribute a standalone binary, it will require Apple notarization.
+
+#### File permissions
+
+Same as Linux: keep `~/.ssh` at `700` and private keys at `600`.
+
+---
+
 ## Debugging Tips
 
 ### Enable Verbose Logging

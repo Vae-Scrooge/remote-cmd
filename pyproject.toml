@@ -5,14 +5,14 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "remote_cmd_manager"
 dynamic = ["version"]
-description = "SSH 远程服务器管理工具 / Python SSH remote server management tool"
+description = "Cross-platform SSH remote server management tool (Linux/macOS/Windows) — lightweight, zero-configuration CLI and Python API for managing servers over SSH. Supports host CRUD, batch commands, file transfer, credential encryption, async execution, and more."
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
 authors = [
     { name = "Vae-Scrooge", email = "vaescrooge@gmail.com" },
 ]
-keywords = ["ssh", "remote", "server-management", "sysadmin", "devops"]
+keywords = ["ssh", "remote", "server-management", "sysadmin", "devops", "cross-platform"]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
@@ -48,100 +48,4 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "pytest-cov>=4.0",
-    "ruff>=0.4",
-    "mypy>=1.10",
-    # 测试 keyring 凭据提供者（生产为可选依赖，测试环境固定安装）
-    "keyring>=24.0",
 ]
-# 文档生成（pdoc>=16 需 Python>=3.10，固定到 15.x 以兼容 requires-python>=3.9）
-docs = ["pdoc>=15,<16"]
-
-[project.urls]
-Homepage = "https://github.com/Vae-Scrooge/remote-cmd"
-Repository = "https://github.com/Vae-Scrooge/remote-cmd"
-Documentation = "https://github.com/Vae-Scrooge/remote-cmd#readme"
-"Bug Tracker" = "https://github.com/Vae-Scrooge/remote-cmd/issues"
-Download = "https://pypi.org/project/remote_cmd_manager/"
-
-[project.scripts]
-remote-cmd = "remote_cmd.cli.main:main"
-
-[tool.setuptools.dynamic]
-version = { attr = "remote_cmd._version.__version__" }
-
-[tool.setuptools.packages.find]
-include = ["remote_cmd*"]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-addopts = "-v --tb=short -m 'not benchmark and not integration'"
-python_files = ["test_*.py"]
-markers = [
-    "asyncio: async test",
-    "benchmark: performance benchmark (run explicitly with -m benchmark)",
-    "integration: integration test requiring Docker/testcontainers",
-]
-
-[tool.ruff]
-target-version = "py39"
-line-length = 100
-
-[tool.ruff.lint]
-select = [
-    "E",   # pycodestyle errors
-    "W",   # pycodestyle warnings
-    "F",   # pyflakes
-    "I",   # isort
-    "N",   # pep8-naming
-    "UP",  # pyupgrade
-    "BLE", # blind except
-    "B",   # bugbear
-    "SIM", # flake8-simplify
-    "ARG", # unused arguments
-]
-ignore = [
-    "E501",
-    "N812",
-    "N999",
-    "B904",
-]
-
-[tool.ruff.lint.per-file-ignores]
-"__init__.py" = ["E402"]
-# 测试中 pytest fixture 参数未直接引用属于正常模式（如 patch 装饰器触发副作用）
-"tests/test_async_ssh_client.py" = ["ARG002"]
-"tests/test_async_batch_executor.py" = ["ARG001", "ARG002"]
-# 连接池测试中 patched_client fixture 触发 patch 副作用，factory 保留 cfg 参数以匹配真实签名
-"tests/test_sync_connection_pool.py" = ["ARG001", "ARG002"]
-# 性能测试中 mock stub 方法需保留与真实方法一致的签名（self/timeout 等）
-"tests/performance/conftest.py" = ["ARG001"]
-# 示例脚本中桩函数保留参数以展示 API 用法（函数体为注释占位）
-"examples/*.py" = ["ARG001", "ARG002"]
-
-[tool.ruff.format]
-quote-style = "double"
-indent-style = "space"
-skip-magic-trailing-comma = false
-line-ending = "lf"
-
-[tool.mypy]
-python_version = "3.10"
-strict = false
-ignore_missing_imports = true
-disallow_untyped_defs = false
-warn_unused_ignores = true
-warn_redundant_casts = true
-warn_return_any = false
-no_implicit_optional = true
-check_untyped_defs = false
-
-[[tool.mypy.overrides]]
-module = [
-    "paramiko.*",
-    "asyncssh.*",
-    "click.*",
-    "cryptography.*",
-    "keyring.*",
-    "yaml",
-]
-ignore_missing_imports = true

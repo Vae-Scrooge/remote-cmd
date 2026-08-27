@@ -7,6 +7,7 @@
   <img src="https://img.shields.io/github/actions/workflow/status/Vae-Scrooge/remote-cmd/ci.yml?style=for-the-badge&logo=githubactions&label=CI" alt="CI">
 </p>
 
+<p align="center"><strong>Tested on Linux, macOS, and Windows</strong></p>
 <h1 align="center">Remote CMD — SSH Server Management<br><small>Without the Overhead</small></h1>
 
 <p align="center">

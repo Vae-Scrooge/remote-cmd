@@ -24,12 +24,6 @@
   <a href="#contributing">Contributing</a>
 </p>
 
-<p align="center">
-  <a href="https://asciinema.org/a/9yLeYj73muPUuAQY" target="_blank">
-    <img src="https://asciinema.org/a/9yLeYj73muPUuAQY.svg" width="720" alt="Demo">
-  </a>
-</p>
-
 ---
 
 **Remote CMD** is a lightweight Python CLI + API for managing servers over SSH. Add hosts, run commands, transfer files, and organize hosts with tags — no Ansible DSL or shell loops required.

@@ -732,3 +732,135 @@ class TestSSHClientReaderJoinHardening:
                 client.execute("ls")
         finally:
             block.set()  # 允许排空线程退出
+
+
+# ============================================================================
+# v2.3：SFTP inactivity 超时（Paramiko channel.settimeout）
+# ============================================================================
+
+
+class TestSSHClientFileTransferTimeout:
+    """SFTP 操作使用 channel 级 inactivity 超时，静默即中止且清理会话。"""
+
+    def test_default_timeout_applied_to_sftp_channel(self, mock_paramiko, tmp_path):
+        local = tmp_path / "a.txt"
+        local.write_text("data")
+        config = ConnectionConfig(hostname="h", username="u")  # timeout=30
+        with SSHClient(config) as client:
+            client.upload_file(str(local), "/remote/a.txt")
+        sftp = mock_paramiko.open_sftp.return_value
+        sftp.get_channel.return_value.settimeout.assert_called_with(30)
+        # 成功路径行为不变
+        sftp.put.assert_called_once()
+
+    def test_explicit_timeout_overrides_config(self, mock_paramiko, tmp_path):
+        local = tmp_path / "a.txt"
+        local.write_text("data")
+        with SSHClient(ConnectionConfig(hostname="h", username="u", timeout=99)) as client:
+            client.upload_file(str(local), "/remote/a.txt", timeout=5)
+        sftp = mock_paramiko.open_sftp.return_value
+        sftp.get_channel.return_value.settimeout.assert_called_with(5)
+
+    def test_timeout_applied_before_blocking_transfer(self, mock_paramiko, tmp_path):
+        """channel 超时必须先于 put/get 生效，否则真实静默仍会无限阻塞。"""
+
+        class _Channel:
+            timeout = None
+
+            def settimeout(self, value):
+                self.timeout = value
+
+        class _SFTP:
+            def __init__(self):
+                self.channel = _Channel()
+                self.observed_timeout = None
+
+            def get_channel(self):
+                return self.channel
+
+            def put(self, *_args, **_kwargs):
+                # 记录 put 被调用时 channel 上已生效的超时
+                self.observed_timeout = self.channel.timeout
+                raise socket.timeout()
+
+            def close(self):
+                pass
+
+        fake = _SFTP()
+        mock_paramiko.open_sftp.return_value = fake
+        local = tmp_path / "a.txt"
+        local.write_text("data")
+
+        client = SSHClient(ConnectionConfig(hostname="h", username="u", timeout=17))
+        with client, pytest.raises(SSHFileTransferError, match="timed out"):
+            client.upload_file(str(local), "/remote/a.txt")
+
+        assert fake.observed_timeout == 17
+        assert client._sftp is None
+
+    def test_upload_timeout_maps_to_file_transfer_error_and_cleans_up(
+        self, mock_paramiko, tmp_path
+    ):
+        local = tmp_path / "a.txt"
+        local.write_text("data")
+        sftp = mock_paramiko.open_sftp.return_value
+        sftp.put.side_effect = socket.timeout()
+
+        client = SSHClient(ConnectionConfig(hostname="h", username="u", timeout=12))
+        with (
+            client,
+            pytest.raises(
+                SSHFileTransferError,
+                match="file upload timed out after 12 seconds of inactivity",
+            ),
+        ):
+            client.upload_file(str(local), "/remote/a.txt")
+
+        # 超时后丢弃失步会话，避免复用；通道被关闭（无泄漏）
+        assert client._sftp is None
+        sftp.close.assert_called_once()
+
+    def test_download_timeout_maps_to_file_transfer_error_and_cleans_up(
+        self, mock_paramiko, tmp_path
+    ):
+        sftp = mock_paramiko.open_sftp.return_value
+        sftp.get.side_effect = socket.timeout()
+
+        client = SSHClient(ConnectionConfig(hostname="h", username="u", timeout=3))
+        with (
+            client,
+            pytest.raises(
+                SSHFileTransferError,
+                match="file download timed out after 3 seconds of inactivity",
+            ),
+        ):
+            client.download_file("/remote/x", str(tmp_path / "x.txt"))
+
+        assert client._sftp is None
+        sftp.close.assert_called_once()
+
+    def test_list_directory_timeout_maps(self, mock_paramiko):
+        sftp = mock_paramiko.open_sftp.return_value
+        sftp.listdir_attr.side_effect = socket.timeout()
+        with (
+            SSHClient(ConnectionConfig(hostname="h", username="u")) as client,
+            pytest.raises(SSHFileTransferError, match="list remote directory timed out"),
+        ):
+            client.list_remote_directory("/tmp")
+
+    def test_non_positive_timeout_rejected(self, mock_paramiko, tmp_path):  # noqa: ARG002
+        local = tmp_path / "a.txt"
+        local.write_text("data")
+        with (
+            SSHClient(ConnectionConfig(hostname="h", username="u")) as client,
+            pytest.raises(ValidationError, match="timeout must be > 0"),
+        ):
+            client.upload_file(str(local), "/remote/a.txt", timeout=0)
+
+    def test_remote_file_exists_timeout_returns_false_and_discards(self, mock_paramiko):
+        sftp = mock_paramiko.open_sftp.return_value
+        sftp.stat.side_effect = socket.timeout()
+        client = SSHClient(ConnectionConfig(hostname="h", username="u"))
+        with client:
+            assert client.remote_file_exists("/remote/x") is False
+            assert client._sftp is None

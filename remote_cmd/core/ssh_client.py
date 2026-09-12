@@ -459,13 +459,59 @@ class SSHClient:
             stderr_bytes.decode("utf-8", errors="replace"),
         )
 
-    def _get_sftp(self) -> paramiko.SFTPClient:
-        """获取 SFTP 客户端（延迟初始化）"""
+    def _get_sftp(self, timeout: Optional[float] = None) -> paramiko.SFTPClient:
+        """获取 SFTP 客户端（延迟初始化）。
+
+        v2.3：每次取用时把有效的 inactivity（静默）超时应用到 SFTP 底层
+        channel。Paramiko ``Channel.settimeout`` 对 ``recv``/``sendall`` 生效，
+        传输正常时不受影响；通道静默超过该时长会抛出 ``socket.timeout``，
+        从而中止操作而不是永久阻塞。
+
+        Args:
+            timeout: 本次操作的 inactivity 超时（秒）；None 表示使用
+                ``ConnectionConfig.timeout``
+        """
         if not self._client:
             raise SSHConnectionError("not connected, call connect() first")
+        effective = self._effective_sftp_timeout(timeout)
         if not self._sftp:
             self._sftp = self._client.open_sftp()
+        # 显式应用（含 per-call 覆盖）：同一缓存的 SFTP channel 可能上次
+        # 使用不同的超时值
+        self._sftp.get_channel().settimeout(effective)
         return self._sftp
+
+    def _effective_sftp_timeout(self, timeout: Optional[float]) -> float:
+        """返回 SFTP 操作的有效 inactivity 超时（秒）。
+
+        显式 timeout 优先，否则回退到 ``ConnectionConfig.timeout``。
+        与命令执行不同，SFTP 使用"静默"语义：只要数据持续流动，长时间
+        传输不会被中止；只有超过该时长没有任何进展才会失败。
+        """
+        if timeout is not None:
+            if timeout <= 0:
+                raise ValidationError(f"timeout must be > 0, got: {timeout}")
+            return timeout
+        return self.config.timeout
+
+    def _discard_sftp(self) -> None:
+        """关闭并丢弃缓存的 SFTP 会话。
+
+        超时后 SFTP 请求可能仍处于未完成状态；复用同一通道会导致响应错配
+        （desynchronization）。关闭并置空后，下一次 SFTP 操作会重新建立
+        channel，而不是复用可能损坏的会话。
+        """
+        sftp, self._sftp = self._sftp, None
+        if sftp is not None:
+            with contextlib.suppress(Exception):
+                sftp.close()
+
+    def _sftp_timeout_error(self, description: str, effective: float) -> SSHFileTransferError:
+        """构造并返回超时错误（由调用方 ``raise ... from e`` 触发清理链）。"""
+        self._discard_sftp()
+        return SSHFileTransferError(
+            f"{description} timed out after {effective:g} seconds of inactivity"
+        )
 
     # ========================================================================
     # 上下文管理器支持
@@ -624,22 +670,30 @@ class SSHClient:
     # 文件传输方法
     # ========================================================================
 
-    def upload_file(self, local_path: str, remote_path: str) -> None:
+    def upload_file(
+        self,
+        local_path: str,
+        remote_path: str,
+        timeout: Optional[float] = None,
+    ) -> None:
         """
         上传本地文件到远程服务器
 
         Args:
             local_path: 本地文件路径
             remote_path: 远程目标路径（绝对路径）
+            timeout: inactivity 超时（秒）；None 表示使用
+                ``ConnectionConfig.timeout``。通道静默超过该时长即中止
 
         Raises:
-            SSHFileTransferError: 文件传输失败时抛出
+            SSHFileTransferError: 文件传输失败或超时时抛出
             SSHConnectionError: 未连接时抛出
 
         Example:
             >>> client.upload_file("./script.sh", "/home/user/script.sh")
         """
-        sftp = self._get_sftp()
+        effective = self._effective_sftp_timeout(timeout)
+        sftp = self._get_sftp(effective)
 
         # 验证本地文件存在
         local_file = Path(local_path)
@@ -651,19 +705,28 @@ class SSHClient:
             logger.info(f"uploading file: {local_path} -> {remote_path}")
             sftp.put(str(local_file), remote_path)
             logger.info("file upload finished")
+        except (socket.timeout, TimeoutError) as e:
+            raise self._sftp_timeout_error("file upload", effective) from e
         except (paramiko.SSHException, OSError) as e:
             raise SSHFileTransferError(f"file upload failed: {e}") from e
 
-    def download_file(self, remote_path: str, local_path: str) -> None:
+    def download_file(
+        self,
+        remote_path: str,
+        local_path: str,
+        timeout: Optional[float] = None,
+    ) -> None:
         """
         从远程服务器下载文件到本地
 
         Args:
-            remote_path: 远程文件路径（绝对路径）
+            remote_path: 远程文件路径
             local_path: 本地目标路径
+            timeout: inactivity 超时（秒）；None 表示使用
+                ``ConnectionConfig.timeout``。通道静默超过该时长即中止
 
         Raises:
-            SSHFileTransferError: 文件传输失败时抛出
+            SSHFileTransferError: 文件传输失败或超时时抛出
             SSHConnectionError: 未连接时抛出
 
         Note:
@@ -672,7 +735,8 @@ class SSHClient:
         Example:
             >>> client.download_file("/var/log/syslog", "./logs/syslog")
         """
-        sftp = self._get_sftp()
+        effective = self._effective_sftp_timeout(timeout)
+        sftp = self._get_sftp(effective)
 
         # 确保本地目录存在
         local_file = Path(local_path)
@@ -683,21 +747,29 @@ class SSHClient:
             logger.info(f"downloading file: {remote_path} -> {local_path}")
             sftp.get(remote_path, str(local_file))
             logger.info("file download finished")
+        except (socket.timeout, TimeoutError) as e:
+            raise self._sftp_timeout_error("file download", effective) from e
         except (paramiko.SSHException, OSError) as e:
             raise SSHFileTransferError(f"file download failed: {e}") from e
 
-    def list_remote_directory(self, remote_path: str = ".") -> list[RemoteFileEntry]:
+    def list_remote_directory(
+        self,
+        remote_path: str = ".",
+        timeout: Optional[float] = None,
+    ) -> list[RemoteFileEntry]:
         """
         列出远程目录内容
 
         Args:
-            remote_path: 远程目录路径，默认为当前目录
+            remote_path: 远程目录路径
+            timeout: inactivity 超时（秒）；None 表示使用
+                ``ConnectionConfig.timeout``
 
         Returns:
             List[RemoteFileEntry]: 目录项信息列表
 
         Raises:
-            SSHFileTransferError: 列出目录失败时抛出
+            SSHFileTransferError: 列出目录失败或超时时抛出
             SSHConnectionError: 未连接时抛出
 
         Example:
@@ -705,7 +777,8 @@ class SSHClient:
             >>> for entry in entries:
             ...     print(f"{entry.name}: {entry.size} bytes")
         """
-        sftp = self._get_sftp()
+        effective = self._effective_sftp_timeout(timeout)
+        sftp = self._get_sftp(effective)
 
         try:
             entries: list[RemoteFileEntry] = []
@@ -721,12 +794,21 @@ class SSHClient:
                     )
                 )
             return entries
+        except (socket.timeout, TimeoutError) as e:
+            raise self._sftp_timeout_error("list remote directory", effective) from e
         except (paramiko.SSHException, OSError) as e:
             raise SSHFileTransferError(f"failed to list remote directory: {e}") from e
 
-    def create_remote_directory(self, path: str) -> None:
-        """创建远程目录（支持递归创建）"""
-        sftp = self._get_sftp()
+    def create_remote_directory(self, path: str, timeout: Optional[float] = None) -> None:
+        """创建远程目录（支持递归创建）
+
+        Args:
+            path: 远程目录路径
+            timeout: inactivity 超时（秒）；None 表示使用
+                ``ConnectionConfig.timeout``
+        """
+        effective = self._effective_sftp_timeout(timeout)
+        sftp = self._get_sftp(effective)
 
         def _makedirs(sftp_client: paramiko.SFTPClient, remote_path: str) -> None:
             # 远端路径始终是 POSIX 语义，必须用 PurePosixPath 处理，
@@ -736,6 +818,8 @@ class SSHClient:
                 return
             try:
                 sftp_client.stat(str(p))
+            except (socket.timeout, TimeoutError):
+                raise
             except OSError:
                 _makedirs(sftp_client, str(p.parent))
                 sftp_client.mkdir(str(p))
@@ -743,21 +827,45 @@ class SSHClient:
         try:
             _makedirs(sftp, path)
             logger.info(f"created remote directory: {path}")
+        except (socket.timeout, TimeoutError) as e:
+            raise self._sftp_timeout_error("create remote directory", effective) from e
         except (paramiko.SSHException, OSError) as e:
             raise SSHFileTransferError(f"failed to create remote directory: {e}") from e
 
-    def remove_remote_file(self, path: str) -> None:
-        """删除远程文件"""
-        sftp = self._get_sftp()
+    def remove_remote_file(self, path: str, timeout: Optional[float] = None) -> None:
+        """删除远程文件
+
+        Args:
+            path: 远程文件路径
+            timeout: inactivity 超时（秒）；None 表示使用
+                ``ConnectionConfig.timeout``
+        """
+        effective = self._effective_sftp_timeout(timeout)
+        sftp = self._get_sftp(effective)
         try:
             sftp.remove(path)
             logger.info(f"deleted remote file: {path}")
+        except (socket.timeout, TimeoutError) as e:
+            raise self._sftp_timeout_error("delete remote file", effective) from e
         except (paramiko.SSHException, OSError) as e:
             raise SSHFileTransferError(f"failed to delete remote file: {e}") from e
 
-    def remove_remote_directory(self, path: str, recursive: bool = False) -> None:
-        """删除远程目录"""
-        sftp = self._get_sftp()
+    def remove_remote_directory(
+        self,
+        path: str,
+        recursive: bool = False,
+        timeout: Optional[float] = None,
+    ) -> None:
+        """删除远程目录
+
+        Args:
+            path: 远程目录路径
+            recursive: 是否递归删除目录内容
+            timeout: inactivity 超时（秒）；None 表示使用
+                ``ConnectionConfig.timeout``
+        """
+        effective = self._effective_sftp_timeout(timeout)
+        sftp = self._get_sftp(effective)
 
         def _rm_recursive(sftp_client: paramiko.SFTPClient, remote_path: str) -> None:
             """递归删除目录内容，先收集后删除以避免不一致状态"""
@@ -765,6 +873,8 @@ class SSHClient:
             try:
                 for entry in sftp_client.listdir_attr(remote_path):
                     entries.append((entry.filename, bool(entry.st_mode & stat.S_IFDIR)))
+            except (socket.timeout, TimeoutError):
+                raise
             except OSError:
                 return
             # 先删除文件，再递归删除子目录
@@ -782,23 +892,44 @@ class SSHClient:
             else:
                 sftp.rmdir(path)
             logger.info(f"deleted remote directory: {path}")
+        except (socket.timeout, TimeoutError) as e:
+            raise self._sftp_timeout_error("delete remote directory", effective) from e
         except (paramiko.SSHException, OSError) as e:
             raise SSHFileTransferError(f"failed to delete remote directory: {e}") from e
 
-    def remote_file_exists(self, path: str) -> bool:
-        """检查远程文件是否存在"""
+    def remote_file_exists(self, path: str, timeout: Optional[float] = None) -> bool:
+        """检查远程文件是否存在。
+
+        Args:
+            path: 远程路径
+            timeout: inactivity 超时（秒）；None 表示使用
+                ``ConnectionConfig.timeout``
+
+        Note:
+            超时视为"无法确认存在"（返回 False），并丢弃失步的 SFTP 会话。
+        """
         try:
-            sftp = self._get_sftp()
+            sftp = self._get_sftp(timeout)
             sftp.stat(path)
             return True
+        except (socket.timeout, TimeoutError):
+            self._discard_sftp()
+            return False
         except OSError:
             return False
         except SSHConnectionError:
             return False
 
-    def get_remote_file_info(self, path: str) -> dict[str, Any]:
-        """获取远程文件信息"""
-        sftp = self._get_sftp()
+    def get_remote_file_info(self, path: str, timeout: Optional[float] = None) -> dict[str, Any]:
+        """获取远程文件信息
+
+        Args:
+            path: 远程路径
+            timeout: inactivity 超时（秒）；None 表示使用
+                ``ConnectionConfig.timeout``
+        """
+        effective = self._effective_sftp_timeout(timeout)
+        sftp = self._get_sftp(effective)
         try:
             stat_result = sftp.stat(path)
             mode = stat_result.st_mode
@@ -810,5 +941,7 @@ class SSHClient:
                 "is_dir": stat.S_ISDIR(mode),
                 "is_file": stat.S_ISREG(mode),
             }
+        except (socket.timeout, TimeoutError) as e:
+            raise self._sftp_timeout_error("get remote file info", effective) from e
         except (paramiko.SSHException, OSError) as e:
             raise SSHFileTransferError(f"failed to get file info: {e}") from e

@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-09-12
+
+v2.3 makes blocking SFTP operations timeout-safe, hardens async cancellation cleanup,
+and aligns the supported Python range and release tooling.
+
+### Added
+
+- SFTP inactivity timeout support: every blocking SFTP operation (`upload_file`,
+  `download_file`, `list_remote_directory`, `create_remote_directory`,
+  `remove_remote_file`, `remove_remote_directory`, `get_remote_file_info`) accepts an
+  optional `timeout` argument. The effective timeout defaults to
+  `ConnectionConfig.timeout` (30 s) and must be > 0 when provided explicitly.
+- Synchronous `SSHClient` applies the timeout to the Paramiko SFTP channel
+  (`Channel.settimeout`), so a stalled read/write raises `socket.timeout` for the
+  actual operation and is translated into `SSHFileTransferError`.
+- Asynchronous `AsyncSSHClient` bounds SFTP channel startup with `asyncio.wait_for`
+  and uses a progress-based inactivity watchdog (asyncssh has no native timeout) to
+  cancel stalled transfers.
+
+### Changed
+
+- Supported and tested Python range extended to 3.9–3.14 (classifiers and CI matrix);
+  `Requires-Python` remains `>=3.9`.
+- CI runs release-metadata validation for CHANGELOG.md-only changes (ordinary
+  Markdown-only changes still skip the matrix).
+- Publish builds pin `build==1.5.0` and `twine==7.0.0`.
+
+### Reliability
+
+- Timeout cleanup closes and discards the SFTP session so a stale or desynchronized
+  channel can never be reused by a later operation.
+- Async cancellation cleanup awaits the aborted operation and discards the session on
+  outer cancellation, repeated cancellation, and cancellation during timeout cleanup;
+  no watchdog task or stale session is left behind.
+- The async timeout path preserves caller cancellation: an outer cancellation arriving
+  while cleanup runs propagates `CancelledError` instead of being converted into
+  `SSHFileTransferError`.
+
+### Fixed
+
+- SFTP uploads, downloads, and directory operations could block indefinitely when the
+  remote side stopped responding; they now fail with `SSHFileTransferError` after the
+  configured inactivity window.
+
+### Migration Guide (v2.2 → v2.3)
+
+- **SFTP timeouts**: blocking SFTP operations now honor timeout semantics. `timeout`
+  defaults to `ConnectionConfig.timeout` (30 s) and can be overridden per call.
+- **Inactivity, not total duration**: the timeout measures silence (no data progress),
+  so long transfers that keep moving are not interrupted; only a stalled channel fails.
+- **Failure mode**: a stalled transfer now raises `SSHFileTransferError` (after the
+  inactivity window) instead of hanging indefinitely.
+- **Python support**: officially supported and CI-tested on Python 3.9–3.14;
+  `Requires-Python` remains `>=3.9`.
+
 ## [2.2.0] - 2026-09-12
 
 This release focuses on bounded resource usage in batch execution, concurrent-writer

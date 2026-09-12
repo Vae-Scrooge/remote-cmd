@@ -14,9 +14,12 @@
 - 密码、密钥等敏感信息不入日志（沿用项目 SensitiveDataFilter 规范）。
 """
 
+import asyncio
+import contextlib
 import logging
 import shlex
 import stat
+from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 from typing import Any, Optional
 
@@ -34,6 +37,7 @@ from remote_cmd.utils.exceptions import (
     SSHConnectionError,
     SSHFileTransferError,
     SSHTimeoutError,
+    ValidationError,
 )
 
 logger = logging.getLogger(__name__)
@@ -286,45 +290,169 @@ class AsyncSSHClient:
     # ------------------------------------------------------------------
     # SFTP / 文件传输
     # ------------------------------------------------------------------
-    async def _get_sftp(self) -> asyncssh.SFTPClient:
+    async def _get_sftp(self, timeout: Optional[float] = None) -> asyncssh.SFTPClient:
+        """获取 SFTP 客户端（延迟初始化）。
+
+        v2.3：打开 SFTP channel 本身也受有效超时约束，避免握手阶段永久挂起。
+        """
         conn = await self._get_conn()
         if self._sftp is None:
+            effective = self._effective_sftp_timeout(timeout)
             try:
-                self._sftp = await conn.start_sftp_client()
+                self._sftp = await asyncio.wait_for(conn.start_sftp_client(), timeout=effective)
+            except asyncio.TimeoutError as e:
+                raise SSHFileTransferError(
+                    f"failed to open SFTP channel: timed out after {effective:g} seconds"
+                ) from e
             except (OSError, asyncssh.Error) as e:
                 raise SSHFileTransferError(f"failed to open SFTP channel: {e}") from e
         return self._sftp
 
-    async def upload_file(self, local_path: str, remote_path: str) -> None:
-        """异步上传本地文件到远程服务器。"""
-        sftp = await self._get_sftp()
+    def _effective_sftp_timeout(self, timeout: Optional[float]) -> float:
+        """返回 SFTP 操作的有效 inactivity 超时（秒）。
+
+        显式 timeout 优先，否则回退到 ``ConnectionConfig.timeout``。
+        """
+        if timeout is not None:
+            if timeout <= 0:
+                raise ValidationError(f"timeout must be > 0, got: {timeout}")
+            return timeout
+        return self.config.timeout
+
+    def _discard_sftp(self) -> None:
+        """关闭并丢弃缓存的 SFTP 会话（超时后防止复用可能失步的会话）。"""
+        sftp, self._sftp = self._sftp, None
+        if sftp is not None:
+            with contextlib.suppress(Exception):
+                sftp.exit()
+
+    async def _run_sftp_operation(
+        self,
+        operation: Callable[[Callable[..., None]], Awaitable[Any]],
+        timeout: Optional[float],
+        description: str,
+    ) -> Any:
+        """运行 SFTP 操作并施加 inactivity（静默）超时。
+
+        asyncssh 的 SFTP API 没有原生超时参数，因此使用 watchdog：
+        ``operation`` 收到一个 progress 回调（传给 ``put``/``get`` 的
+        ``progress_handler``），每次有数据进展就刷新时间戳；超过有效超时
+        没有任何进展则取消操作、丢弃失步的 SFTP 会话并抛出
+        ``SSHFileTransferError``。只要数据持续流动，长时间传输不会被打断。
+        """
+        effective = self._effective_sftp_timeout(timeout)
+        loop = asyncio.get_running_loop()
+        last_activity = loop.time()
+
+        def _mark_progress(*_args: Any) -> None:
+            nonlocal last_activity
+            last_activity = loop.time()
+
+        task = asyncio.ensure_future(operation(_mark_progress))
+        interval = min(0.5, max(effective / 10.0, 0.01))
+        cancelled: Optional[asyncio.CancelledError] = None
+        try:
+            while True:
+                done, _pending = await asyncio.wait({task}, timeout=interval)
+                if task in done:
+                    return task.result()
+                if loop.time() - last_activity >= effective:
+                    break
+        except asyncio.CancelledError as exc:
+            # 外层取消：记录后统一走清理路径（不在此处 await，避免
+            # 取消事件再次进入本处理器）
+            cancelled = exc
+
+        # 统一清理：立即丢弃可能失步的 SFTP 会话；取消并等待子任务收尾。
+        # shield 确保清理期间到达的再次取消只打断"等待"本身，而不会
+        # 把清理过程转换成超时错误或被整体吞掉。
+        self._discard_sftp()
+        task.cancel()
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if not task.cancelled():
+                # 清理期间外层再次取消：保留取消语义
+                raise
+        except Exception:  # noqa: BLE001 - 子任务失败不应掩盖超时/取消语义
+            pass
+
+        if cancelled is not None:
+            raise cancelled
+        raise SSHFileTransferError(
+            f"{description} timed out after {effective:g} seconds of inactivity"
+        )
+
+    async def upload_file(
+        self,
+        local_path: str,
+        remote_path: str,
+        timeout: Optional[float] = None,
+    ) -> None:
+        """异步上传本地文件到远程服务器。
+
+        Args:
+            local_path: 本地文件路径
+            remote_path: 远程目标路径
+            timeout: inactivity 超时（秒）；None 表示使用
+                ``ConnectionConfig.timeout``。静默超过该时长即中止
+        """
+        sftp = await self._get_sftp(timeout)
         local_file = Path(local_path)
         if not local_file.exists():
             raise SSHFileTransferError(f"Local file not found: {local_path}")
         logger.info(f"uploading file: {local_path} -> {remote_path}")
+
+        async def _operation(progress: Callable[..., None]) -> None:
+            await sftp.put(str(local_file), remote_path, progress_handler=progress)
+
         try:
-            await sftp.put(str(local_file), remote_path)
+            await self._run_sftp_operation(_operation, timeout, "file upload")
         except (OSError, asyncssh.Error) as e:
             raise SSHFileTransferError(f"file upload failed: {e}") from e
         logger.info("file upload finished")
 
-    async def download_file(self, remote_path: str, local_path: str) -> None:
-        """异步从远程服务器下载文件到本地。"""
-        sftp = await self._get_sftp()
+    async def download_file(
+        self,
+        remote_path: str,
+        local_path: str,
+        timeout: Optional[float] = None,
+    ) -> None:
+        """异步从远程服务器下载文件。
+
+        Args:
+            remote_path: 远程文件路径
+            local_path: 本地目标路径
+            timeout: inactivity 超时（秒）；None 表示使用
+                ``ConnectionConfig.timeout``。静默超过该时长即中止
+        """
+        sftp = await self._get_sftp(timeout)
         local_file = Path(local_path)
         local_file.parent.mkdir(parents=True, exist_ok=True)
         logger.info(f"downloading file: {remote_path} -> {local_path}")
+
+        async def _operation(progress: Callable[..., None]) -> None:
+            await sftp.get(remote_path, str(local_file), progress_handler=progress)
+
         try:
-            await sftp.get(remote_path, str(local_file))
+            await self._run_sftp_operation(_operation, timeout, "file download")
         except (OSError, asyncssh.Error) as e:
             raise SSHFileTransferError(f"file download failed: {e}") from e
         logger.info("file download finished")
 
-    async def list_remote_directory(self, remote_path: str = ".") -> list[RemoteFileEntry]:
+    async def list_remote_directory(
+        self,
+        remote_path: str = ".",
+        timeout: Optional[float] = None,
+    ) -> list[RemoteFileEntry]:
         """异步列出远程目录内容（结构与同步 SSHClient 一致）。"""
-        sftp = await self._get_sftp()
+        sftp = await self._get_sftp(timeout)
+
+        async def _operation(_progress: Callable[..., None]) -> Sequence[Any]:
+            return await sftp.readdir(remote_path)
+
         try:
-            names = await sftp.readdir(remote_path)
+            names = await self._run_sftp_operation(_operation, timeout, "list remote directory")
         except (OSError, asyncssh.Error) as e:
             raise SSHFileTransferError(f"failed to list remote directory: {e}") from e
 

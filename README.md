@@ -36,27 +36,28 @@ pip install remote_cmd_manager && remote-cmd host add web-01 192.168.1.10 ubuntu
 
 ---
 
-## v2.2.0 Release Highlights
+## v2.3.0 Release Highlights
 
-v2.2.0 bounds batch-execution resource usage, makes concurrent SQLite writers safe, tightens
-retry classification, and hardens the release pipeline. See the
+v2.3.0 makes blocking SFTP operations timeout-safe, hardens async cancellation cleanup,
+and aligns the supported Python range and release tooling. See the
 [full migration notes](./CHANGELOG.md) before upgrading automated callers.
 
-### Resource & Reliability
+### SFTP Timeouts & Reliability
 
-- Internal batch pools are now created lazily per host, capped at one connection, and closed as soon as that host (including all retries) finishes; batch-wide live internal connections are bounded by `max_concurrency` instead of retaining one idle connection per host until the batch ends.
-- SQLite writes now use `BEGIN IMMEDIATE` with a configurable `busy_timeout` (default 5000 ms), and the initial `journal_mode=WAL` switch is retried; concurrent `remote-cmd` processes writing the same `hosts.db` no longer fail with `database is locked` or lose updates. Schema and `db_version` are unchanged.
-- Pool closure raises the new `PoolClosedError` (still catchable as `RuntimeError`); retry classification is corrected so bare `RuntimeError` is retryable again (v2.0 behavior) while pool closure remains non-retryable. Typed permanent and transient errors are unchanged.
+- Blocking SFTP operations now support an inactivity timeout (default: `ConnectionConfig.timeout`, 30 s): uploads, downloads, directory listing, directory creation, removal, and file-info calls accept an optional `timeout` argument.
+- The synchronous `SSHClient` applies the timeout to the Paramiko SFTP channel, so a stalled read/write aborts the actual operation and raises `SSHFileTransferError`.
+- The asynchronous `AsyncSSHClient` bounds SFTP channel startup with a timeout and uses a progress-based inactivity watchdog to cancel stalled transfers, awaiting the aborted operation and preserving caller cancellation during cleanup.
+- Timed-out or cancelled SFTP sessions are closed and discarded, so a stale or desynchronized channel can never be reused.
 
 ### Release Engineering
 
-- Publish workflow: artifact actions aligned, run-scoped artifact names, duplicate version publication now fails instead of being skipped, `twine check` validates distributions, and the release tag is verified against the package version. Trusted Publishing and the GitHub Release → PyPI flow are unchanged.
-- CI documentation drift detection: `docs/api` is regenerated and compared on relevant changes, failing when tracked generated docs are stale (`pdoc` pinned to `15.0.4` on Python 3.12).
-- Release metadata validation: a lightweight gate checks the single-source version, the `pyproject.toml` dynamic-version attribute, `[Unreleased]` and matching `[x.y.z]` CHANGELOG headings, and (on release) that the git tag matches the package version.
+- Python 3.9–3.14 are officially supported and CI-tested; `Requires-Python` remains `>=3.9`.
+- CI runs release-metadata validation for CHANGELOG.md-only changes.
+- Publish builds pin `build==1.5.0` and `twine==7.0.0`.
 
 ## Table of Contents
 
-- [v2.2.0 Release Highlights](#v220-release-highlights)
+- [v2.3.0 Release Highlights](#v230-release-highlights)
 - [Why Remote CMD?](#why-remote-cmd)
 - [Quick Start](#quick-start)
 - [Use Cases](#use-cases)

@@ -3,10 +3,19 @@ name: CI
 on:
   push:
     branches: [main, master, develop]
-    paths-ignore: ["**.md"]
+    # 忽略纯 Markdown 变更，但 CHANGELOG.md 例外：它承载发布元数据
+    # （[Unreleased] / 版本标题），必须触发 CI 内的 metadata 校验。
+    # paths-ignore 不支持例外，故用 paths + 负模式表达。
+    paths:
+      - "**"
+      - "!**.md"
+      - "CHANGELOG.md"
   pull_request:
     branches: [main, master]
-    paths-ignore: ["**.md"]
+    paths:
+      - "**"
+      - "!**.md"
+      - "CHANGELOG.md"
   workflow_dispatch:
 
 concurrency:
@@ -24,7 +33,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        python-version: ["3.9", "3.10", "3.11", "3.12"]
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
         exclude:
           # Reduce matrix size: only test 3.12 on macOS/Windows, full matrix on Linux
           - os: macos-latest
@@ -33,12 +42,20 @@ jobs:
             python-version: "3.10"
           - os: macos-latest
             python-version: "3.11"
+          - os: macos-latest
+            python-version: "3.13"
+          - os: macos-latest
+            python-version: "3.14"
           - os: windows-latest
             python-version: "3.9"
           - os: windows-latest
             python-version: "3.10"
           - os: windows-latest
             python-version: "3.11"
+          - os: windows-latest
+            python-version: "3.13"
+          - os: windows-latest
+            python-version: "3.14"
 
     steps:
       - uses: actions/checkout@v5

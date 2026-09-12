@@ -41,26 +41,27 @@ pip install remote_cmd_manager && remote-cmd host add web-01 192.168.1.10 ubuntu
 
 ---
 
-## v2.2.0 发布亮点
+## v2.3.0 发布亮点
 
-v2.2.0 收敛批量执行的资源占用、加固 SQLite 并发写入、修正重试分类，并强化发布流水线。
+v2.3.0 让阻塞式 SFTP 操作具备超时保护、加固异步取消清理，并统一受支持的 Python 范围与发布工具链。
 升级自动化调用方前请查看[完整迁移说明](./CHANGELOG.md)。
 
-### 资源与可靠性
+### SFTP 超时与可靠性
 
-- 内部批量连接池改为按主机惰性创建，每个池上限 1 条连接，并在该主机（含全部重试）结束后立即关闭；整批并发存活的内部连接数受 `max_concurrency` 约束，不再在整批结束前为每台主机保留一条空闲连接。
-- SQLite 写入使用 `BEGIN IMMEDIATE`，并提供可配置的 `busy_timeout`（默认 5000 ms）；首次切换 `journal_mode=WAL` 会进行有界重试。多个 `remote-cmd` 进程同时写入同一 `hosts.db` 不再出现 `database is locked` 或丢失更新。schema 与 `db_version` 保持不变。
-- 连接池关闭会抛出新的 `PoolClosedError`（仍可用 `except RuntimeError` 捕获）；重试分类得到修正：裸 `RuntimeError` 恢复可重试（v2.0 行为），池关闭仍不可重试。类型化的永久/瞬态分类保持不变。
+- 阻塞式 SFTP 操作新增 inactivity（静默）超时（默认 `ConnectionConfig.timeout`，30 秒）：上传、下载、列目录、创建目录、删除与文件信息操作均支持可选的 `timeout` 参数。
+- 同步 `SSHClient` 将超时应用到 Paramiko SFTP channel，通道静默时中止实际操作并抛出 `SSHFileTransferError`。
+- 异步 `AsyncSSHClient` 对 SFTP channel 启动施加超时，并使用基于进度回调的静默看门狗取消停滞传输；清理时等待被取消的操作，并在清理期间保留调用方取消语义。
+- 超时或被取消的 SFTP 会话会被关闭并丢弃，过期或失步的通道不会再次被复用。
 
 ### 发布工程
 
-- 发布工作流：统一 artifact 动作版本、使用按运行区分的 artifact 名称、重复版本发布会直接失败而不再静默跳过、使用 `twine check` 校验分发包，并在发布时校验 tag 与包版本一致。Trusted Publishing 与 GitHub Release → PyPI 流程保持不变。
-- CI 文档漂移检测：在相关变更上重新生成并比对 `docs/api`，tracked 生成文档过期时 CI 失败（Python 3.12 + 固定 `pdoc==15.0.4`）。
-- 发布元数据校验：轻量门禁检查单一版本源、`pyproject.toml` 动态版本属性、`[Unreleased]` 与对应 `[x.y.z]` CHANGELOG 标题，并在发布时校验 git tag 与包版本一致。
+- 正式支持并在 CI 覆盖 Python 3.9–3.14；`Requires-Python` 保持 `>=3.9`。
+- CI 在仅变更 CHANGELOG.md 时也运行发布元数据校验。
+- 发布构建固定 `build==1.5.0` 与 `twine==7.0.0`。
 
 ## 目录
 
-- [v2.2.0 发布亮点](#v220-发布亮点)
+- [v2.3.0 发布亮点](#v230-发布亮点)
 - [为什么选择 Remote CMD？](#为什么选择-remote-cmd)
 - [快速开始](#快速开始)
 - [使用场景](#使用场景)

@@ -8,8 +8,13 @@ import pytest
 from remote_cmd.core.host import Host
 from remote_cmd.core.ssh_client import CommandResult
 from remote_cmd.core.sync_connection_pool import SyncConnectionPool
+from remote_cmd.service._host_runner import OUTPUT_TRUNCATION_MARKER
 from remote_cmd.service.batch_executor import BatchExecutor, BatchHostResult, BatchResult
-from remote_cmd.utils.exceptions import CredentialError, SSHAuthenticationError
+from remote_cmd.utils.exceptions import (
+    CredentialError,
+    SSHAuthenticationError,
+    ValidationError,
+)
 
 
 def make_mock_service(hosts: list):
@@ -847,3 +852,97 @@ class TestBatchExecutorInternalPoolLifecycle:
         assert AuthFailClient.created[0].calls == 1
         assert pools[0]._closed
         assert not AuthFailClient.created[0].is_connected()
+
+
+# ============================================================================
+# v2.4：max_output_bytes 保留输出上限
+# ============================================================================
+
+
+def _marker(omitted: int) -> str:
+    return OUTPUT_TRUNCATION_MARKER.format(omitted=omitted)
+
+
+class TestBatchExecutorOutputCap:
+    """同步执行器 max_output_bytes 语义（默认 None = 完整输出）"""
+
+    @staticmethod
+    def _run(stdout="", stderr="", exit_code=0, max_output_bytes=None, hosts=1):
+        host_list = [
+            Host(name=f"srv{i}", hostname=f"10.0.0.{i + 1}", username="admin") for i in range(hosts)
+        ]
+        service = make_mock_service(host_list)
+        with patch("remote_cmd.service.batch_executor.SSHClient") as mock_cls:
+            inst = MagicMock()
+            mock_cls.return_value = inst
+            inst.execute.return_value = CommandResult("true", stdout, stderr, exit_code)
+            executor = BatchExecutor(host_service=service, max_output_bytes=max_output_bytes)
+            return executor.execute([h.name for h in host_list], "true")
+
+    def test_default_none_retains_full_output(self):
+        payload = "x" * 8192
+        result = self._run(stdout=payload, stderr=payload)
+        host_result = result.results["srv0"]
+        assert host_result.stdout == payload
+        assert host_result.stderr == payload
+        assert "[output truncated" not in host_result.stdout
+
+    def test_positive_cap_truncates_stdout(self):
+        result = self._run(stdout="x" * 1000, max_output_bytes=64)
+        host_result = result.results["srv0"]
+        assert host_result.stdout == "x" * 64 + _marker(936)
+        assert host_result.stderr == ""
+        assert host_result.success is True
+
+    def test_positive_cap_truncates_stderr(self):
+        result = self._run(stderr="e" * 500, max_output_bytes=100)
+        host_result = result.results["srv0"]
+        assert host_result.stderr == "e" * 100 + _marker(400)
+        assert host_result.stdout == ""
+
+    def test_output_below_limit_unchanged(self):
+        result = self._run(stdout="small", stderr="tiny", max_output_bytes=1024)
+        host_result = result.results["srv0"]
+        assert host_result.stdout == "small"
+        assert host_result.stderr == "tiny"
+        assert "[output truncated" not in host_result.stdout + host_result.stderr
+
+    def test_exact_boundary_unchanged(self):
+        payload = "x" * 64
+        result = self._run(stdout=payload, stderr=payload, max_output_bytes=64)
+        host_result = result.results["srv0"]
+        assert host_result.stdout == payload
+        assert host_result.stderr == payload
+
+    def test_unicode_boundary_not_split(self):
+        # "é" 为 2 字节；上限 5 字节时只能完整保留 2 个字符（保留 4 字节）
+        result = self._run(stdout="é" * 10, max_output_bytes=5)
+        out = result.results["srv0"].stdout
+        assert out.startswith("é" * 2)
+        assert "é" * 3 not in out
+        assert "\ufffd" not in out
+        assert out.endswith(_marker(20 - 4))
+
+    def test_cap_preserves_success_and_failure_semantics(self):
+        ok = self._run(stdout="x" * 1000, exit_code=0, max_output_bytes=10)
+        assert ok.results["srv0"].success is True
+        assert ok.results["srv0"].exit_code == 0
+
+        bad = self._run(stdout="x" * 1000, exit_code=1, max_output_bytes=10)
+        assert bad.results["srv0"].success is False
+        assert bad.results["srv0"].exit_code == 1
+
+    @pytest.mark.parametrize("bad", [0, -1, True, False, 1.5, "64"])
+    def test_invalid_max_output_bytes_rejected(self, bad):
+        with pytest.raises(ValidationError, match="max_output_bytes"):
+            BatchExecutor(host_service=MagicMock(), max_output_bytes=bad)
+
+    @patch("remote_cmd.service.batch_executor.SSHClient")
+    def test_large_synthetic_output_bounded(self, _mock_ssh_class):
+        chunk = "z" * (256 * 1024)
+        result = self._run(stdout=chunk, stderr=chunk, hosts=20, max_output_bytes=4096)
+        assert result.success == 20
+        retained = sum(len(r.stdout) + len(r.stderr) for r in result.results.values())
+        marker_allowance = 64  # 标记本身很小，给足空间
+        assert retained <= 20 * 2 * (4096 + marker_allowance)
+        assert retained < 20 * 2 * len(chunk) // 10

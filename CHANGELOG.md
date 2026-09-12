@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.0] - 2026-09-12
+
+v2.4 adds an opt-in retained-output cap for batch execution and cleans up logging handler
+resources; default behavior and public result schemas are unchanged.
+
+### Added
+
+- `BatchExecutor` / `AsyncBatchExecutor` new optional `max_output_bytes` constructor
+  parameter (default `None`) providing opt-in bounded output retention: when set to a
+  positive integer, each host's retained `stdout` and `stderr` are deterministically
+  truncated to at most that many UTF-8 bytes and a `[output truncated: N bytes omitted]`
+  marker is appended. `None` preserves the previous behavior (full output retained).
+
+### Fixed
+
+- Output truncation is deterministic and UTF-8 byte-boundary safe: a multi-byte character
+  split by the cap is dropped rather than mangled, and the reported omitted byte count
+  reflects the bytes actually discarded.
+- `setup_logging` now closes existing root-logger handlers before removing them, avoiding
+  `unclosed file` resource warnings when logging is reconfigured (for example, rotating
+  file handlers on repeated calls).
+- Corrected the connection-pool lifetime wording in `docs/API.md`, `docs/architecture.md`,
+  and `docs/tutorial-advanced.md`: internally created pools are created lazily per host
+  and closed as soon as that host finishes (including its retries), not after the whole
+  batch completes.
+
+### Migration Guide (v2.3 → v2.4)
+
+- **Default behavior is unchanged**: `max_output_bytes` defaults to `None`, which retains
+  full `stdout`/`stderr` exactly as before.
+- **Opt-in cap**: when configured, the value caps each host's retained `stdout` and
+  `stderr` independently in the batch result.
+- **Semantics preserved**: truncation appends a deterministic marker but does not change
+  command success/failure, exit codes, or the `BatchResult` structure.
+- **Scope of the bound**: the cap applies to retained `BatchResult` data. During execution
+  the SSH client may still hold the full output transiently, so `max_output_bytes` is not
+  a hard process-wide RSS limit.
+
 ## [2.3.0] - 2026-09-12
 
 v2.3 makes blocking SFTP operations timeout-safe, hardens async cancellation cleanup,

@@ -41,27 +41,29 @@ pip install remote_cmd_manager && remote-cmd host add web-01 192.168.1.10 ubuntu
 
 ---
 
-## v2.3.0 发布亮点
+## v2.4.0 发布亮点
 
-v2.3.0 让阻塞式 SFTP 操作具备超时保护、加固异步取消清理，并统一受支持的 Python 范围与发布工具链。
+v2.4.0 为批量执行新增可选的保留输出上限，并清理日志处理器资源；默认行为与公共结果结构保持不变。
 升级自动化调用方前请查看[完整迁移说明](./CHANGELOG.md)。
 
-### SFTP 超时与可靠性
+### 批量输出上限
 
-- 阻塞式 SFTP 操作新增 inactivity（静默）超时（默认 `ConnectionConfig.timeout`，30 秒）：上传、下载、列目录、创建目录、删除与文件信息操作均支持可选的 `timeout` 参数。
-- 同步 `SSHClient` 将超时应用到 Paramiko SFTP channel，通道静默时中止实际操作并抛出 `SSHFileTransferError`。
-- 异步 `AsyncSSHClient` 对 SFTP channel 启动施加超时，并使用基于进度回调的静默看门狗取消停滞传输；清理时等待被取消的操作，并在清理期间保留调用方取消语义。
-- 超时或被取消的 SFTP 会话会被关闭并丢弃，过期或失步的通道不会再次被复用。
+- `BatchExecutor` / `AsyncBatchExecutor` 新增可选参数 `max_output_bytes`（默认 `None`）：`None` 保留完整 `stdout`/`stderr`，正整数则限制每台主机保留的每个输出流并追加 `[output truncated: N bytes omitted]` 标记。
+- 截断是确定性的，且在 UTF-8 字节边界安全；`stdout` 与 `stderr` 独立受限，绝不改变命令成功/失败与退出码。
+- 上限约束的是保留的 `BatchResult` 数据；执行期间 SSH 客户端仍可能短暂持有完整输出，因此它不是进程级 RSS 硬上限。
 
-### 发布工程
+### 可靠性
 
-- 正式支持并在 CI 覆盖 Python 3.9–3.14；`Requires-Python` 保持 `>=3.9`。
-- CI 在仅变更 CHANGELOG.md 时也运行发布元数据校验。
-- 发布构建固定 `build==1.5.0` 与 `twine==7.0.0`。
+- `setup_logging` 在移除旧处理器前先关闭它们，避免重新配置日志时出现未关闭文件的资源警告。
+- 文档中的连接池生命周期描述已与实际行为一致：内部池按主机惰性创建，并在该主机（含重试）结束后立即关闭。
+
+### 兼容性
+
+- 默认行为不变（`max_output_bytes=None` 保留完整输出），公共 `BatchResult` / `BatchHostResult` 结构保持不变。
 
 ## 目录
 
-- [v2.3.0 发布亮点](#v230-发布亮点)
+- [v2.4.0 发布亮点](#v240-发布亮点)
 - [为什么选择 Remote CMD？](#为什么选择-remote-cmd)
 - [快速开始](#快速开始)
 - [使用场景](#使用场景)

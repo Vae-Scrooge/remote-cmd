@@ -40,6 +40,7 @@ from remote_cmd.service._host_runner import (
     build_connection_config,
     resolve_host_or_error,
     to_host_result,
+    validate_max_output_bytes,
 )
 from remote_cmd.service._types import (
     BatchHostResult,
@@ -84,6 +85,11 @@ class BatchExecutor:
             立即关闭；内部池 ``max_connections=1``，整批并发存活连接数受
             ``max_concurrency`` 约束。工厂返回的池类型须与内核匹配
             （见 PoolFactory 注释）。
+        max_output_bytes: 每台主机每个输出流（stdout/stderr）保留的最大
+            字节数（UTF-8），默认 ``None`` 保留完整输出（既有行为）。
+            设置正整数时输出会被确定性截断并追加 ``[output truncated: N
+            bytes omitted]`` 标记；截断不改变命令成功/失败与退出码。
+            仅约束保留的批量结果，客户端在执行期间仍可能短暂持有完整输出
 
     连接池所有权约定（与 AsyncBatchExecutor 一致）：
 
@@ -105,6 +111,7 @@ class BatchExecutor:
         command_timeout: int = 30,
         use_async: bool = False,
         pool_factory: Optional[PoolFactory] = None,
+        max_output_bytes: Optional[int] = None,
     ) -> None:
         if max_concurrency < 1:
             raise ValueError(f"max_concurrency must be >= 1, got: {max_concurrency}")
@@ -115,6 +122,7 @@ class BatchExecutor:
         self._command_timeout = command_timeout
         self._use_async = use_async
         self._pool_factory = pool_factory
+        self._max_output_bytes = validate_max_output_bytes(max_output_bytes)
         # 延迟导入以避免在未安装 asyncssh 的环境下的导入失败
         # 使用前向引用避免在模块加载期引入 asyncssh 硬依赖（开启 use_async 时才惰性导入）
         self._async_executor: Optional["AsyncBatchExecutor"] = None  # noqa: UP037
@@ -126,6 +134,7 @@ class BatchExecutor:
                 max_concurrency=max_concurrency,
                 command_timeout=command_timeout,
                 pool_factory=pool_factory,
+                max_output_bytes=self._max_output_bytes,
             )
 
     def execute(
@@ -458,7 +467,13 @@ class BatchExecutor:
                         # 连接池模式：复用主机连接，避免每次操作握手
                         with pool.acquire_context() as client:
                             cmd_result = client.execute(command, timeout=self._command_timeout)
-                        return to_host_result(host_name, command, cmd_result, time.time() - start)
+                        return to_host_result(
+                            host_name,
+                            command,
+                            cmd_result,
+                            time.time() - start,
+                            max_output_bytes=self._max_output_bytes,
+                        )
 
                     # 非连接池路径：try/finally 确保即使 execute() 抛异常，
                     # disconnect() 也会执行，避免 SSH 连接泄漏
@@ -469,7 +484,13 @@ class BatchExecutor:
                     finally:
                         client.disconnect()
 
-                    return to_host_result(host_name, command, cmd_result, time.time() - start)
+                    return to_host_result(
+                        host_name,
+                        command,
+                        cmd_result,
+                        time.time() - start,
+                        max_output_bytes=self._max_output_bytes,
+                    )
 
                 except Exception as e:  # noqa: BLE001
                     duration = time.time() - start

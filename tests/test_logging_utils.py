@@ -194,6 +194,20 @@ class TestSetupLogging:
         second = set(logging.getLogger().handlers)
         assert not (first & second)
 
+    def test_previous_file_handler_closed_before_removal(self, tmp_path):
+        """测试：重新配置日志时旧的文件处理器被关闭（无未关闭句柄）"""
+        root = logging.getLogger()
+        try:
+            setup_logging(log_file=str(tmp_path / "a.log"))
+            first = [h for h in root.handlers if isinstance(h, logging.FileHandler)][-1]
+            assert first.stream is not None
+
+            setup_logging(log_file=str(tmp_path / "b.log"))
+            assert first.stream is None  # close() 释放底层文件流
+            assert first not in root.handlers
+        finally:
+            setup_logging()
+
 
 class TestLoggerAdapter:
     """带上下文日志适配器测试"""

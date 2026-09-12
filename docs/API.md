@@ -950,7 +950,7 @@ After `close_all()` the pool cannot be borrowed from again; if `acquire()` was a
 
 Same keys as `AsyncConnectionPool`: `active` / `idle` / `total_connections` / `total_created` / `reconnects` / `failed`.
 
-> **Note**: `BatchExecutor` (sync kernel) and `AsyncBatchExecutor` (async kernel) automatically reuse per-host connections in multi-host or retry batches, and close the internally created pool after a single batch completes. An external pool injected via `pool_factory` is the caller's responsibility for lifecycle; the executor never closes it.
+> **Note**: `BatchExecutor` (sync kernel) and `AsyncBatchExecutor` (async kernel) automatically reuse per-host connections in multi-host or retry batches. Internally created pools are created lazily per host (one connection per host) and closed as soon as that host finishes, including after its retries. An external pool injected via `pool_factory` is the caller's responsibility for lifecycle; the executor never closes it.
 
 ---
 
@@ -964,7 +964,8 @@ Synchronous batch command executor using `ThreadPoolExecutor`; in multi-host or 
 class BatchExecutor:
     def __init__(self, host_service: HostService, max_concurrency: int = 10,
                  command_timeout: int = 30, use_async: bool = False,
-                 pool_factory: Optional[Callable] = None)
+                 pool_factory: Optional[Callable] = None,
+                 max_output_bytes: Optional[int] = None)
     def execute(self, host_names: List[str], command: str,
                 retry_count: int = 0, retry_delay: float = 1.0,
                 progress_callback: Optional[ProgressCallback] = None) -> BatchResult
@@ -972,9 +973,13 @@ class BatchExecutor:
 
 #### Connection Pool Ownership
 
-- In multi-host or retry scenarios, when `pool_factory` is not provided the executor creates an internal per-host pool, closed automatically after `execute()` completes.
+- In multi-host or retry scenarios, when `pool_factory` is not provided the executor creates an internal per-host pool lazily (one connection per host) and closes it as soon as that host finishes, including after its retries.
 - When `pool_factory` is provided, the pool returned by the factory is caller-owned; the executor only borrows it and never closes it, suitable for long-lived services reusing pools across batches.
 - With `use_async=True` the factory must return an async pool; the sync kernel must return a sync pool.
+
+#### Output Retention (`max_output_bytes`)
+
+Both executors accept `max_output_bytes` (default `None`). `None` retains the complete `stdout`/`stderr` (existing behavior); a positive integer caps each host's retained stream at that many UTF-8 bytes and appends a deterministic `[output truncated: N bytes omitted]` marker. Truncation does not change command success/failure or exit codes, and only bounds the retained `BatchResult` — the client may still briefly hold the full output during execution.
 
 #### Retry Behavior
 
@@ -992,7 +997,8 @@ Native async batch command executor based on `asyncio.Semaphore` to control conc
 class AsyncBatchExecutor:
     def __init__(self, host_service: HostService, max_concurrency: int = 10,
                  command_timeout: int = 30,
-                 pool_factory: Optional[Callable] = None)
+                 pool_factory: Optional[Callable] = None,
+                 max_output_bytes: Optional[int] = None)
     async def execute(self, host_names: List[str], command: str,
                       retry_count: int = 0, retry_delay: float = 1.0,
                       progress_callback: Optional[ProgressCallback] = None) -> BatchResult
@@ -1006,10 +1012,11 @@ class AsyncBatchExecutor:
 | `max_concurrency` | `int` | 10 | Maximum concurrent hosts |
 | `command_timeout` | `int` | 30 | Single-command timeout (seconds) |
 | `pool_factory` | `Optional[Callable]` | `None` | External async connection pool factory; the returned pool is caller-owned and not closed by the executor |
+| `max_output_bytes` | `Optional[int]` | `None` | Per-host per-stream retained output cap (UTF-8 bytes); `None` keeps full output; positive values truncate with a `[output truncated: N bytes omitted]` marker (success/failure unchanged) |
 
 The `execute` parameters are identical to the synchronous `BatchExecutor.execute`: `retry_count` is the number of retries on failure, `retry_delay` is the exponential-backoff base delay (with full jitter, capped at 60s), and `progress_callback` is a progress callback `(completed, total, host_name)` (may be sync or async).
 
-In multi-host or retry scenarios, when `pool_factory` is not provided the executor creates an internal `AsyncConnectionPool` per host, closed automatically after the batch; when `pool_factory` is provided the external pool is the caller's responsibility for lifecycle and is never closed by the executor. Unknown hosts return individual failure results, and duplicate host names are executed once.
+In multi-host or retry scenarios, when `pool_factory` is not provided the executor creates an internal `AsyncConnectionPool` per host lazily (one connection per host) and closes it as soon as that host finishes, including after its retries; when `pool_factory` is provided the external pool is the caller's responsibility for lifecycle and is never closed by the executor. Unknown hosts return individual failure results, and duplicate host names are executed once.
 
 #### Usage Example
 

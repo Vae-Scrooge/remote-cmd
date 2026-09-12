@@ -48,7 +48,7 @@ Remote CMD - SSH 远程服务器管理工具
     - 文档: 参见 docs/ 目录
 
 Author: Vae-Scrooge
-Version: 2.3.0（单一真相源见 remote_cmd._version）
+Version: 2.4.0（单一真相源见 remote_cmd._version）
 License: MIT
 """
 

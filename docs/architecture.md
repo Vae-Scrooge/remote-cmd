@@ -435,7 +435,7 @@ Current implementation:
 - When using `SSHClient` / `AsyncSSHClient` directly, each client instance represents one connection; the caller may execute multiple commands on the same client.
 - The synchronous `BatchExecutor` uses `SyncConnectionPool` per host in multi-host or retry batches.
 - The async `AsyncBatchExecutor` uses `AsyncConnectionPool` (`remote_cmd.core.async_connection_pool`) per host in multi-host or retry batches, based on asyncssh, reusing connections with idle/lifetime recycling and health checks.
-- Both executors support `pool_factory` injection of an external pool; the external pool is caller-owned and never closed by the executor, while internally created pools are closed automatically after the batch completes.
+- Both executors support `pool_factory` injection of an external pool; the external pool is caller-owned and never closed by the executor, while internally created pools are created lazily per host and closed as soon as that host finishes (including its retries).
 
 ```python
 # Connection pool (implemented, used for async batch execution)

@@ -36,28 +36,30 @@ pip install remote_cmd_manager && remote-cmd host add web-01 192.168.1.10 ubuntu
 
 ---
 
-## v2.3.0 Release Highlights
+## v2.4.0 Release Highlights
 
-v2.3.0 makes blocking SFTP operations timeout-safe, hardens async cancellation cleanup,
-and aligns the supported Python range and release tooling. See the
+v2.4.0 adds an opt-in retained-output cap for batch execution and cleans up logging
+handler resources, with default behavior and public result schemas unchanged. See the
 [full migration notes](./CHANGELOG.md) before upgrading automated callers.
 
-### SFTP Timeouts & Reliability
+### Bounded Batch Output
 
-- Blocking SFTP operations now support an inactivity timeout (default: `ConnectionConfig.timeout`, 30 s): uploads, downloads, directory listing, directory creation, removal, and file-info calls accept an optional `timeout` argument.
-- The synchronous `SSHClient` applies the timeout to the Paramiko SFTP channel, so a stalled read/write aborts the actual operation and raises `SSHFileTransferError`.
-- The asynchronous `AsyncSSHClient` bounds SFTP channel startup with a timeout and uses a progress-based inactivity watchdog to cancel stalled transfers, awaiting the aborted operation and preserving caller cancellation during cleanup.
-- Timed-out or cancelled SFTP sessions are closed and discarded, so a stale or desynchronized channel can never be reused.
+- `BatchExecutor` / `AsyncBatchExecutor` accept an optional `max_output_bytes` (default `None`): `None` keeps full `stdout`/`stderr`, while a positive value caps each host's retained streams and appends a `[output truncated: N bytes omitted]` marker.
+- Truncation is deterministic and UTF-8 byte-boundary safe, applies to `stdout` and `stderr` independently, and never changes command success/failure or exit codes.
+- The cap bounds the retained `BatchResult`; the SSH client may still hold full output transiently during execution, so it is not a process-wide RSS limit.
 
-### Release Engineering
+### Reliability
 
-- Python 3.9–3.14 are officially supported and CI-tested; `Requires-Python` remains `>=3.9`.
-- CI runs release-metadata validation for CHANGELOG.md-only changes.
-- Publish builds pin `build==1.5.0` and `twine==7.0.0`.
+- `setup_logging` now closes previous root-logger handlers before removing them, avoiding unclosed-file resource warnings when logging is reconfigured.
+- Connection-pool lifetime wording in the documentation now matches the actual behavior: internal pools are created lazily per host and closed as soon as that host finishes (including its retries).
+
+### Compatibility
+
+- Default behavior is unchanged (`max_output_bytes=None` retains full output) and the public `BatchResult` / `BatchHostResult` schemas are unchanged.
 
 ## Table of Contents
 
-- [v2.3.0 Release Highlights](#v230-release-highlights)
+- [v2.4.0 Release Highlights](#v240-release-highlights)
 - [Why Remote CMD?](#why-remote-cmd)
 - [Quick Start](#quick-start)
 - [Use Cases](#use-cases)
@@ -205,7 +207,7 @@ with SSHClient(config) as client:
 | **File Transfer** | Upload/download via SFTP (`remote-cmd upload/download`) |
 | **Host Management** | CRUD with pluggable JSON or **SQLite** persistence |
 | **Tag System** | Filter hosts by tag (e.g., `production`, `web`, `db`) |
-| **Batch Ops** | Run commands across any host group, synchronously or asynchronously |
+| **Batch Ops** | Run commands across any host group, synchronously or asynchronously; optional per-host retained-output cap (`max_output_bytes`) |
 | **Async Kernel** | `AsyncSSHClient` / `AsyncConnectionPool` / `AsyncBatchExecutor` via the `[async]` extra |
 | **Task Runner** | Track and schedule long-running remote tasks with statuses (`TaskRunner`) |
 | **Connection Test** | Test all host SSH connections and report status |

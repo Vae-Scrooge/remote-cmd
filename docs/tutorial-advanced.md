@@ -316,7 +316,7 @@ results = asyncio.run(
 )
 ```
 
-In multi-host or retry scenarios, `AsyncBatchExecutor` uses `AsyncConnectionPool` per host internally to reuse connections, and closes the internally created pool automatically after the batch. If you inject an external pool via `pool_factory`, the pool is caller-owned and is never closed by the executor; this suits long-lived services reusing pools across batches. Do not call `BatchExecutor(use_async=True)` inside an already-running event loop; use `await AsyncBatchExecutor.execute()` directly instead.
+In multi-host or retry scenarios, `AsyncBatchExecutor` uses `AsyncConnectionPool` per host internally to reuse connections, and closes each internal pool as soon as that host finishes (including after its retries). If you inject an external pool via `pool_factory`, the pool is caller-owned and is never closed by the executor; this suits long-lived services reusing pools across batches. Do not call `BatchExecutor(use_async=True)` inside an already-running event loop; use `await AsyncBatchExecutor.execute()` directly instead.
 
 ### Batch File Transfer
 

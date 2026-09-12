@@ -12,6 +12,7 @@
     - 错误消息中的密码使用 [REDACTED] 替换
 """
 
+import contextlib
 import logging
 import re
 import sys
@@ -119,8 +120,12 @@ def setup_logging(
     root_logger = logging.getLogger()
     root_logger.setLevel(getattr(logging, level.upper(), logging.INFO))
 
-    # 清除已有处理器
-    root_logger.handlers.clear()
+    # 清除已有处理器：先关闭再移除，避免遗留打开的文件句柄
+    # （例如 RotatingFileHandler 的日志文件；重复配置会触发 ResourceWarning）
+    for handler in list(root_logger.handlers):
+        root_logger.removeHandler(handler)
+        with contextlib.suppress(Exception):
+            handler.close()
 
     # 创建格式化器
     if structured:

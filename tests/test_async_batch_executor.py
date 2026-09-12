@@ -11,6 +11,7 @@ from remote_cmd.core.async_connection_pool import AsyncConnectionPool
 from remote_cmd.core.async_ssh_client import AsyncSSHClient
 from remote_cmd.core.host import Host
 from remote_cmd.core.ssh_client import CommandResult, ConnectionConfig
+from remote_cmd.service._host_runner import OUTPUT_TRUNCATION_MARKER
 from remote_cmd.service.async_batch_executor import AsyncBatchExecutor
 from remote_cmd.service.batch_executor import BatchExecutor, BatchHostResult
 from remote_cmd.utils.exceptions import (
@@ -18,6 +19,7 @@ from remote_cmd.utils.exceptions import (
     PoolClosedError,
     SSHAuthenticationError,
     SSHTimeoutError,
+    ValidationError,
 )
 
 # ============================================================================
@@ -940,3 +942,119 @@ class TestAsyncBatchExecutorInternalPoolLifecycle:
         assert FlakyAsyncClient.created[0].calls == 3
         assert pools[0]._closed
         assert not FlakyAsyncClient.created[0].is_connected()
+
+
+# ============================================================================
+# v2.4：max_output_bytes 保留输出上限（异步语义与同步对齐）
+# ============================================================================
+
+
+def _marker(omitted: int) -> str:
+    return OUTPUT_TRUNCATION_MARKER.format(omitted=omitted)
+
+
+class TestAsyncBatchExecutorOutputCap:
+    """异步执行器 max_output_bytes 语义（默认 None = 完整输出）"""
+
+    @pytest.mark.asyncio
+    async def test_default_none_retains_full_output(self, mock_async_client_class):
+        cm, instance = mock_async_client_class
+        payload = "x" * 8192
+        instance.execute = AsyncMock(return_value=CommandResult("uptime", payload, payload, 0))
+        host = Host(name="srv1", hostname="10.0.0.1", username="admin")
+        ex = AsyncBatchExecutor(host_service=make_mock_service([host]))
+        result = await ex.execute(["srv1"], "uptime")
+        host_result = result.results["srv1"]
+        assert host_result.stdout == payload
+        assert host_result.stderr == payload
+        assert "[output truncated" not in host_result.stdout
+
+    @pytest.mark.asyncio
+    async def test_positive_cap_truncates_stdout_and_stderr(self, mock_async_client_class):
+        cm, instance = mock_async_client_class
+        instance.execute = AsyncMock(return_value=CommandResult("uptime", "o" * 500, "e" * 700, 0))
+        host = Host(name="srv1", hostname="10.0.0.1", username="admin")
+        ex = AsyncBatchExecutor(host_service=make_mock_service([host]), max_output_bytes=100)
+        result = await ex.execute(["srv1"], "uptime")
+        host_result = result.results["srv1"]
+        assert host_result.stdout == "o" * 100 + _marker(400)
+        assert host_result.stderr == "e" * 100 + _marker(600)
+        assert host_result.success is True
+
+    @pytest.mark.asyncio
+    async def test_below_and_exact_boundary_unchanged(self, mock_async_client_class):
+        cm, instance = mock_async_client_class
+        instance.execute = AsyncMock(return_value=CommandResult("uptime", "exact", "small", 0))
+        host = Host(name="srv1", hostname="10.0.0.1", username="admin")
+
+        ex = AsyncBatchExecutor(host_service=make_mock_service([host]), max_output_bytes=5)
+        result = await ex.execute(["srv1"], "uptime")
+        assert result.results["srv1"].stdout == "exact"
+        assert result.results["srv1"].stderr == "small"
+
+        ex = AsyncBatchExecutor(host_service=make_mock_service([host]), max_output_bytes=64)
+        result = await ex.execute(["srv1"], "uptime")
+        assert result.results["srv1"].stdout == "exact"
+
+    @pytest.mark.asyncio
+    async def test_cap_preserves_failure_semantics(self, mock_async_client_class):
+        cm, instance = mock_async_client_class
+        instance.execute = AsyncMock(
+            return_value=CommandResult("uptime", "x" * 1000, "e" * 1000, 7)
+        )
+        host = Host(name="srv1", hostname="10.0.0.1", username="admin")
+        ex = AsyncBatchExecutor(host_service=make_mock_service([host]), max_output_bytes=16)
+        result = await ex.execute(["srv1"], "uptime")
+        host_result = result.results["srv1"]
+        assert host_result.success is False
+        assert host_result.exit_code == 7
+        assert host_result.stdout.startswith("x" * 16)
+        assert host_result.stderr.startswith("e" * 16)
+
+    @pytest.mark.parametrize("bad", [0, -1, True, False, 1.5, "64"])
+    def test_invalid_max_output_bytes_rejected(self, bad):
+        with pytest.raises(ValidationError, match="max_output_bytes"):
+            AsyncBatchExecutor(host_service=MagicMock(), max_output_bytes=bad)
+
+    @pytest.mark.asyncio
+    async def test_large_synthetic_output_bounded(self, mock_async_client_class):
+        cm, instance = mock_async_client_class
+        chunk = "z" * (256 * 1024)
+        instance.execute = AsyncMock(return_value=CommandResult("uptime", chunk, chunk, 0))
+        hosts = [
+            Host(name=f"srv{i}", hostname=f"10.0.0.{i + 1}", username="admin") for i in range(10)
+        ]
+        ex = AsyncBatchExecutor(host_service=make_mock_service(hosts), max_output_bytes=4096)
+        result = await ex.execute([h.name for h in hosts], "uptime")
+        assert result.success == 10
+        retained = sum(len(r.stdout) + len(r.stderr) for r in result.results.values())
+        assert retained <= 10 * 2 * (4096 + 64)
+        assert retained < 10 * 2 * len(chunk) // 10
+
+
+class TestOutputCapParity:
+    @pytest.mark.asyncio
+    async def test_sync_and_async_truncation_equivalent(self, mock_async_client_class):
+        cm, instance = mock_async_client_class
+        stdout = ("o" * 5000) + ("é" * 100)
+        stderr = "e" * 3000
+        instance.execute = AsyncMock(return_value=CommandResult("uptime", stdout, stderr, 7))
+        host = Host(name="srv1", hostname="10.0.0.1", username="admin")
+
+        async_ex = AsyncBatchExecutor(host_service=make_mock_service([host]), max_output_bytes=257)
+        async_result = await async_ex.execute(["srv1"], "uptime")
+
+        with patch("remote_cmd.service.batch_executor.SSHClient") as mock_cls:
+            inst = MagicMock()
+            mock_cls.return_value = inst
+            inst.execute.return_value = CommandResult("uptime", stdout, stderr, 7)
+            sync_ex = BatchExecutor(host_service=make_mock_service([host]), max_output_bytes=257)
+            sync_result = sync_ex.execute(["srv1"], "uptime")
+
+        sync_host = sync_result.results["srv1"]
+        async_host = async_result.results["srv1"]
+        assert sync_host.stdout == async_host.stdout
+        assert sync_host.stderr == async_host.stderr
+        assert sync_host.exit_code == async_host.exit_code == 7
+        assert sync_host.success is async_host.success is False
+        assert "[output truncated" in sync_host.stdout

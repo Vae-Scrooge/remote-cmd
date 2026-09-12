@@ -36,6 +36,7 @@ from remote_cmd.service._host_runner import (
     build_connection_config,
     resolve_host_or_error,
     to_host_result,
+    validate_max_output_bytes,
 )
 from remote_cmd.service._types import BatchHostResult, BatchResult, ProgressCallback
 from remote_cmd.service.host_service import HostService
@@ -61,6 +62,11 @@ class AsyncBatchExecutor:
             内部按主机惰性创建 AsyncConnectionPool，该主机执行结束后
             立即关闭；内部池上限 1 条连接，整批并发存活连接数受
             ``max_concurrency`` 约束。
+        max_output_bytes: 每台主机每个输出流（stdout/stderr）保留的最大
+            字节数（UTF-8），默认 ``None`` 保留完整输出（既有行为）。
+            设置正整数时输出会被确定性截断并追加 ``[output truncated: N
+            bytes omitted]`` 标记；截断不改变命令成功/失败与退出码。
+            仅约束保留的批量结果，客户端在执行期间仍可能短暂持有完整输出
 
     连接池所有权约定（与同步 BatchExecutor 一致）：
 
@@ -77,6 +83,7 @@ class AsyncBatchExecutor:
         max_concurrency: int = 10,
         command_timeout: int = 30,
         pool_factory: Optional[PoolFactory] = None,
+        max_output_bytes: Optional[int] = None,
     ) -> None:
         if max_concurrency < 1:
             raise ValueError(f"max_concurrency must be >= 1, got: {max_concurrency}")
@@ -86,6 +93,7 @@ class AsyncBatchExecutor:
         self._max_concurrency = max_concurrency
         self._command_timeout = command_timeout
         self._pool_factory = pool_factory
+        self._max_output_bytes = validate_max_output_bytes(max_output_bytes)
 
     async def execute(
         self,
@@ -318,7 +326,13 @@ class AsyncBatchExecutor:
                                 command,
                                 timeout=self._command_timeout,
                             )
-                    return to_host_result(host_name, command, cmd_result, time.time() - start)
+                    return to_host_result(
+                        host_name,
+                        command,
+                        cmd_result,
+                        time.time() - start,
+                        max_output_bytes=self._max_output_bytes,
+                    )
                 except Exception as e:  # noqa: BLE001
                     last_error = str(e)
                     last_duration = time.time() - start

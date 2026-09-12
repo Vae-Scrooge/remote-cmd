@@ -1,10 +1,36 @@
 """SqliteHostRepository 主机存储测试"""
 
+import os
 import sqlite3
+import subprocess
+import sys
+import time
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 from remote_cmd.core.host import Host
 from remote_cmd.repository.sqlite_host_repository import SqliteHostRepository
 from remote_cmd.utils.crypto import CredentialEncryption
+
+# 多进程写测试的 worker 源码：启动后先写 ready 文件，等待 go 文件存在
+# 再开始写入，确保各进程在 go 出现时同时争用数据库（确定性启动同步）。
+_MP_WORKER = r"""
+import os
+import sys
+import time
+
+from remote_cmd.core.host import Host
+from remote_cmd.repository.sqlite_host_repository import SqliteHostRepository
+
+db, rank, n, ready, go = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), sys.argv[4], sys.argv[5]
+with open(ready, "w", encoding="utf-8"):
+    pass
+while not os.path.exists(go):
+    time.sleep(0.005)
+repo = SqliteHostRepository(db)
+for i in range(n):
+    repo.save(Host(name=f"p{rank}-h{i}", hostname=f"10.{rank}.{i}.1", username="u"))
+"""
 
 
 class TestSqliteHostRepository:
@@ -458,3 +484,144 @@ class TestConnectionLifecycle:
         assert fds_after <= fds_before + 2, (
             f"数据库连接 fd 泄漏：操作前 {fds_before}，操作后 {fds_after}"
         )
+
+
+# ============================================================================
+# v2.2：并发写加固（WAL + busy_timeout + BEGIN IMMEDIATE）
+# ============================================================================
+
+
+class TestSqliteConcurrentWriters:
+    """多进程/多连接并发写入的健壮性回归
+
+    背景：v2.1 及更早版本在多个 remote-cmd 进程同时打开同一 hosts.db 时，
+    首次 WAL 切换会直接抛 ``database is locked``（journal_mode 切换不经过
+    busy handler），且并发写事务无 busy_timeout，导致进程失败/丢失更新。
+    """
+
+    def _spawn_env(self) -> dict:
+        repo_root = Path(__file__).resolve().parents[1]
+        env = dict(os.environ)
+        env["PYTHONPATH"] = str(repo_root) + os.pathsep + env.get("PYTHONPATH", "")
+        return env
+
+    def test_configured_busy_timeout_and_wal(self, temp_db_path):
+        """连接级 PRAGMA：busy_timeout 生效且 journal_mode 为 WAL"""
+        repo = SqliteHostRepository(temp_db_path, busy_timeout_ms=1234)
+        conn = repo._get_conn()
+        try:
+            assert conn.execute("PRAGMA busy_timeout;").fetchone()[0] == 1234
+            assert str(conn.execute("PRAGMA journal_mode;").fetchone()[0]).lower() == "wal"
+        finally:
+            conn.close()
+
+    def test_multiprocess_concurrent_writers_no_lost_updates(self, tmp_path):
+        """多个独立进程同时写同一数据库：全部成功且无丢失更新"""
+        db_path = str(tmp_path / "multiproc.db")
+        n_procs = 4
+        n_writes = 20
+        ready_files = [str(tmp_path / f"ready-{r}") for r in range(n_procs)]
+        go_file = str(tmp_path / "go")
+
+        procs = [
+            subprocess.Popen(
+                [
+                    sys.executable,
+                    "-c",
+                    _MP_WORKER,
+                    db_path,
+                    str(rank),
+                    str(n_writes),
+                    ready_files[rank],
+                    go_file,
+                ],
+                env=self._spawn_env(),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            for rank in range(n_procs)
+        ]
+
+        try:
+            # 等待所有 worker 就绪（全部存活并即将争用数据库）
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline and not all(os.path.exists(p) for p in ready_files):
+                time.sleep(0.01)
+            assert all(os.path.exists(p) for p in ready_files), "worker 未全部就绪"
+
+            with open(go_file, "w", encoding="utf-8") as f:
+                f.write("go")
+
+            failures = []
+            for proc in procs:
+                try:
+                    _out, err = proc.communicate(timeout=60)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    _out, err = proc.communicate()
+                    failures.append("timeout")
+                    continue
+                if proc.returncode != 0:
+                    failures.append(err.decode(errors="replace"))
+            assert not failures, f"并发写进程失败: {failures}"
+        finally:
+            for proc in procs:
+                if proc.poll() is None:
+                    proc.kill()
+                    proc.communicate()
+
+        repo = SqliteHostRepository(db_path)
+        assert repo.count() == n_procs * n_writes
+        names = {h.name for h in repo.list()}
+        expected = {f"p{r}-h{i}" for r in range(n_procs) for i in range(n_writes)}
+        # 无丢失更新：每个进程写入的每条记录都能读到
+        assert names == expected
+
+    def test_concurrent_threads_separate_instances(self, tmp_path):
+        """同一进程内多实例（各自连接）并发写：全部成功且无丢失更新"""
+        db_path = str(tmp_path / "threads.db")
+        n_threads = 4
+        n_writes = 15
+
+        def worker(rank: int) -> None:
+            repo = SqliteHostRepository(db_path)
+            for i in range(n_writes):
+                repo.save(Host(name=f"t{rank}-h{i}", hostname=f"10.{rank}.{i}.1", username="u"))
+
+        with ThreadPoolExecutor(max_workers=n_threads) as pool:
+            list(pool.map(worker, range(n_threads)))
+
+        repo = SqliteHostRepository(db_path)
+        assert repo.count() == n_threads * n_writes
+        names = {h.name for h in repo.list()}
+        expected = {f"t{r}-h{i}" for r in range(n_threads) for i in range(n_writes)}
+        assert names == expected
+
+    def test_schema_version_and_columns_preserved(self, temp_db_path):
+        """schema 兼容性：db_version 与 hosts 列定义保持 v1"""
+        repo = SqliteHostRepository(temp_db_path)
+        repo.save(Host(name="srv", hostname="10.0.0.1", username="u"))
+
+        conn = sqlite3.connect(temp_db_path)
+        try:
+            version = conn.execute("SELECT value FROM meta WHERE key = 'db_version'").fetchone()[0]
+            assert version == "1"
+            cols = {row[1] for row in conn.execute("PRAGMA table_info(hosts)")}
+            assert {
+                "name",
+                "hostname",
+                "username",
+                "port",
+                "password",
+                "key_filename",
+                "tags",
+                "description",
+                "created_at",
+                "updated_at",
+            } <= cols
+        finally:
+            conn.close()
+
+        # 重新打开：读取行为不变
+        repo2 = SqliteHostRepository(temp_db_path)
+        assert repo2.get("srv").hostname == "10.0.0.1"

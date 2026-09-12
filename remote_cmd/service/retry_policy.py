@@ -19,18 +19,23 @@
     - ``ValidationError``             输入校验错误
     - ``ValueError`` / ``TypeError``  无效参数（如非法端口）与编程错误
     - ``KeyError``                    主机不存在
-    - ``RuntimeError``                池已关闭等内部状态错误
+    - ``PoolClosedError``            池已关闭（v2.2 细化；RuntimeError 子类）
     - ``KeyboardInterrupt`` 等 ``BaseException``（非 ``Exception``）
 
     瞬态（retry with backoff）：
     - ``SSHTimeoutError`` / ``SSHCommandTimeoutError``  超时
     - 非认证类 ``SSHConnectionError`` / ``SSHCommandError``  网络中断、通道异常
     - ``OSError`` 及其子类（socket 错误等）
-    - 其他未识别的 ``Exception``：**保持历史行为按可重试处理**（向后
-      兼容——注入自定义 client_factory 的调用方可能抛出任意异常表示
-      瞬态故障）。自定义 client_factory 实现应优先抛出 remote_cmd
-      类型化异常（如 ``SSHTimeoutError`` / ``SSHAuthenticationError``），
-      以获得精确的永久/瞬态分类。
+    - 其他未识别的 ``Exception``（含**裸 RuntimeError**，如线程创建失败、
+      自定义 client_factory 抛出的瞬态 RuntimeError）：保持历史行为按
+      可重试处理（向后兼容——注入自定义 client_factory 的调用方可能抛出
+      任意异常表示瞬态故障）。自定义 client_factory 实现应优先抛出
+      remote_cmd 类型化异常（如 ``SSHTimeoutError`` / ``SSHAuthenticationError`` /
+      ``PoolClosedError``），以获得精确的永久/瞬态分类。
+
+    v2.2 兼容性说明：v2.1 曾将 ``RuntimeError`` 整体归为永久性；
+    现收窄为 ``PoolClosedError``（连接池关闭的唯一生产来源），
+    裸 ``RuntimeError`` 恢复 v2.0 的可重试行为。
 
 用法:
     >>> from remote_cmd.service.retry_policy import is_retryable, compute_backoff_delay
@@ -47,6 +52,7 @@ from typing import Optional
 from remote_cmd.utils.exceptions import (
     ConfigError,
     CredentialError,
+    PoolClosedError,
     SSHAuthenticationError,
     ValidationError,
 )
@@ -63,7 +69,8 @@ PERMANENT_ERRORS: tuple[type[BaseException], ...] = (
     ValueError,
     TypeError,
     KeyError,
-    RuntimeError,
+    # 连接池关闭：唯一需要与裸 RuntimeError 区分的内置状态错误（v2.2）
+    PoolClosedError,
 )
 
 # 默认退避上限（秒）：attempt 很大时避免 2**attempt 溢出为天文数字

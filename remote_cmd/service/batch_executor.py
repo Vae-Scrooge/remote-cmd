@@ -7,7 +7,10 @@
 连接池所有权约定（与 AsyncBatchExecutor 一致）：
 - 外部注入（``pool_factory``）→ 调用方拥有，executor 只借用不关闭；
   适合长驻服务跨批次复用连接。
-- 内部创建 → executor 拥有，单次 ``execute`` 结束后 ``close_all``；
+- 内部创建 → executor 拥有；内部池按主机惰性创建，在该主机（含重试）
+  执行结束后立即 ``close_all``。因此整批范围内同时存活的内部连接数
+  不超过 ``max_concurrency``（每个内部池上限 1 条连接），避免"N 台主机
+  保留 N 条空闲连接直到批次结束"的 fd/socket 耗尽问题。
   适合一次性脚本。
 
 用法:
@@ -76,15 +79,18 @@ class BatchExecutor:
             否则抛出 RuntimeError（应改用 AsyncBatchExecutor.execute()）。
         pool_factory: 外部连接池工厂（可选，v2.1）。提供时执行器从工厂获取
             池并复用其连接，**绝不关闭**返回的池（所有权归调用方）；
-            未提供时多主机或需重试时内部按主机创建 SyncConnectionPool
-            （use_async=True 时为 AsyncConnectionPool），执行结束后自动关闭。
-            工厂返回的池类型须与内核匹配（见 PoolFactory 注释）。
+            未提供时多主机或需重试时内部按主机惰性创建 SyncConnectionPool
+            （use_async=True 时为 AsyncConnectionPool），该主机执行结束后
+            立即关闭；内部池 ``max_connections=1``，整批并发存活连接数受
+            ``max_concurrency`` 约束。工厂返回的池类型须与内核匹配
+            （见 PoolFactory 注释）。
 
     连接池所有权约定（与 AsyncBatchExecutor 一致）：
 
     - 外部注入（``pool_factory``）→ 调用方拥有，executor 只借用不关闭；
       适合长驻服务跨批次复用连接。
-    - 内部创建 → executor 拥有，单次 ``execute`` 结束后 ``close_all``；
+    - 内部创建 → executor 拥有；按主机惰性创建并在该主机（含重试）执行
+      结束后立即关闭，整批并发存活连接数不超过 ``max_concurrency``。
       适合一次性脚本。
 
     Note:
@@ -216,36 +222,25 @@ class BatchExecutor:
         retry_delay: float,
         progress_callback: Optional[ProgressCallback],
     ) -> BatchResult:
-        """同步路径：ThreadPoolExecutor + 连接池复用"""
+        """同步路径：ThreadPoolExecutor + 按主机惰性创建/关闭连接池"""
         total = len(host_names)
         results: dict[str, BatchHostResult] = {}
         start_time = time.time()
 
         logger.info(f"batch execution started: {total} hosts, concurrency={self._max_concurrency}")
 
-        pools: dict[str, SyncConnectionPool] = {}
-        # 内部创建的池由本批次负责关闭；外部 pool_factory 提供的池
-        # 所有权归调用方，绝不登记进此列表
-        internal_pools: list[SyncConnectionPool] = []
-
-        try:
-            with ThreadPoolExecutor(max_workers=self._max_concurrency) as executor:
-                future_map = self._submit_tasks(
-                    executor,
-                    host_names,
-                    command,
-                    retry_count,
-                    retry_delay,
-                    pools,
-                    internal_pools,
-                    total,
-                )
-                self._collect_results(
-                    future_map, host_names, command, progress_callback, results, total
-                )
-        finally:
-            # 仅关闭内部创建的池；外部 pool_factory 提供的池所有权归调用方
-            self._cleanup_pools(internal_pools)
+        with ThreadPoolExecutor(max_workers=self._max_concurrency) as executor:
+            future_map = self._submit_tasks(
+                executor,
+                host_names,
+                command,
+                retry_count,
+                retry_delay,
+                total,
+            )
+            self._collect_results(
+                future_map, host_names, command, progress_callback, results, total
+            )
 
         duration = time.time() - start_time
         return self._build_result(total, results, duration)
@@ -257,61 +252,57 @@ class BatchExecutor:
         command: str,
         retry_count: int,
         retry_delay: float,
-        pools: dict[str, SyncConnectionPool],
-        internal_pools: list[SyncConnectionPool],
         total: int,
     ) -> dict:
-        """提交任务到线程池，返回 future_map"""
+        """提交任务到线程池，返回 future_map
+
+        - 外部 ``pool_factory``：在提交前统一准备（工厂调用保持在主线程），
+          池所有权归调用方，executor 绝不关闭。
+        - 内部池：不在提交前创建；worker 解析主机成功后惰性创建并在该
+          主机（含重试）结束后关闭，整批并发存活连接数受
+          ``max_concurrency`` 约束。
+        """
         future_map = {}
+        external_pools: dict[str, SyncConnectionPool] = {}
+        if self._pool_factory is not None:
+            for host_name in host_names:
+                pool = self._prepare_pool(host_name)
+                if pool is not None:
+                    external_pools[host_name] = pool
+
         for host_name in host_names:
-            # 连接池：外部注入时始终启用；否则多主机或需重试时创建
-            pool: Optional[SyncConnectionPool] = None
-            if self._pool_factory is not None or retry_count > 0 or total > 1:
-                pool = self._prepare_pool(host_name, pools, internal_pools)
+            # 连接池：外部注入时始终启用；否则多主机或需重试时启用内部池
+            use_pool = self._pool_factory is not None or retry_count > 0 or total > 1
             future = executor.submit(
-                self._execute_on_host, host_name, command, retry_count, retry_delay, pool
+                self._execute_on_host,
+                host_name,
+                command,
+                retry_count,
+                retry_delay,
+                external_pools.get(host_name),
+                use_pool,
             )
             future_map[future] = host_name
         return future_map
 
-    def _prepare_pool(
-        self,
-        host_name: str,
-        pools: dict[str, SyncConnectionPool],
-        internal_pools: list[SyncConnectionPool],
-    ) -> Optional[SyncConnectionPool]:
-        """为指定主机创建或获取连接池
+    def _prepare_pool(self, host_name: str) -> Optional[SyncConnectionPool]:
+        """通过外部 ``pool_factory`` 为指定主机准备连接池
 
         主机解析失败时返回 None 而非上抛：保持 execute 的
         "未知主机 → BatchHostResult 错误条目" 契约（由
         _execute_on_host 的 resolve_host_or_error 记录失败详情），
         避免整个批次因单个坏主机以异常收场。
 
-        池所有权：外部 ``pool_factory`` 提供的池绝不登记进
-        internal_pools（executor 不负责关闭）；内部创建的池登记后
-        由 _cleanup_pools 统一 close_all。
+        池所有权：工厂返回的池归调用方所有，executor 只借用不关闭。
         """
-        if host_name in pools:
-            return pools[host_name]
-
         try:
             host = self._host_service.resolve_host(host_name)
         except Exception as e:  # noqa: BLE001
             logger.debug(f"pool preparation skipped for {host_name}: {e}")
             return None
         config = build_connection_config(host, self._command_timeout)
-        if self._pool_factory is not None:
-            pool = self._pool_factory(config)
-            pools[host_name] = pool
-            return pool
-        pool = SyncConnectionPool(
-            config,
-            max_connections=max(1, self._max_concurrency),
-            client_factory=SSHClient,
-        )
-        pools[host_name] = pool
-        internal_pools.append(pool)
-        return pool
+        assert self._pool_factory is not None  # 仅外部工厂路径调用
+        return self._pool_factory(config)
 
     def _collect_results(
         self,
@@ -396,11 +387,6 @@ class BatchExecutor:
                     error="user interrupted",
                 )
 
-    def _cleanup_pools(self, internal_pools: list[SyncConnectionPool]) -> None:
-        """关闭本批次内部创建的所有连接池（外部提供的池绝不关闭）"""
-        for pool in internal_pools:
-            pool.close_all()
-
     def _build_result(
         self, total: int, results: dict[str, BatchHostResult], duration: float
     ) -> BatchResult:
@@ -427,6 +413,7 @@ class BatchExecutor:
         retry_count: int,
         retry_delay: float,
         pool: Optional[SyncConnectionPool] = None,
+        use_pool: bool = False,
     ) -> BatchHostResult:
         """
         在单台主机上执行命令（包含重试逻辑）
@@ -436,6 +423,10 @@ class BatchExecutor:
             command: 要执行的命令
             retry_count: 重试次数
             retry_delay: 重试间隔
+            pool: 外部注入的连接池（所有权归调用方，绝不关闭）
+            use_pool: 是否需要连接池。为 True 且 ``pool`` 为 None 时，
+                在主机解析成功后惰性创建内部池（``max_connections=1``），
+                并在本主机（含重试）结束后立即 ``close_all``
 
         Returns:
             BatchHostResult: 单台主机的执行结果
@@ -446,54 +437,70 @@ class BatchExecutor:
             return outcome
         host: Host = outcome
 
-        last_error: Optional[str] = None
-        last_duration = 0.0
+        internal_pool: Optional[SyncConnectionPool] = None
+        if pool is None and use_pool:
+            internal_pool = SyncConnectionPool(
+                build_connection_config(host, self._command_timeout),
+                max_connections=1,
+                client_factory=SSHClient,
+            )
+            pool = internal_pool
 
-        for attempt in range(retry_count + 1):
-            start = time.time()
-            try:
-                config = build_connection_config(host, self._command_timeout)
+        try:
+            config = build_connection_config(host, self._command_timeout)
+            last_error: Optional[str] = None
+            last_duration = 0.0
 
-                if pool is not None:
-                    # 连接池模式：复用主机连接，避免每次操作握手
-                    with pool.acquire_context() as client:
+            for attempt in range(retry_count + 1):
+                start = time.time()
+                try:
+                    if pool is not None:
+                        # 连接池模式：复用主机连接，避免每次操作握手
+                        with pool.acquire_context() as client:
+                            cmd_result = client.execute(command, timeout=self._command_timeout)
+                        return to_host_result(host_name, command, cmd_result, time.time() - start)
+
+                    # 非连接池路径：try/finally 确保即使 execute() 抛异常，
+                    # disconnect() 也会执行，避免 SSH 连接泄漏
+                    client = SSHClient(config)
+                    try:
+                        client.connect()
                         cmd_result = client.execute(command, timeout=self._command_timeout)
+                    finally:
+                        client.disconnect()
+
                     return to_host_result(host_name, command, cmd_result, time.time() - start)
 
-                # 非连接池路径：try/finally 确保即使 execute() 抛异常，
-                # disconnect() 也会执行，避免 SSH 连接泄漏
-                client = SSHClient(config)
-                try:
-                    client.connect()
-                    cmd_result = client.execute(command, timeout=self._command_timeout)
-                finally:
-                    client.disconnect()
+                except Exception as e:  # noqa: BLE001
+                    duration = time.time() - start
+                    last_error = str(e)
+                    last_duration = duration
+                    logger.debug(
+                        f"attempt {attempt + 1}/{retry_count + 1} failed for {host_name}: {e}"
+                    )
 
-                return to_host_result(host_name, command, cmd_result, time.time() - start)
+                    # 已是最后一次尝试，或异常为永久性（认证/凭据/配置错误等），
+                    # 立即放弃重试——详见 service/retry_policy.py 的分类契约
+                    if attempt >= retry_count:
+                        break
+                    if not is_retryable(e):
+                        logger.debug(f"non-retryable error for {host_name}, giving up: {e}")
+                        break
 
-            except Exception as e:  # noqa: BLE001
-                duration = time.time() - start
-                last_error = str(e)
-                last_duration = duration
-                logger.debug(f"attempt {attempt + 1}/{retry_count + 1} failed for {host_name}: {e}")
+                    # 指数退避 + full jitter（避免多主机同步重试的惊群）
+                    delay = compute_backoff_delay(attempt, retry_delay)
+                    time.sleep(delay)
 
-                # 已是最后一次尝试，或异常为永久性（认证/凭据/配置错误等），
-                # 立即放弃重试——详见 service/retry_policy.py 的分类契约
-                if attempt >= retry_count:
-                    break
-                if not is_retryable(e):
-                    logger.debug(f"non-retryable error for {host_name}, giving up: {e}")
-                    break
-
-                # 指数退避 + full jitter（避免多主机同步重试的惊群）
-                delay = compute_backoff_delay(attempt, retry_delay)
-                time.sleep(delay)
-
-        # 所有重试都失败
-        return BatchHostResult(
-            host=host_name,
-            success=False,
-            command=command,
-            error=last_error,
-            duration=last_duration,
-        )
+            # 所有重试都失败
+            return BatchHostResult(
+                host=host_name,
+                success=False,
+                command=command,
+                error=last_error,
+                duration=last_duration,
+            )
+        finally:
+            # 内部池生命周期止于本主机（含全部重试）；外部池绝不关闭。
+            # 由此整批并发存活的内部连接数 ≤ max_concurrency（每池上限 1 条）
+            if internal_pool is not None:
+                internal_pool.close_all()

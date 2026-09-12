@@ -61,9 +61,9 @@ jobs:
       - name: Test with pytest
         run: uv run pytest -v --tb=short --cov=remote_cmd --cov-report=xml --cov-report=term-missing
 
-      - name: Verify API docs generation (3.12 only)
+      - name: Check API docs are up to date (3.12 only)
         if: matrix.python-version == '3.12' && matrix.os == 'ubuntu-latest'
-        run: uv run pdoc remote_cmd -o /tmp/pdoc-check
+        run: uv run python scripts/check_docs_drift.py
 
       - name: Upload coverage
         uses: codecov/codecov-action@v6

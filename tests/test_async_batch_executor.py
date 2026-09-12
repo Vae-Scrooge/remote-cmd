@@ -13,7 +13,12 @@ from remote_cmd.core.host import Host
 from remote_cmd.core.ssh_client import CommandResult, ConnectionConfig
 from remote_cmd.service.async_batch_executor import AsyncBatchExecutor
 from remote_cmd.service.batch_executor import BatchExecutor, BatchHostResult
-from remote_cmd.utils.exceptions import CredentialError, SSHAuthenticationError, SSHTimeoutError
+from remote_cmd.utils.exceptions import (
+    CredentialError,
+    PoolClosedError,
+    SSHAuthenticationError,
+    SSHTimeoutError,
+)
 
 # ============================================================================
 # AsyncConnectionPool 测试
@@ -66,6 +71,8 @@ class TestAsyncConnectionPool:
     async def test_acquire_after_close_raises(self, config, patched_client):
         pool = AsyncConnectionPool(config=config, max_connections=2)
         await pool.close_all()
+        with pytest.raises(PoolClosedError, match="connection pool is closed"):
+            await pool.acquire()
         with pytest.raises(RuntimeError, match="connection pool is closed"):
             await pool.acquire()
 
@@ -768,7 +775,7 @@ class TestAsyncConnectionPoolCloseRace:
         await pool.close_all()
         await pool.release(c1)
 
-        with pytest.raises(RuntimeError, match="connection pool is closed"):
+        with pytest.raises(PoolClosedError, match="connection pool is closed"):
             await task
         # 已关闭的池不得再新建连接
         assert pool.get_metrics()["total_created"] == 1
@@ -811,3 +818,125 @@ class TestBatchExecutorUseAsyncInRunningLoop:
             ex = BatchExecutor(host_service=make_mock_service([host]), use_async=False)
             result = ex.execute(["srv1"], "uptime")
         assert result.success == 1
+
+
+# ============================================================================
+# v2.2：内部池按主机惰性创建/关闭 —— 并发存活连接数受 max_concurrency 约束
+# ============================================================================
+
+
+class _TrackingAsyncClient:
+    """记录 connect/disconnect 的异步假客户端（事件循环单线程，无需加锁）。"""
+
+    live = 0
+    peak = 0
+    created: list[_TrackingAsyncClient] = []
+
+    def __init__(self, cfg):
+        self._connected = False
+        self.calls = 0
+        _TrackingAsyncClient.created.append(self)
+
+    @classmethod
+    def reset(cls):
+        cls.live = 0
+        cls.peak = 0
+        cls.created = []
+
+    async def connect(self):
+        self._connected = True
+        _TrackingAsyncClient.live += 1
+        _TrackingAsyncClient.peak = max(_TrackingAsyncClient.peak, _TrackingAsyncClient.live)
+        return self
+
+    def is_connected(self):
+        return self._connected
+
+    async def execute(self, command, timeout=None, environment=None):  # noqa: ARG002
+        return CommandResult(command=command, stdout="ok", stderr="", exit_code=0)
+
+    async def disconnect(self):
+        if self._connected:
+            self._connected = False
+            _TrackingAsyncClient.live -= 1
+
+
+class TestAsyncBatchExecutorInternalPoolLifecycle:
+    """v2.2 资源语义（与同步 BatchExecutor 对齐）。"""
+
+    @pytest.mark.asyncio
+    async def test_many_hosts_retained_connections_bounded_by_concurrency(self):
+        """N=50 主机、并发 5：峰值存活连接 ≤ 5 且全部在主机结束后关闭"""
+        hosts = [Host(name=f"srv{i}", hostname=f"10.0.0.{i}", username="admin") for i in range(50)]
+        concurrency = 5
+        _TrackingAsyncClient.reset()
+        pools: list[AsyncConnectionPool] = []
+        real_pool_cls = AsyncConnectionPool
+
+        def tracking_pool(config, max_connections=10, client_factory=None):  # noqa: ARG001
+            pool = real_pool_cls(
+                config,
+                max_connections=max_connections,
+                client_factory=_TrackingAsyncClient,
+            )
+            pools.append(pool)
+            return pool
+
+        with patch(
+            "remote_cmd.service.async_batch_executor.AsyncConnectionPool",
+            side_effect=tracking_pool,
+        ):
+            ex = AsyncBatchExecutor(
+                host_service=make_mock_service(hosts), max_concurrency=concurrency
+            )
+            result = await ex.execute([h.name for h in hosts], "uptime")
+
+        assert result.success == 50
+        assert len(pools) == 50
+        assert all(p._max == 1 for p in pools)
+        assert _TrackingAsyncClient.peak <= concurrency, (
+            f"peak alive {_TrackingAsyncClient.peak} exceeded concurrency {concurrency}"
+        )
+        assert _TrackingAsyncClient.live == 0
+        assert all(p._closed for p in pools)
+        assert all(not c.is_connected() for c in _TrackingAsyncClient.created)
+
+    @pytest.mark.asyncio
+    async def test_retry_reuses_single_connection_and_closes_pool(self):
+        """单主机重试：同一连接被复用，池在主机结束后关闭（含重试在内）"""
+        host = Host(name="srv1", hostname="10.0.0.1", username="admin")
+        _TrackingAsyncClient.reset()
+        pools: list[AsyncConnectionPool] = []
+        real_pool_cls = AsyncConnectionPool
+
+        class FlakyAsyncClient(_TrackingAsyncClient):
+            async def execute(self, command, timeout=None, environment=None):  # noqa: ARG002
+                self.calls += 1
+                if self.calls < 3:
+                    raise OSError("transient reset")
+                return CommandResult(command=command, stdout="ok", stderr="", exit_code=0)
+
+        def tracking_pool(config, max_connections=10, client_factory=None):  # noqa: ARG001
+            pool = real_pool_cls(
+                config,
+                max_connections=max_connections,
+                client_factory=FlakyAsyncClient,
+            )
+            pools.append(pool)
+            return pool
+
+        with patch(
+            "remote_cmd.service.async_batch_executor.AsyncConnectionPool",
+            side_effect=tracking_pool,
+        ):
+            ex = AsyncBatchExecutor(host_service=make_mock_service([host]), max_concurrency=4)
+            result = await ex.execute(["srv1"], "uptime", retry_count=3, retry_delay=0.0)
+
+        assert result.success == 1
+        assert len(pools) == 1
+        assert pools[0]._max == 1
+        # 三次尝试复用同一连接（仅一次握手）
+        assert len(FlakyAsyncClient.created) == 1
+        assert FlakyAsyncClient.created[0].calls == 3
+        assert pools[0]._closed
+        assert not FlakyAsyncClient.created[0].is_connected()

@@ -53,8 +53,10 @@ dev = [
     # 测试 keyring 凭据提供者（生产为可选依赖，测试环境固定安装）
     "keyring>=24.0",
 ]
-# 文档生成（pdoc>=16 需 Python>=3.10，固定到 15.x 以兼容 requires-python>=3.9）
-docs = ["pdoc>=15,<16"]
+# 文档生成（pdoc>=16 需 Python>=3.10，固定到 15.x 以兼容 requires-python>=3.9）。
+# 精确 pin 15.0.4：pdoc HTML 输出随版本/解释器变化，docs/api 漂移门禁
+# （scripts/check_docs_drift.py）要求生成结果可复现。
+docs = ["pdoc==15.0.4"]
 
 [project.urls]
 Homepage = "https://github.com/Vae-Scrooge/remote-cmd"

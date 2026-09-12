@@ -15,15 +15,18 @@
     │   └── SSHFileTransferError (文件传输错误)
     ├── ConfigError (配置错误，别名 ConfigurationError)
     ├── CredentialError (凭据解析/解密失败 - 永久性，不可重试)
-    └── ValidationError (验证错误 - 永久性，不可重试)
+    ├── ValidationError (验证错误 - 永久性，不可重试)
+    └── PoolClosedError (连接池已关闭 - 永久性，不可重试；
+        同时继承 RuntimeError 以兼容既有 ``except RuntimeError`` 捕获)
 
 重试分类约定（详见 service/retry_policy.py）：
     - 瞬态（可重试）：SSHTimeoutError、SSHCommandTimeoutError、
       非认证类的 SSHConnectionError / SSHCommandError、网络 OSError
     - 永久性（绝不重试）：SSHAuthenticationError、CredentialError、
-      ConfigError、ValidationError
+      ConfigError、ValidationError、PoolClosedError
+    - 未识别的其他 Exception（含裸 RuntimeError）保持历史行为可重试
 
-兼容性说明（v2.1）：
+兼容性说明（v2.1 / v2.2）：
     - 既有异常名称与导入路径保持不变；新增 SSH 异常仅作为**新增子类**插入，
       `except SSHConnectionError` / `except SSHCommandError` 等既有捕获
       行为不受影响。
@@ -31,6 +34,9 @@
       行为仍不受影响。
     - `ConfigurationError` 是 `ConfigError` 的别名（同一对象），便于按
       常见命名习惯捕获。
+    - v2.2：连接池关闭错误细化为 `PoolClosedError`；其继承 RuntimeError，
+      `except RuntimeError` 既有捕获行为不变。裸 RuntimeError 不再被
+      重试策略视为永久性错误（恢复 v2.0 的"未识别异常可重试"行为）。
 
 Author: Vae-Scrooge
 """
@@ -217,6 +223,25 @@ class ValidationError(RemoteCmdError):
 
     Example:
         >>> raise ValidationError("port must be between 1 and 65535")
+    """
+
+    pass
+
+
+class PoolClosedError(RemoteCmdError, RuntimeError):
+    """
+    连接池已关闭（永久性错误，绝不可重试）
+
+    ``close_all()`` 之后再借用连接时抛出。与裸 ``RuntimeError`` 的区别：
+    本异常明确表示"池生命周期已结束"，重试同一池只会再次失败，因此
+    重试策略将其归为永久性错误（见 service/retry_policy.py）。
+
+    同时继承 RuntimeError：v2.1 及更早版本的调用方以
+    ``except RuntimeError`` 捕获该错误，兼容性不变；
+    同时可被 ``except RemoteCmdError`` 统一捕获。
+
+    Example:
+        >>> raise PoolClosedError("connection pool is closed")
     """
 
     pass

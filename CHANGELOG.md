@@ -7,6 +7,83 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-09-12
+
+This release focuses on bounded resource usage in batch execution, concurrent-writer
+robustness for the SQLite host store, retry classification precision, and release/CI
+hardening. See the migration notes before upgrading automated callers.
+
+### Added
+
+- `PoolClosedError` (inherits both `RemoteCmdError` and `RuntimeError`): connection-pool
+  acquisition after `close_all()` now raises a dedicated type; existing
+  `except RuntimeError` handlers keep working, and retry classification can distinguish
+  "pool permanently closed" from unrelated `RuntimeError`s.
+- `SqliteHostRepository` new optional `busy_timeout_ms` constructor parameter (default
+  5000) controlling how long a writer waits for a concurrent writer's transaction.
+- CI documentation drift gate (`scripts/check_docs_drift.py`): regenerates pdoc output and
+  fails if tracked `docs/api/` is stale; `pdoc` is now pinned (`pdoc==15.0.4`) and docs are
+  generated on the same Python version as CI (3.12).
+- Release metadata gate (`scripts/check_release_metadata.py`): validates the single-source
+  version, `pyproject.toml` dynamic-version attribute, `## [Unreleased]` section, the
+  matching `## [x.y.z]` CHANGELOG heading, and (on release) that the git tag matches the
+  package version.
+
+### Changed
+
+- **[Reliability] Internal connection-pool lifetime (resource cap)**: `BatchExecutor` /
+  `AsyncBatchExecutor` now create internal pools lazily per host and close them as soon as
+  that host (including all retries) finishes; each internal pool is capped at
+  `max_connections=1`. Previously all N pools were created up front and kept their
+  connections idle until the whole batch ended, retaining ~N connections/file descriptors
+  even at low concurrency. The batch-wide number of live internal connections is now bounded
+  by `max_concurrency`. External `pool_factory` pools remain caller-owned and are never
+  closed; the per-host pool architecture is unchanged.
+- **Retry classification narrowed to `PoolClosedError`**: v2.1 classified bare `RuntimeError`
+  as permanent, which also disabled retries for transient `RuntimeError`s (e.g. thread
+  creation failure, custom `client_factory` errors). v2.2 restores the v2.0 behavior for
+  unknown exceptions (including bare `RuntimeError`); pool-closed remains non-retryable via
+  the new `PoolClosedError`. Typed permanent (`SSHAuthenticationError`, `CredentialError`,
+  `ConfigError`, `ValidationError`) and typed transient errors are unchanged.
+- **[Reliability] SQLite concurrent-writer hardening**: connections now set `busy_timeout`
+  (default 5000 ms) and write transactions use `BEGIN IMMEDIATE`; the initial
+  `journal_mode=WAL` switch — which bypasses the busy handler in SQLite — is retried within
+  the busy-timeout window. Concurrent CLI processes writing the same `hosts.db` no longer
+  fail with `database is locked` or lose updates. Schema and the metadata `db_version` are
+  unchanged.
+- **Publish workflow hardening**: artifact upload/download actions aligned (`v7`), the artifact
+  name is run-scoped, duplicate version publication now fails instead of being silently
+  skipped (`skip-existing` removed), `twine check` validates distributions, and the release
+  tag/package version are verified before publishing; Trusted Publishing and the
+  GitHub Release → PyPI flow are unchanged.
+
+### Fixed
+
+- Concurrent writers to the same SQLite `hosts.db` (separate `remote-cmd` invocations) failed
+  with `database is locked` during the first WAL switch and under write contention; 5 of 6
+  concurrent processes could die and updates were lost. All writers now wait and commit.
+- Large batches retained one idle connection per host until the entire batch completed
+  (e.g. 1000 hosts → 1000 open sockets at once), risking fd/port exhaustion; internal
+  connections are now released when each host finishes.
+
+### Migration Guide (v2.1 → v2.2)
+
+- **Exceptions**: `PoolClosedError` is a new subclass of both `RemoteCmdError` and
+  `RuntimeError`; existing `except RuntimeError` / `except RemoteCmdError` handlers keep
+  working. No existing exception names, imports, or catch paths were removed.
+- **Retry**: bare `RuntimeError` is retryable again (v2.0 behavior) instead of being treated
+  as permanent as in v2.1; connection-pool closure remains non-retryable via the typed
+  `PoolClosedError`. Typed permanent and transient classifications are unchanged, and unknown
+  `Exception` subclasses remain retryable.
+- **Connection pools**: internally created batch pools are now lazy per-host pools capped at
+  one connection and are closed when each host finishes, not after the whole `execute()`
+  call. The caller-visible contract is unchanged: `pool_factory` pools are caller-owned and
+  never closed. The batch-wide number of live internal connections is bounded by
+  `max_concurrency`.
+- **SQLite**: write transactions now wait up to `busy_timeout_ms` (default 5000 ms) and use
+  `BEGIN IMMEDIATE`; no configuration or schema migration is required and the on-disk format
+  and `db_version` are unchanged.
+
 ## [2.1.0] - 2026-08-26
 
 This release contains two layers of changes: the main implementation changes for v2.1.0

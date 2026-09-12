@@ -8,7 +8,7 @@ import pytest
 
 from remote_cmd.core.ssh_client import CommandResult, ConnectionConfig
 from remote_cmd.core.sync_connection_pool import SyncConnectionPool
-from remote_cmd.utils.exceptions import SSHConnectionError
+from remote_cmd.utils.exceptions import PoolClosedError, SSHConnectionError
 
 
 def _client_mock(connected=True):
@@ -112,10 +112,12 @@ class TestSyncConnectionPool:
         assert pool.get_metrics()["total_connections"] == 0
 
     def test_acquire_after_close_raises(self, config, patched_client):
-        """测试：close_all 之后再 acquire 应抛 RuntimeError"""
+        """测试：close_all 之后再 acquire 应抛 PoolClosedError（兼容 RuntimeError）"""
         pool = SyncConnectionPool(config=config, max_connections=2)
         pool.close_all()
-        with pytest.raises(RuntimeError, match="connection pool is closed"):
+        with pytest.raises(PoolClosedError, match="connection pool is closed"):
+            pool.acquire()
+        with pytest.raises(RuntimeError):
             pool.acquire()
 
     def test_release_after_close_no_residue(self, config, patched_client):
@@ -510,5 +512,6 @@ class TestSyncConnectionPoolCloseRace:
 
         # 已关闭的池不得发放连接；必须抛既有 pool-closed 错误
         assert "conn" not in outcome, "已关闭的池不得发放连接"
+        assert isinstance(outcome["error"], PoolClosedError)
         assert isinstance(outcome["error"], RuntimeError)
         assert "connection pool is closed" in str(outcome["error"])

@@ -15,6 +15,7 @@ from remote_cmd.utils.exceptions import (
     ConfigError,
     ConfigurationError,
     CredentialError,
+    PoolClosedError,
     RemoteCmdError,
     SSHAuthenticationError,
     SSHCommandError,
@@ -25,6 +26,21 @@ from remote_cmd.utils.exceptions import (
     SSHTimeoutError,
     ValidationError,
 )
+
+
+class TestPoolClosedErrorHierarchy:
+    """v2.2：PoolClosedError 同时兼容 except RuntimeError 与项目层级"""
+
+    def test_catchable_as_runtime_error(self):
+        with pytest.raises(RuntimeError, match="connection pool is closed"):
+            raise PoolClosedError("connection pool is closed")
+
+    def test_catchable_as_remote_cmd_error(self):
+        with pytest.raises(RemoteCmdError):
+            raise PoolClosedError("connection pool is closed")
+
+    def test_not_a_ssh_error(self):
+        assert not issubclass(PoolClosedError, SSHError)
 
 
 class TestHierarchyCompatibility:

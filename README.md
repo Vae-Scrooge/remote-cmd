@@ -36,32 +36,27 @@ pip install remote_cmd_manager && remote-cmd host add web-01 192.168.1.10 ubuntu
 
 ---
 
-## v2.1.0 Release Highlights
+## v2.2.0 Release Highlights
 
-v2.1.0 contains both major implementation changes and a final release-hardening pass. See the
+v2.2.0 bounds batch-execution resource usage, makes concurrent SQLite writers safe, tightens
+retry classification, and hardens the release pipeline. See the
 [full migration notes](./CHANGELOG.md) before upgrading automated callers.
 
-### Major Implementation Changes
+### Resource & Reliability
 
-- Paramiko command execution drains stdout and stderr before retrieving the exit status, preventing SSH channel-window deadlocks on large output.
-- Paramiko command timeouts are wall-clock enforced; a silent or hung command closes its channel and raises `SSHCommandTimeoutError`.
-- `AsyncBatchExecutor` now uses `AsyncConnectionPool` for multi-host and retry workloads, reusing connections across attempts.
-- `pool_factory` enables caller-supplied pools; external pools are caller-owned and never closed by either executor, while internally created pools are closed automatically after `execute()`.
-- Retries classify permanent failures (authentication, credentials, configuration, validation, and programming errors) as non-retryable; unknown `Exception` subclasses remain retryable for backward compatibility. `retry_delay` is now the exponential-backoff base and full jitter is applied with a 60-second cap.
-- Unknown hosts produce per-host failure results instead of aborting a multi-host batch, and duplicate host names are executed once.
-- The exception hierarchy adds `SSHAuthenticationError`, `SSHTimeoutError`, `SSHCommandTimeoutError`, `CredentialError`, and the `ConfigurationError` alias without removing existing catch paths.
-- Environment-variable names are validated before shell interpolation, and command text is excluded from library logs and execution errors.
-- `remote-cmd run` supports `--timeout/-T` for command execution limits.
+- Internal batch pools are now created lazily per host, capped at one connection, and closed as soon as that host (including all retries) finishes; batch-wide live internal connections are bounded by `max_concurrency` instead of retaining one idle connection per host until the batch ends.
+- SQLite writes now use `BEGIN IMMEDIATE` with a configurable `busy_timeout` (default 5000 ms), and the initial `journal_mode=WAL` switch is retried; concurrent `remote-cmd` processes writing the same `hosts.db` no longer fail with `database is locked` or lose updates. Schema and `db_version` are unchanged.
+- Pool closure raises the new `PoolClosedError` (still catchable as `RuntimeError`); retry classification is corrected so bare `RuntimeError` is retryable again (v2.0 behavior) while pool closure remains non-retryable. Typed permanent and transient errors are unchanged.
 
-### Final Release Hardening
+### Release Engineering
 
-- Sync and async pools re-check their closed state after semaphore acquisition, preventing a shutdown race from issuing a connection from a closed pool.
-- `BatchExecutor(use_async=True)` now reports an actionable error when called from an active event loop; use `AsyncBatchExecutor.execute()` there instead.
-- The Paramiko stderr drain join is bounded to prevent an exceptional reader path from blocking the caller indefinitely.
+- Publish workflow: artifact actions aligned, run-scoped artifact names, duplicate version publication now fails instead of being skipped, `twine check` validates distributions, and the release tag is verified against the package version. Trusted Publishing and the GitHub Release → PyPI flow are unchanged.
+- CI documentation drift detection: `docs/api` is regenerated and compared on relevant changes, failing when tracked generated docs are stale (`pdoc` pinned to `15.0.4` on Python 3.12).
+- Release metadata validation: a lightweight gate checks the single-source version, the `pyproject.toml` dynamic-version attribute, `[Unreleased]` and matching `[x.y.z]` CHANGELOG headings, and (on release) that the git tag matches the package version.
 
 ## Table of Contents
 
-- [v2.1.0 Release Highlights](#v210-release-highlights)
+- [v2.2.0 Release Highlights](#v220-release-highlights)
 - [Why Remote CMD?](#why-remote-cmd)
 - [Quick Start](#quick-start)
 - [Use Cases](#use-cases)

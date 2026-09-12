@@ -1,10 +1,13 @@
 """BatchExecutor 批量执行器测试"""
 
+import threading
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from remote_cmd.core.host import Host
+from remote_cmd.core.ssh_client import CommandResult
+from remote_cmd.core.sync_connection_pool import SyncConnectionPool
 from remote_cmd.service.batch_executor import BatchExecutor, BatchHostResult, BatchResult
 from remote_cmd.utils.exceptions import CredentialError, SSHAuthenticationError
 
@@ -674,3 +677,173 @@ class TestBatchExecutorExternalPoolFactory:
         assert result.success == 2
         # 两个内部池都被关闭
         assert mock_pool_instance.close_all.call_count == 2
+
+
+# ============================================================================
+# v2.2：内部池按主机惰性创建/关闭 —— 并发存活连接数受 max_concurrency 约束
+# ============================================================================
+
+
+class _TrackingClient:
+    """记录 connect/disconnect 的同步假客户端（类级计数，线程安全）。"""
+
+    live = 0
+    peak = 0
+    created: list["_TrackingClient"] = []
+
+    def __init__(self, _cfg):
+        self._connected = False
+        self.calls = 0
+        _TrackingClient.created.append(self)
+
+    @classmethod
+    def reset(cls):
+        cls.live = 0
+        cls.peak = 0
+        cls.created = []
+
+    def connect(self):
+        self._connected = True
+        with _TrackingClient._lock:
+            _TrackingClient.live += 1
+            _TrackingClient.peak = max(_TrackingClient.peak, _TrackingClient.live)
+        return self
+
+    def is_connected(self):
+        return self._connected
+
+    def execute(self, command, timeout=None, environment=None):  # noqa: ARG002
+        return CommandResult(command=command, stdout="ok", stderr="", exit_code=0)
+
+    def disconnect(self):
+        if self._connected:
+            self._connected = False
+            with _TrackingClient._lock:
+                _TrackingClient.live -= 1
+
+
+_TrackingClient._lock = threading.Lock()
+
+
+class TestBatchExecutorInternalPoolLifecycle:
+    """v2.2 资源语义：内部池 max_connections=1、按主机惰性创建、主机结束即关闭。"""
+
+    @patch("remote_cmd.service.batch_executor.SSHClient")
+    def test_many_hosts_retained_connections_bounded_by_concurrency(self, _mock_ssh_class):
+        """N=200 主机、并发 8：峰值存活连接 ≤ 8 且全部在主机结束后关闭"""
+        hosts = [
+            Host(name=f"srv{i}", hostname=f"10.0.{i // 200}.{i % 200 + 1}", username="admin")
+            for i in range(200)
+        ]
+        service = make_mock_service(hosts)
+        concurrency = 8
+        _TrackingClient.reset()
+        pools: list[SyncConnectionPool] = []
+        real_pool_cls = SyncConnectionPool
+
+        def tracking_pool(config, max_connections=10, client_factory=None):  # noqa: ARG001
+            pool = real_pool_cls(
+                config,
+                max_connections=max_connections,
+                client_factory=_TrackingClient,
+            )
+            pools.append(pool)
+            return pool
+
+        with patch(
+            "remote_cmd.service.batch_executor.SyncConnectionPool",
+            side_effect=tracking_pool,
+        ):
+            executor = BatchExecutor(host_service=service, max_concurrency=concurrency)
+            result = executor.execute([h.name for h in hosts], "uptime")
+
+        assert result.success == 200
+        assert len(pools) == 200
+        # 每个内部池上限 1 条连接（不再使用 max_concurrency 作为池上限）
+        assert all(p._max == 1 for p in pools)
+        # 关键不变量：整批并发存活连接数不超过工作者数量
+        assert _TrackingClient.peak <= concurrency, (
+            f"peak alive {_TrackingClient.peak} exceeded concurrency {concurrency}"
+        )
+        # 批次结束后无残留连接
+        assert _TrackingClient.live == 0
+        assert all(p._closed for p in pools)
+        assert all(not c.is_connected() for c in _TrackingClient.created)
+
+    @patch("remote_cmd.service.batch_executor.SSHClient")
+    def test_retry_reuses_single_connection_and_closes_pool(self, _mock_ssh_class):
+        """单主机重试：同一连接被复用，池在主机结束后关闭（含重试在内）"""
+        host = Host(name="srv1", hostname="10.0.0.1", username="admin")
+        service = make_mock_service([host])
+        _TrackingClient.reset()
+        pools: list[SyncConnectionPool] = []
+        real_pool_cls = SyncConnectionPool
+
+        class FlakyClient(_TrackingClient):
+            def execute(self, command, timeout=None, environment=None):  # noqa: ARG002
+                self.calls += 1
+                if self.calls < 3:
+                    raise OSError("transient reset")
+                return CommandResult(command=command, stdout="ok", stderr="", exit_code=0)
+
+        def tracking_pool(config, max_connections=10, client_factory=None):  # noqa: ARG001
+            pool = real_pool_cls(
+                config,
+                max_connections=max_connections,
+                client_factory=FlakyClient,
+            )
+            pools.append(pool)
+            return pool
+
+        with patch(
+            "remote_cmd.service.batch_executor.SyncConnectionPool",
+            side_effect=tracking_pool,
+        ):
+            executor = BatchExecutor(host_service=service, max_concurrency=4)
+            result = executor.execute(["srv1"], "uptime", retry_count=3, retry_delay=0.0)
+
+        assert result.success == 1
+        assert len(pools) == 1
+        assert pools[0]._max == 1
+        # 三次尝试复用同一连接（仅一次握手）
+        assert len(FlakyClient.created) == 1
+        assert FlakyClient.created[0].calls == 3
+        # 池已关闭：连接被断开
+        assert pools[0]._closed
+        assert not FlakyClient.created[0].is_connected()
+
+    @patch("remote_cmd.service.batch_executor.SSHClient")
+    def test_internal_pool_closed_on_permanent_error(self, _mock_ssh_class):
+        """永久性错误：不重试且内部池仍被关闭（无泄漏）"""
+        host = Host(name="srv1", hostname="10.0.0.1", username="admin")
+        service = make_mock_service([host])
+        _TrackingClient.reset()
+        pools: list[SyncConnectionPool] = []
+        real_pool_cls = SyncConnectionPool
+
+        class AuthFailClient(_TrackingClient):
+            def execute(self, command, timeout=None, environment=None):  # noqa: ARG002
+                self.calls += 1
+                raise SSHAuthenticationError("authentication failed")
+
+        def tracking_pool(config, max_connections=10, client_factory=None):  # noqa: ARG001
+            pool = real_pool_cls(
+                config,
+                max_connections=max_connections,
+                client_factory=AuthFailClient,
+            )
+            pools.append(pool)
+            return pool
+
+        with patch(
+            "remote_cmd.service.batch_executor.SyncConnectionPool",
+            side_effect=tracking_pool,
+        ):
+            executor = BatchExecutor(host_service=service, max_concurrency=4)
+            result = executor.execute(["srv1"], "uptime", retry_count=3, retry_delay=0.0)
+
+        assert result.success == 0
+        # 永久性错误只执行一次
+        assert AuthFailClient.created[0].calls == 1
+        assert pools[0]._closed
+        assert not AuthFailClient.created[0].is_connected()

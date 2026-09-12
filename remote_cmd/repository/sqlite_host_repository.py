@@ -21,6 +21,7 @@ import json
 import logging
 import sqlite3
 import threading
+import time
 from typing import Optional
 
 from remote_cmd.core.host import Host
@@ -64,6 +65,9 @@ CREATE TABLE IF NOT EXISTS meta (
 );
 """
 
+# 写锁等待上限（毫秒）：多进程并发写同一数据库时，等待对方短事务提交/回滚
+DEFAULT_BUSY_TIMEOUT_MS = 5000
+
 
 class SqliteHostRepository(HostRepository):
     """
@@ -74,6 +78,7 @@ class SqliteHostRepository(HostRepository):
         migrate_from: JSON 文件路径，用于自动迁移（仅首次使用）
         auto_create: 是否自动创建表和数据库，默认 True
         encryption: 可选的凭据加密器（设置后 save() 自动加密 password）
+        busy_timeout_ms: 写锁等待上限（毫秒），默认 5000
 
     注意: 密码的加密依赖传入 encryption。若直接以明文密码调用 save()
     且未提供 encryption，明文会被持久化到数据库。请勿绕过 HostService。
@@ -85,11 +90,13 @@ class SqliteHostRepository(HostRepository):
         migrate_from: Optional[str] = None,
         auto_create: bool = True,
         encryption: Optional[CredentialEncryption] = None,
+        busy_timeout_ms: int = DEFAULT_BUSY_TIMEOUT_MS,
     ) -> None:
         self._db_path = db_path
         self._lock = threading.Lock()
         self._encryption = encryption
         self._guard = PasswordGuard(encryption)
+        self._busy_timeout_ms = busy_timeout_ms
 
         if auto_create:
             self._init_db()
@@ -103,7 +110,7 @@ class SqliteHostRepository(HostRepository):
 
     def _init_db(self) -> None:
         """初始化数据库：创建表和索引"""
-        with self._txn() as conn:
+        with self._txn(write=True) as conn:
             conn.execute(CREATE_TABLE_SQL)
             conn.execute(CREATE_META_SQL)
             for idx_sql in CREATE_INDEXES_SQL:
@@ -117,30 +124,66 @@ class SqliteHostRepository(HostRepository):
         logger.debug(f"SQLite database initialized: {self._db_path}")
 
     def _get_conn(self) -> sqlite3.Connection:
-        """获取数据库连接（线程安全）"""
+        """获取数据库连接（线程安全）。
+
+        PRAGMA 顺序约定：``busy_timeout`` 必须最先设置——首次并发打开同一
+        数据库文件时，``journal_mode=WAL`` 本身需要短暂排他锁，若 busy
+        handler 尚未生效会立即抛 ``database is locked``（v2.2 多进程回归）。
+
+        注意：SQLite 的 journal_mode 切换不经过 busy handler，即使设置了
+        ``busy_timeout`` 仍会直接返回 SQLITE_BUSY；因此在首次并发切换到
+        WAL 时使用有界重试（上限即 busy_timeout）等待其他连接的短事务结束。
+        """
         conn = sqlite3.connect(self._db_path, check_same_thread=False)
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL;")
+        # 多进程/多连接写入争用：等待对方事务结束而不是立即失败
+        conn.execute(f"PRAGMA busy_timeout={self._busy_timeout_ms};")
+        self._enable_wal(conn)
         conn.execute("PRAGMA foreign_keys=ON;")
         return conn
 
+    def _enable_wal(self, conn: sqlite3.Connection) -> None:
+        """启用 WAL；对 journal_mode 切换的 SQLITE_BUSY 做有界重试。
+
+        数据库已是 WAL 时该 PRAGMA 只读取模式、不取排他锁，直接返回；
+        仅首次从其他模式切换到 WAL 的竞态需要重试。
+        """
+        deadline = time.monotonic() + self._busy_timeout_ms / 1000.0
+        while True:
+            try:
+                conn.execute("PRAGMA journal_mode=WAL;")
+                return
+            except sqlite3.OperationalError as e:
+                message = str(e).lower()
+                if "locked" not in message and "busy" not in message:
+                    raise
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.05)
+
     @contextlib.contextmanager
-    def _txn(self):
+    def _txn(self, write: bool = False):
         """
         事务 + 连接生命周期上下文
 
         包装 ``with conn:`` 与 ``conn.close()`` 为单一上下文：
         - 进入时打开新连接并执行 PRAGMA
+        - ``write=True`` 时以 ``BEGIN IMMEDIATE`` 预先取得写锁（等待受
+          ``busy_timeout`` 约束）；避免 deferred 事务在写升级时因快照过期
+          直接返回 SQLITE_BUSY（busy handler 不适用该场景）
         - 退出时先 ``conn.__exit__`` 提交/回滚，再 ``conn.close()`` 释放 fd
 
         解决 ``with self._get_conn() as conn:`` 不自动 close 导致的 fd 累积泄漏
         （sqlite3.Connection.__exit__ 仅管理事务边界，不释放连接句柄）。
 
         所有读写操作都应通过 ``with self._lock, self._txn() as conn:`` 使用，
-        保证 ``self._lock`` 串行化的同时每次操作后释放 fd。
+        保证 ``self._lock`` 串行化的同时每次操作后释放 fd；写操作使用
+        ``self._txn(write=True)``。
         """
         conn = self._get_conn()
         try:
+            if write:
+                conn.execute("BEGIN IMMEDIATE")
             with conn:  # 事务：commit 或 rollback
                 yield conn
         finally:
@@ -204,7 +247,7 @@ class SqliteHostRepository(HostRepository):
 
     def save(self, host: Host) -> None:
         """保存或更新主机"""
-        with self._lock, self._txn() as conn:
+        with self._lock, self._txn(write=True) as conn:
             tags_json = json.dumps(host.tags or [], ensure_ascii=False)
             # 配置了加密器时，明文密码先加密再落库
             password = self._guard.encrypt(host.password)
@@ -248,7 +291,7 @@ class SqliteHostRepository(HostRepository):
 
     def delete(self, name: str) -> None:
         """按名称删除主机"""
-        with self._lock, self._txn() as conn:
+        with self._lock, self._txn(write=True) as conn:
             cursor = conn.execute("DELETE FROM hosts WHERE name = ?", (name,))
             conn.commit()
 

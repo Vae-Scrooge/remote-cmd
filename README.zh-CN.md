@@ -41,32 +41,26 @@ pip install remote_cmd_manager && remote-cmd host add web-01 192.168.1.10 ubuntu
 
 ---
 
-## v2.1.0 发布亮点
+## v2.2.0 发布亮点
 
-v2.1.0 同时包含主要实现变更与最终发布加固。升级自动化调用方前请查看
-[完整迁移说明](./CHANGELOG.md)。
+v2.2.0 收敛批量执行的资源占用、加固 SQLite 并发写入、修正重试分类，并强化发布流水线。
+升级自动化调用方前请查看[完整迁移说明](./CHANGELOG.md)。
 
-### 主要实现变更
+### 资源与可靠性
 
-- Paramiko 命令执行会在获取退出码前并发排空 stdout 和 stderr，避免大输出触发 SSH 通道窗口死锁。
-- Paramiko 命令超时采用 wall-clock 语义；静默或挂起命令会关闭通道并抛出 `SSHCommandTimeoutError`。
-- `AsyncBatchExecutor` 在多主机和重试场景中使用 `AsyncConnectionPool`，跨尝试复用连接。
-- `pool_factory` 支持调用方提供连接池；外部池由调用方拥有，两个执行器都不会关闭，内部创建的池则在 `execute()` 结束后自动关闭。
-- 重试显式区分永久性错误（认证、凭据、配置、校验和编程错误）与瞬态错误；未知 `Exception` 子类为保持兼容仍可重试。`retry_delay` 现在是指数退避基础延迟，并使用 full jitter，最大等待 60 秒。
-- 未知主机会成为单独的失败结果，不再中止多主机批次；重复主机名只执行一次。
-- 异常层次新增 `SSHAuthenticationError`、`SSHTimeoutError`、`SSHCommandTimeoutError`、`CredentialError` 和 `ConfigurationError` 别名，同时保留既有捕获路径。
-- 环境变量名在 shell 拼接前校验，库日志和执行错误不再包含命令正文。
-- `remote-cmd run` 支持 `--timeout/-T` 命令执行超时。
+- 内部批量连接池改为按主机惰性创建，每个池上限 1 条连接，并在该主机（含全部重试）结束后立即关闭；整批并发存活的内部连接数受 `max_concurrency` 约束，不再在整批结束前为每台主机保留一条空闲连接。
+- SQLite 写入使用 `BEGIN IMMEDIATE`，并提供可配置的 `busy_timeout`（默认 5000 ms）；首次切换 `journal_mode=WAL` 会进行有界重试。多个 `remote-cmd` 进程同时写入同一 `hosts.db` 不再出现 `database is locked` 或丢失更新。schema 与 `db_version` 保持不变。
+- 连接池关闭会抛出新的 `PoolClosedError`（仍可用 `except RuntimeError` 捕获）；重试分类得到修正：裸 `RuntimeError` 恢复可重试（v2.0 行为），池关闭仍不可重试。类型化的永久/瞬态分类保持不变。
 
-### 最终发布加固
+### 发布工程
 
-- 同步和异步连接池在信号量获取后再次检查关闭状态，避免关闭竞态从已关闭的池发放连接。
-- 在运行中的事件循环内调用 `BatchExecutor(use_async=True)` 会给出可操作的错误提示；此时应改用 `AsyncBatchExecutor.execute()`。
-- Paramiko stderr 排空线程的 join 有 5 秒上限，避免异常读取路径永久阻塞调用方。
+- 发布工作流：统一 artifact 动作版本、使用按运行区分的 artifact 名称、重复版本发布会直接失败而不再静默跳过、使用 `twine check` 校验分发包，并在发布时校验 tag 与包版本一致。Trusted Publishing 与 GitHub Release → PyPI 流程保持不变。
+- CI 文档漂移检测：在相关变更上重新生成并比对 `docs/api`，tracked 生成文档过期时 CI 失败（Python 3.12 + 固定 `pdoc==15.0.4`）。
+- 发布元数据校验：轻量门禁检查单一版本源、`pyproject.toml` 动态版本属性、`[Unreleased]` 与对应 `[x.y.z]` CHANGELOG 标题，并在发布时校验 git tag 与包版本一致。
 
 ## 目录
 
-- [v2.1.0 发布亮点](#v210-发布亮点)
+- [v2.2.0 发布亮点](#v220-发布亮点)
 - [为什么选择 Remote CMD？](#为什么选择-remote-cmd)
 - [快速开始](#快速开始)
 - [使用场景](#使用场景)

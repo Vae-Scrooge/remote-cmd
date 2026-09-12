@@ -23,6 +23,8 @@ from remote_cmd.utils.exceptions import (
     ConfigError,
     ConfigurationError,
     CredentialError,
+    PoolClosedError,
+    RemoteCmdError,
     SSHAuthenticationError,
     SSHCommandError,
     SSHCommandTimeoutError,
@@ -47,11 +49,19 @@ class TestIsRetryablePermanent:
             ValueError("port out of range"),
             TypeError("wrong type"),
             KeyError("host not found"),
-            RuntimeError("pool closed"),
+            PoolClosedError("pool closed"),
         ],
     )
     def test_permanent_errors_not_retryable(self, exc):
         assert is_retryable(exc) is False
+
+    def test_pool_closed_error_compat_hierarchy(self):
+        """v2.2：PoolClosedError 可被既有 except RuntimeError 捕获，
+        同时归入 RemoteCmdError 层级"""
+        assert issubclass(PoolClosedError, RuntimeError)
+        assert issubclass(PoolClosedError, RemoteCmdError)
+        with pytest.raises(RuntimeError, match="connection pool is closed"):
+            raise PoolClosedError("connection pool is closed")
 
     def test_configuration_error_alias_not_retryable(self):
         # ConfigurationError 是 ConfigError 的别名
@@ -77,6 +87,9 @@ class TestIsRetryableTransient:
             SSHFileTransferError("transfer interrupted"),
             OSError("network unreachable"),
             Exception("connection reset"),  # 未识别异常保持历史可重试行为
+            # v2.2：裸 RuntimeError 恢复 v2.0 可重试行为（如线程创建失败、
+            # 自定义 client_factory 的瞬态错误）；池关闭由 PoolClosedError 承担
+            RuntimeError("can't start new thread"),
         ],
     )
     def test_transient_errors_retryable(self, exc):
@@ -88,6 +101,9 @@ class TestIsRetryableTransient:
         assert CredentialError in PERMANENT_ERRORS
         assert ConfigError in PERMANENT_ERRORS
         assert ValidationError in PERMANENT_ERRORS
+        assert PoolClosedError in PERMANENT_ERRORS
+        # v2.2 收窄：裸 RuntimeError 不再整体永久
+        assert RuntimeError not in PERMANENT_ERRORS
 
 
 class TestComputeBackoffDelay:

@@ -28,8 +28,10 @@ from pathlib import Path
 from typing import Any, Optional
 
 from remote_cmd.core.host import Host
+from remote_cmd.core.profile import DEFAULT_PORT
 from remote_cmd.core.ssh_client import SSHClient
 from remote_cmd.repository.host_repository import HostRepository
+from remote_cmd.repository.profile_store import ProfileStore
 from remote_cmd.service.credential_provider import (
     ChainCredentialProvider,
     CredentialProvider,
@@ -38,6 +40,7 @@ from remote_cmd.service.credential_provider import (
 )
 from remote_cmd.service.ssh_service import SSHService
 from remote_cmd.utils.crypto import CredentialEncryption, CredentialEncryptionError
+from remote_cmd.utils.exceptions import ConfigError
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +54,9 @@ class HostService:
         credential_provider: 凭据提供者（可选）
         encryption: 密码加密器（可选）
         ssh_service: SSH 连接服务（可选，自动创建）
+        profile_store: Profile 存储（可选）。未提供时，若 repository 实现了
+            :class:`ProfileStore` 能力协议则自动采用；均不满足时引用 profile
+            的主机会在解析时报 ConfigError
     """
 
     def __init__(
@@ -59,10 +65,17 @@ class HostService:
         credential_provider: Optional[CredentialProvider] = None,
         encryption: Optional[CredentialEncryption] = None,
         ssh_service: Optional[SSHService] = None,
+        profile_store: Optional[ProfileStore] = None,
     ) -> None:
         self._repo = repository
         self._encryption = encryption or CredentialEncryption()
         self._ssh = ssh_service or SSHService()
+        if profile_store is not None:
+            self._profile_store: Optional[ProfileStore] = profile_store
+        elif isinstance(repository, ProfileStore):
+            self._profile_store = repository
+        else:
+            self._profile_store = None
 
         if credential_provider:
             self._cred_provider = credential_provider
@@ -105,9 +118,9 @@ class HostService:
         return host
 
     def get_host(self, name: str) -> Host:
-        """获取主机配置（密码自动解密）"""
+        """获取主机配置（合并 profile 连接默认值，密码自动解密）"""
         host = self._repo.get(name)
-        return self._decrypt_host(host)
+        return self._decrypt_host(self._apply_profile(host))
 
     def update_host(self, name: str, **kwargs) -> Host:
         """
@@ -145,13 +158,22 @@ class HostService:
         logger.info(f"host removed: {name}")
 
     def list_hosts(self, tag: Optional[str] = None) -> list[Host]:
-        """列出主机（密码自动解密）"""
-        hosts = self._repo.list(tag=tag)
-        return [self._decrypt_host(h) for h in hosts]
+        """列出主机（合并 profile 连接默认值，密码自动解密）。
+
+        ``tag`` 过滤基于**合并后**的标签（主机标签 + profile 标签）。
+        """
+        hosts = [self._decrypt_host(self._apply_profile(h)) for h in self._repo.list()]
+        if tag:
+            hosts = [h for h in hosts if h.tags and tag in h.tags]
+        return hosts
 
     def list_tags(self) -> list[str]:
-        """列出所有标签"""
-        return self._repo.list_tags()
+        """列出所有标签（主机标签 + 全部 profile 标签的并集）"""
+        tags = set(self._repo.list_tags())
+        if self._profile_store is not None:
+            for profile in self._profile_store.list_profiles():
+                tags.update(profile.tags)
+        return sorted(tags)
 
     # ========================================================================
     # 连接管理
@@ -227,6 +249,62 @@ class HostService:
             key_filename=key_filename,
             tags=host.tags,
             description=host.description,
+            profile=host.profile,
+        )
+
+    def _apply_profile(self, host: Host) -> Host:
+        """合并主机引用的 profile 连接默认值（引用式，v2.8）。
+
+        语义（profile 为回退层，主机优先；详见 ``core/profile.py``）：
+        - ``username``：主机为空时由 profile 提供
+        - ``port``：主机为默认值 22 时由 profile 提供（显式非默认端口优先）
+        - ``key_filename``：主机为 None 时由 profile 提供
+        - ``tags``：主机标签 + profile 标签（并集去重，主机顺序在前）
+        - ``description``：主机为空字符串时由 profile 提供
+
+        Returns:
+            Host: 合并后的新副本（绝不修改仓库内存中的原对象）
+
+        Raises:
+            ConfigError: 仓库不支持 profile 或引用了未知 profile
+        """
+        if not host.profile:
+            return host
+        if self._profile_store is None:
+            raise ConfigError(
+                f"host '{host.name}' references profile '{host.profile}' "
+                "but the repository does not support profiles"
+            )
+        try:
+            profile = self._profile_store.get_profile(host.profile)
+        except KeyError:
+            raise ConfigError(
+                f"host '{host.name}' references unknown profile '{host.profile}'"
+            ) from None
+
+        username = host.username or profile.username or host.username
+        port = (
+            profile.port
+            if profile.port is not None and host.port == DEFAULT_PORT
+            else host.port
+        )
+        key_filename = host.key_filename if host.key_filename is not None else profile.key_filename
+        tags = list(host.tags)
+        for tag in profile.tags:
+            if tag not in tags:
+                tags.append(tag)
+        description = host.description or profile.description
+
+        return Host(
+            name=host.name,
+            hostname=host.hostname,
+            username=username,
+            port=port,
+            password=host.password,
+            key_filename=key_filename,
+            tags=tags,
+            description=description,
+            profile=host.profile,
         )
 
     def _to_ssh_args(self, host: Host) -> dict[str, Any]:
@@ -268,8 +346,11 @@ class HostService:
             若直接修改 repo.get() 返回的原始引用，解密后的明文密码会污染内存
             中的加密 token，后续任意 add_host/update_host/remove_host 触发
             flush() 时明文密码会被写入磁盘，造成凭据泄露。
+
+        Note (v2.8):
+            返回的是**合并 profile 后**的有效配置（引用式解析）。
         """
-        host = self._repo.get(name)
+        host = self._apply_profile(self._repo.get(name))
 
         # 解析密码：始终写入新变量，不修改 host 原对象
         resolved_password = host.password

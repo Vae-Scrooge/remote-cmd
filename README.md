@@ -36,36 +36,37 @@ pip install remote_cmd_manager && remote-cmd host add web-01 192.168.1.10 ubuntu
 
 ---
 
-## v2.7.0 Release Highlights
+## v2.8.0 Release Highlights
 
-v2.7.0 is a runtime-efficiency and error-semantics release: credential-layer
-exceptions are narrowed so real bugs surface, SQLite no longer truncates its WAL
-on every write, and the global connection budget waits on a true async queue
-instead of polling. Public APIs remain backward compatible. See the
+v2.8.0 adds the first P3 user-facing features: **connection profiles** and
+**machine-readable CLI output**. Public APIs remain backward compatible; the
+default CLI output and all existing commands behave exactly as before. See the
 [full migration notes](./CHANGELOG.md).
 
-### Error Semantics
+### Connection Profiles
 
-- Keyring, encryption, and host-service decrypt paths now catch only expected failure classes; programming errors propagate instead of being silently swallowed.
-- Background pool monitor loops keep their catch-all guard but log full stack traces.
-- Optional `asyncssh` detection uses `find_spec`, so a defect in the async modules themselves can no longer masquerade as "dependency not installed".
+- New `HostProfile` (exported from `remote_cmd`): reusable connection defaults — username, port, key file, tags, description — stored by both JSON and SQLite repositories via the optional `ProfileStore` capability (the `HostRepository` ABC is unchanged).
+- Hosts reference a profile (`host add --profile aws`); values merge at connect time (reference model): port when the host uses the default 22, key file when unset, description when empty, tags as a union, username when the host stores none (live default — later profile username changes propagate).
+- Changing a profile applies to every referencing host; unknown profiles fail with a clear `ConfigError` (batch execution reports them per host).
+- `ProfileService` CRUD + `remote-cmd profile add/list/show/remove`, with deletion protection for profiles still referenced by hosts.
 
-### SQLite WAL Efficiency
+### Machine-Readable Output
 
-- `flush()` now runs a **PASSIVE** checkpoint instead of `TRUNCATE` — no more writer waits or WAL rewrites on every host add/update/remove.
-- New explicit `repo.checkpoint("TRUNCATE")` (also `PASSIVE`/`FULL`/`RESTART`) for deliberate WAL compaction.
+- `remote-cmd run` and `remote-cmd batch-run` accept `--format rich|json|table` (default `rich` = byte-compatible with previous output).
+- JSON uses a stable schema with sorted result keys; table output is plain aligned text. Machine formats suppress the progress bar/header so stdout stays parseable.
+- The formatter layer lives in `remote_cmd/cli/formatters/` and never touches the execution kernels.
 
-### Connection Budget
+### Try It
 
-- `ConnectionBudget.acquire_async()` now waits on a real queue (`asyncio.Future` woken via `call_soon_threadsafe`), removing the v2.6 polling loop; cancellation-safe and FIFO among async waiters.
-
-### Benchmark Data (P2.4)
-
-- The sync Paramiko path costs ~100 µs per command in thread create/join and peaks at ≈ 3× sustained concurrency in live threads. A centralized channel-reader rewrite is a v2.7.x decision based on these measurements.
+```bash
+remote-cmd profile add aws -u ec2-user -k ~/.ssh/aws.pem -t cloud
+remote-cmd host add web-01 10.0.0.10 --profile aws
+remote-cmd batch-run web-01 web-02 "uptime" --format json | jq .
+```
 
 ## Table of Contents
 
-- [v2.7.0 Release Highlights](#v270-release-highlights)
+- [v2.8.0 Release Highlights](#v280-release-highlights)
 - [Why Remote CMD?](#why-remote-cmd)
 - [Quick Start](#quick-start)
 - [Use Cases](#use-cases)
@@ -212,7 +213,9 @@ with SSHClient(config) as client:
 | **Commands** | Single, multi-line, sudo with password |
 | **File Transfer** | Upload/download via SFTP (`remote-cmd upload/download`) |
 | **Host Management** | CRUD with pluggable JSON or **SQLite** persistence |
-| **Tag System** | Filter hosts by tag (e.g., `production`, `web`, `db`) |
+| **Connection Profiles** | Reusable username/port/key/tag defaults referenced by hosts (`ProfileService`, `--profile`); never stores credentials |
+| **Output Formats** | `--format rich\|json\|table` for `run` / `batch-run` (stable JSON schema, parseable stdout) |
+| **Tag System** | Filter hosts by tag (e.g., `production`, `web`, `db`); profile tags participate in filtering |
 | **Batch Ops** | Run commands across any host group, synchronously or asynchronously; optional per-host retained-output cap (`max_output_bytes`) |
 | **Async Kernel** | `AsyncSSHClient` / `AsyncConnectionPool` / `AsyncBatchExecutor` via the `[async]` extra |
 | **Global Connection Budget** | Optional `ConnectionBudget` caps live SSH connections process-wide across pools and executors |

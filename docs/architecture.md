@@ -109,6 +109,16 @@ Core responsibilities of the host service:
 - `HostService` carries the business logic and credential resolution, decoupled from storage
 - The storage engine is auto-selected by file extension (`.json`/`.db`/`.sqlite`) or an explicit `storage_backend`
 
+#### Profiles and output formatting (v2.8)
+
+- **Profiles** are reusable connection defaults (never credentials) stored via
+  the optional `ProfileStore` capability protocol — `HostRepository`'s ABC is
+  unchanged. Hosts reference a profile by name and `HostService` merges
+  profile → host at resolve time.
+- **CLI output formatting** lives in `remote_cmd/cli/formatters/` and only
+  renders `CommandResult` / `BatchResult` (rich default, plus json/table);
+  execution kernels never see output formats.
+
 ### 3. Core Function Layer
 
 #### SSHClient (`remote_cmd/core/ssh_client.py`)

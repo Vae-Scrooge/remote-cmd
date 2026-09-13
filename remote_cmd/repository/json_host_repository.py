@@ -25,10 +25,15 @@ from pathlib import Path
 from typing import Optional
 
 from remote_cmd.core.host import Host
+from remote_cmd.core.profile import HostProfile
 from remote_cmd.repository.host_repository import HostRepository
 from remote_cmd.utils.credential_guard import PasswordGuard, is_plaintext_password
 from remote_cmd.utils.crypto import CredentialEncryption
-from remote_cmd.utils.exceptions import CredentialError, PlaintextCredentialWarning
+from remote_cmd.utils.exceptions import (
+    CredentialError,
+    PlaintextCredentialWarning,
+    ValidationError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +59,9 @@ class JsonHostRepository(HostRepository):
 
     并发语义：单进程/单写入者（见模块 docstring）；多进程场景请使用
     SqliteHostRepository。
+
+    Profile 支持（v2.8）：实现 :class:`ProfileStore` 能力协议，
+    同一文件内以 ``profiles`` 段持久化（无凭据字段）。
     """
 
     def __init__(
@@ -68,6 +76,7 @@ class JsonHostRepository(HostRepository):
         self._guard = PasswordGuard(encryption)
         self._allow_plaintext = allow_plaintext_credentials
         self._hosts: dict[str, Host] = {}
+        self._profiles: dict[str, HostProfile] = {}
 
         if auto_load and self._filepath.exists():
             self._load()
@@ -116,6 +125,30 @@ class JsonHostRepository(HostRepository):
         return len(self._hosts)
 
     # ========================================================================
+    # ProfileStore 能力（v2.8）
+    # ========================================================================
+
+    def save_profile(self, profile: HostProfile) -> None:
+        """保存 Profile 到内存，随后需要调用 flush() 写入文件。"""
+        self._profiles[profile.name] = profile
+
+    def get_profile(self, name: str) -> HostProfile:
+        if name not in self._profiles:
+            raise KeyError(f"Profile '{name}' not found")
+        return self._profiles[name]
+
+    def delete_profile(self, name: str) -> None:
+        if name not in self._profiles:
+            raise KeyError(f"Profile '{name}' not found")
+        del self._profiles[name]
+
+    def list_profiles(self) -> builtins.list[HostProfile]:
+        return [self._profiles[name] for name in sorted(self._profiles)]
+
+    def contains_profile(self, name: str) -> bool:
+        return name in self._profiles
+
+    # ========================================================================
     # 持久化
     # ========================================================================
 
@@ -128,11 +161,11 @@ class JsonHostRepository(HostRepository):
         Raises:
             CredentialError: allow_plaintext_credentials=False 且存在明文密码
         """
-        data = self._serialize_hosts()
+        data = self._serialize()
         self._atomic_write(data)
 
-    def _serialize_hosts(self) -> dict:
-        """序列化主机列表到字典，包含版本信息"""
+    def _serialize(self) -> dict:
+        """序列化主机 + Profile 到字典，包含版本信息"""
         hosts_dict = {name: host.to_dict() for name, host in self._hosts.items()}
 
         # 加密密码
@@ -145,6 +178,7 @@ class JsonHostRepository(HostRepository):
         return {
             "version": CONFIG_VERSION,
             "hosts": hosts_dict,
+            "profiles": {name: profile.to_dict() for name, profile in self._profiles.items()},
         }
 
     def _enforce_plaintext_policy(self, hosts_dict: dict) -> None:
@@ -210,6 +244,16 @@ class JsonHostRepository(HostRepository):
                 self._hosts[name] = host
             except (ValueError, TypeError, KeyError) as e:
                 logger.warning(f"skipping invalid host '{name}': {e}")
+
+        # Profile（v2.8；旧文件无该段时为空）
+        self._profiles = {}
+        profiles_data = raw.get("profiles", {})
+        if isinstance(profiles_data, dict):
+            for name, profile_data in profiles_data.items():
+                try:
+                    self._profiles[name] = HostProfile.from_dict(profile_data)
+                except (ValueError, TypeError, KeyError, ValidationError) as e:
+                    logger.warning(f"skipping invalid profile '{name}': {e}")
 
     def _atomic_write(self, data: dict) -> None:
         """原子写入：写临时文件 → rename 覆盖原文件"""

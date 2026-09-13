@@ -7,6 +7,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.8.0] - 2026-09-13
+
+v2.8 delivers the first P3 user-facing features — configuration profiles and
+machine-readable CLI output. Public APIs remain backward compatible; the
+default CLI output and all existing commands behave exactly as before.
+
+### Added
+
+- **Configuration profiles** (`HostProfile`, exported from `remote_cmd`):
+  reusable connection defaults (username / port / key file / tags /
+  description; **never credentials**), persisted by both repositories through
+  the new optional `ProfileStore` capability protocol — the `HostRepository`
+  ABC is unchanged:
+  - `JsonHostRepository`: `profiles` section in the same file (written by
+    `flush()`; old files without the section load with zero profiles).
+  - `SqliteHostRepository`: `profiles` table (immediate writes).
+- `Host.profile` reference field (v2.8, optional; old serialized configs load
+  unchanged). `HostService.resolve_host` / `get_host` / `list_hosts` return
+  the merged **effective view** (reference model):
+  - `username`: profile applies when the host value is empty
+  - `port`: profile applies when the host uses the default `22`
+  - `key_filename`: profile applies when the host value is `None`
+  - `description`: profile applies when the host value is empty
+  - `tags`: union (host first, deduplicated)
+  - tag filtering (`list_hosts(tag=...)`) and `list_tags()` operate on the
+    effective tag set.
+- `ProfileService` (exported): profile CRUD with dataclass validation and
+  deletion protection for profiles still referenced by hosts
+  (`force=True` to override).
+- CLI: `profile add` / `profile list` / `profile show` / `profile remove`;
+  `host add --profile NAME` (USERNAME may now be omitted when a profile is
+  given: an empty username is stored and the profile's username is resolved
+  live at connect time, so later profile username changes propagate; an
+  explicitly supplied USERNAME remains a host override);
+  `host show` prints the referenced profile and its effective values.
+- **Output formatting (v2.8)**: `run` and `batch-run` accept
+  `--format rich|json|table` (default `rich`, byte-compatible with previous
+  output). JSON uses a stable schema with sorted result keys; table output is
+  plain aligned text; machine formats suppress the progress bar/header so
+  stdout stays parseable. The formatter layer
+  (`remote_cmd/cli/formatters/`) never touches the execution kernels.
+
+### Changed
+
+- Unknown profiles (or a repository without `ProfileStore`) raise
+  `ConfigError`; batch execution reports them per host as
+  `profile resolution failed: ...` instead of failing the whole batch.
+
+### Migration Guide (v2.7 → v2.8)
+
+- **No action required**: hosts without a `profile` field behave exactly as
+  before, old JSON/SQLite stores load unchanged, and the default CLI output is
+  unchanged.
+- Port merge caveat: the host's default port `22` is treated as "unset" for
+  merging — a profile port applies unless the host specifies a non-default
+  port.
+- `host add` invocation compatibility: existing positional forms
+  (`host add NAME HOSTNAME USERNAME ...`) keep working; `USERNAME` is only
+  optional when `--profile` supplies one.
+
 ## [2.7.0] - 2026-09-13
 
 v2.7 is a runtime-efficiency and error-semantics release (P2.2 + P2.3 + budget

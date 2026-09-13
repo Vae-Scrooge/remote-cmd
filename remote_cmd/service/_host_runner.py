@@ -25,7 +25,7 @@ from remote_cmd.core.host import Host
 from remote_cmd.core.ssh_client import CommandResult, ConnectionConfig
 from remote_cmd.service._types import BatchHostResult, OutputPolicy
 from remote_cmd.service.host_service import HostService
-from remote_cmd.utils.exceptions import ValidationError
+from remote_cmd.utils.exceptions import ConfigError, ValidationError
 
 # 输出截断标记：追加在被截断的输出流末尾（确定性、便于测试与用户识别）
 OUTPUT_TRUNCATION_MARKER = "\n[output truncated: {omitted} bytes omitted]"
@@ -143,6 +143,8 @@ def resolve_host_or_error(
 
     错误映射（与两个 executor 的历史行为一致）：
     - ``KeyError`` -> error="host not found: ..."
+    - ``ConfigError`` -> error="profile resolution failed: ..."（v2.8；
+      未知 profile / 仓库不支持 profile）
     - ``RuntimeError`` / ``OSError`` -> error="host resolution failed: ..."
 
     Args:
@@ -161,6 +163,13 @@ def resolve_host_or_error(
             success=False,
             command=command,
             error=f"host not found: {e}",
+        )
+    except ConfigError as e:
+        return BatchHostResult(
+            host=host_name,
+            success=False,
+            command=command,
+            error=f"profile resolution failed: {e}",
         )
     except (RuntimeError, OSError) as e:
         return BatchHostResult(

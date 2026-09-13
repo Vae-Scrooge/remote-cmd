@@ -124,6 +124,8 @@ ignore = [
 "tests/test_async_ssh_client.py" = ["ARG002"]
 # mock_paramiko fixture 以 patch 副作用生效，线程模型测试不直接引用其返回值
 "tests/test_ssh_client.py" = ["ARG002"]
+# Profile 合并测试中的 BareRepo stub 需保留与 HostRepository ABC 一致的签名
+"tests/test_profile_merge.py" = ["ARG002"]
 "tests/test_async_batch_executor.py" = ["ARG001", "ARG002"]
 # 连接池测试中 patched_client fixture 触发 patch 副作用，factory 保留 cfg 参数以匹配真实签名
 "tests/test_sync_connection_pool.py" = ["ARG001", "ARG002"]

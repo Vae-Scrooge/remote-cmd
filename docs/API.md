@@ -417,6 +417,7 @@ class Host:
     key_filename: Optional[str] = None
     tags: List[str] = field(default_factory=list)
     description: str = ""
+    profile: Optional[str] = None  # v2.8 profile reference
 
     def to_connection_config(self) -> ConnectionConfig
     def to_dict(self) -> Dict[str, Any]
@@ -436,6 +437,7 @@ class Host:
 | `key_filename` | `Optional[str]` | None | SSH key path |
 | `tags` | `List[str]` | `[]` | Tag list |
 | `description` | `str` | "" | Description |
+| `profile` | `Optional[str]` | None | Referenced connection profile name (v2.8) |
 
 #### Methods
 
@@ -485,6 +487,74 @@ data = {
     "tags": ["production"]
 }
 host = Host.from_dict(data)
+```
+
+---
+
+### HostProfile (v2.8)
+
+Reusable connection defaults shared by hosts — **never credentials**.
+
+```python
+@dataclass
+class HostProfile:
+    name: str
+    username: Optional[str] = None
+    port: Optional[int] = None
+    key_filename: Optional[str] = None
+    tags: List[str] = field(default_factory=list)
+    description: str = ""
+
+    def to_dict(self) -> Dict[str, Any]
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "HostProfile"
+```
+
+Profiles are persisted through the optional **`ProfileStore`** capability
+protocol (`save_profile`/`get_profile`/`delete_profile`/`list_profiles`/
+`contains_profile`), implemented by both built-in repositories:
+
+| Repository | Storage |
+|------------|---------|
+| `JsonHostRepository` | `profiles` section in the same JSON file (written by `flush()`; old files without the section load with no profiles) |
+| `SqliteHostRepository` | `profiles` table (immediate writes) |
+
+`ProfileService` (exported from `remote_cmd`) provides CRUD with validation,
+and refuses to delete a profile still referenced by hosts unless `force=True`.
+
+#### Reference model and merge rules
+
+A host stores the profile **name** (`Host.profile`); `HostService` merges the
+profile at connect time (`resolve_host`/`get_host`/`list_hosts`), so profile
+changes apply to every referencing host:
+
+| Field | Merge rule |
+|-------|-----------|
+| `username` | profile applies when the host value is empty |
+| `port` | profile applies when the host uses the default `22`; a non-default host port wins |
+| `key_filename` | profile applies when the host value is `None` |
+| `tags` | union (host tags first, then profile tags; deduplicated) |
+| `description` | profile applies when the host value is empty |
+
+Unknown profiles (or a repository without `ProfileStore`) raise `ConfigError`;
+batch execution reports them per host as `profile resolution failed: ...`.
+
+```python
+from remote_cmd import HostProfile, HostService
+from remote_cmd.repository import JsonHostRepository
+from remote_cmd.service.profile_service import ProfileService
+
+repo = JsonHostRepository("hosts.json")
+profiles = ProfileService(store=repo, host_repository=repo)
+profiles.add_profile(HostProfile(name="aws", username="ec2-user",
+                                 key_filename="~/.ssh/aws.pem", tags=["cloud"]))
+
+host = Host(name="web-01", hostname="10.0.0.10", username="ec2-user", profile="aws")
+repo.save(host)
+
+service = HostService(repo)
+effective = service.resolve_host("web-01")   # profile merged
+assert effective.key_filename == "~/.ssh/aws.pem"
 ```
 
 ---
@@ -1191,14 +1261,22 @@ remote-cmd --verbose <command>
 Add a host.
 
 ```bash
-remote-cmd host add <name> <hostname> <username> [options]
+remote-cmd host add <name> <hostname> [username] [options]
 
 Options:
   -p, --port INTEGER          SSH port (default: 22)
   -k, --key TEXT              SSH private key file path
   -t, --tag TEXT              Tag (repeatable)
   -d, --description TEXT      Description
+  --profile TEXT              Reference a connection profile (v2.8)
 ```
+
+`USERNAME` may be omitted when `--profile` is given: an empty username is
+stored on the host and the profile's username is resolved live at connect
+time (later profile changes propagate); an explicitly supplied `USERNAME` is
+a host override. The profile reference is kept, and other profile defaults
+(port/key/tags/description) merge at connect time — see
+[HostProfile](#hostprofile-v28).
 
 When no key is provided, the command prompts for the password interactively via `getpass`; you can also use the `REMOTE_CMD_PASSWORD` environment variable — passwords are never passed as command-line arguments.
 
@@ -1263,6 +1341,30 @@ remote-cmd host test <name>
 remote-cmd host test web-server
 ```
 
+##### profile command group (v2.8)
+
+Manage reusable connection profiles (never credentials).
+
+```bash
+remote-cmd profile add <name> [-u USERNAME] [-p PORT] [-k KEY]
+                              [-t TAG]... [-d DESCRIPTION]
+remote-cmd profile list
+remote-cmd profile show <name>
+remote-cmd profile remove <name> [--force]
+```
+
+`profile remove` refuses to delete a profile still referenced by hosts;
+`--force` removes it anyway (referencing hosts then fail resolution with
+`ConfigError`).
+
+**Example:**
+
+```bash
+remote-cmd profile add aws -u ec2-user -k ~/.ssh/aws.pem -t cloud
+remote-cmd host add web-01 10.0.0.10 --profile aws
+remote-cmd host show web-01        # shows Profile: aws (effective view)
+```
+
 #### run command
 
 Execute a remote command.
@@ -1275,6 +1377,22 @@ Options:
 
 ```text
   -T, --timeout INTEGER       Command execution wall-clock timeout (default: none)
+  --format [rich|json|table]  Output format (default: rich; v2.8)
+```
+
+`json`/`table` are machine formats: stdout carries only the formatted result
+(the rich default is unchanged). JSON schema:
+
+```json
+{
+  "host": "web-01",
+  "command": "uptime",
+  "success": true,
+  "exit_code": 0,
+  "duration": 0.42,
+  "stdout": "...",
+  "stderr": ""
+}
 ```
 
 **Example:**
@@ -1293,7 +1411,21 @@ Execute a command in batch across specified hosts; the command currently accepts
 remote-cmd batch-run <host_name>... <command> [options]
 ```
 
-Options include `-C/--concurrency`, `-T/--timeout`, `-r/--retry`, `--retry-delay`, `--async`, and `--show-failures`. `--retry-delay` is the exponential-backoff base delay, with full jitter applied and capped at 60 seconds.
+Options include `-C/--concurrency`, `-T/--timeout`, `-r/--retry`, `--retry-delay`, `--async`, `--show-failures`, and `--format [rich|json|table]`. `--retry-delay` is the exponential-backoff base delay, with full jitter applied and capped at 60 seconds.
+
+With `--format json|table` the progress bar and header are suppressed so
+stdout stays parseable; `results` keys are sorted for deterministic output:
+
+```json
+{
+  "total": 3, "success": 2, "failed": 1, "duration": 1.42,
+  "results": {
+    "db-01": {"success": false, "exit_code": -1, "duration": 0.2,
+              "stdout": "", "stderr": "", "error": "Connection refused",
+              "command": "uptime"}
+  }
+}
+```
 
 #### upload command
 

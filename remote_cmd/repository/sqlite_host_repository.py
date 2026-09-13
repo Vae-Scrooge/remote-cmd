@@ -26,6 +26,7 @@ import warnings
 from typing import Optional
 
 from remote_cmd.core.host import Host
+from remote_cmd.core.profile import HostProfile
 from remote_cmd.repository.host_repository import HostRepository
 from remote_cmd.utils.credential_guard import PasswordGuard, is_plaintext_password
 from remote_cmd.utils.crypto import CredentialEncryption
@@ -68,6 +69,20 @@ CREATE_META_SQL = """
 CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
+);
+"""
+
+# Profile 表（v2.8；无凭据字段）
+CREATE_PROFILES_SQL = """
+CREATE TABLE IF NOT EXISTS profiles (
+    name TEXT PRIMARY KEY,
+    username TEXT,
+    port INTEGER,
+    key_filename TEXT,
+    tags TEXT DEFAULT '[]',
+    description TEXT DEFAULT '',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 """
 
@@ -134,6 +149,7 @@ class SqliteHostRepository(HostRepository):
         with self._txn(write=True) as conn:
             conn.execute(CREATE_TABLE_SQL)
             conn.execute(CREATE_META_SQL)
+            conn.execute(CREATE_PROFILES_SQL)
             for idx_sql in CREATE_INDEXES_SQL:
                 conn.execute(idx_sql)
             # 设置数据库版本
@@ -389,6 +405,84 @@ class SqliteHostRepository(HostRepository):
             row = conn.execute("SELECT COUNT(*) as cnt FROM hosts").fetchone()
 
         return row["cnt"] if row else 0
+
+    # ========================================================================
+    # ProfileStore 能力（v2.8）
+    # ========================================================================
+
+    def save_profile(self, profile: HostProfile) -> None:
+        """保存或更新 Profile（即时落库；无凭据字段）。"""
+        tags_json = json.dumps(list(profile.tags or []), ensure_ascii=False)
+        with self._lock, self._txn(write=True) as conn:
+            conn.execute(
+                """
+                    INSERT INTO profiles (name, username, port, key_filename,
+                                          tags, description, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT(name) DO UPDATE SET
+                        username = excluded.username,
+                        port = excluded.port,
+                        key_filename = excluded.key_filename,
+                        tags = excluded.tags,
+                        description = excluded.description,
+                        updated_at = CURRENT_TIMESTAMP
+                    """,
+                (
+                    profile.name,
+                    profile.username,
+                    profile.port,
+                    profile.key_filename,
+                    tags_json,
+                    profile.description,
+                ),
+            )
+            conn.commit()
+
+    def get_profile(self, name: str) -> HostProfile:
+        with self._lock, self._txn() as conn:
+            row = conn.execute("SELECT * FROM profiles WHERE name = ?", (name,)).fetchone()
+
+        if row is None:
+            raise KeyError(f"Profile '{name}' not found")
+        return self._row_to_profile(row)
+
+    def delete_profile(self, name: str) -> None:
+        with self._lock, self._txn(write=True) as conn:
+            cursor = conn.execute("DELETE FROM profiles WHERE name = ?", (name,))
+            conn.commit()
+
+        if cursor.rowcount == 0:
+            raise KeyError(f"Profile '{name}' not found")
+
+    def list_profiles(self) -> builtins.list[HostProfile]:
+        with self._lock, self._txn() as conn:
+            rows = conn.execute("SELECT * FROM profiles ORDER BY name").fetchall()
+
+        return [self._row_to_profile(row) for row in rows]
+
+    def contains_profile(self, name: str) -> bool:
+        with self._lock, self._txn() as conn:
+            row = conn.execute("SELECT 1 FROM profiles WHERE name = ?", (name,)).fetchone()
+
+        return row is not None
+
+    def _row_to_profile(self, row: sqlite3.Row) -> HostProfile:
+        tags: list[str] = []
+        try:
+            parsed = json.loads(row["tags"] or "[]")
+            if isinstance(parsed, list):
+                tags = [t for t in parsed if isinstance(t, str)]
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+        return HostProfile(
+            name=row["name"],
+            username=row["username"],
+            port=row["port"],
+            key_filename=row["key_filename"],
+            tags=tags,
+            description=row["description"] or "",
+        )
 
     def flush(self) -> None:
         """轻量刷新：执行一次 PASSIVE WAL checkpoint（v2.7 P2.3）。

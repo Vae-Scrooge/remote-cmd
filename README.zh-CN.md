@@ -41,33 +41,35 @@ pip install remote_cmd_manager && remote-cmd host add web-01 192.168.1.10 ubuntu
 
 ---
 
-## v2.7.0 发布亮点
+## v2.8.0 发布亮点
 
-v2.7.0 是运行时效率与错误语义版本：凭据层异常收窄让真实缺陷不再被吞掉，SQLite 不再每次写入都截断 WAL，全局连接预算改用真异步等待队列（非轮询）。
-公共 API 保持向后兼容。升级自动化调用方前请查看[完整迁移说明](./CHANGELOG.md)。
+v2.8.0 带来首批 P3 用户功能：**连接 Profile** 与**机器可读 CLI 输出**。
+公共 API 保持向后兼容；默认 CLI 输出与既有命令行为完全不变。升级前请查看[完整迁移说明](./CHANGELOG.md)。
 
-### 错误语义
+### 连接 Profile
 
-- Keyring、加密、HostService 解密路径只捕获预期失败类型；编程错误向上传播而非被静默吞掉。
-- 连接池后台 monitor 保留兜底捕获，但记录完整堆栈。
-- 可选 `asyncssh` 改用 `find_spec` 探测：异步模块自身的缺陷不再被伪装成"依赖未安装"。
+- 新增 `HostProfile`（从 `remote_cmd` 导出）：可复用的连接默认值——用户名、端口、私钥、标签、描述；JSON/SQLite 仓库通过可选的 `ProfileStore` 能力协议持久化（`HostRepository` ABC 保持不变）。
+- 主机以引用方式绑定 profile（`host add --profile aws`），连接解析时合并（引用式）：端口在主机为默认 22 时生效、私钥为空时生效、描述为空时生效、标签取并集、用户名为空时取自 profile（live default，后续修改 profile.username 会对引用主机生效）。
+- 修改 profile 对全部引用主机生效；未知 profile 抛出清晰的 `ConfigError`（批量执行按主机报告）。
+- `ProfileService` CRUD + `remote-cmd profile add/list/show/remove`，删除时保护仍被引用的 profile。
 
-### SQLite WAL 效率
+### 机器可读输出
 
-- `flush()` 改为 **PASSIVE** checkpoint，不再每次主机增删改都 TRUNCATE——消除写等待与 WAL 重写。
-- 新增显式 `repo.checkpoint("TRUNCATE")`（亦支持 `PASSIVE`/`FULL`/`RESTART`）用于按需压缩 WAL。
+- `remote-cmd run` 与 `remote-cmd batch-run` 支持 `--format rich|json|table`（默认 `rich`，与既有输出字节兼容）。
+- JSON 使用稳定 schema 且结果键排序；table 为纯文本对齐；机器格式下自动静默进度条/表头，保证 stdout 可解析。
+- 格式化层位于 `remote_cmd/cli/formatters/`，绝不触碰执行内核。
 
-### 连接预算
+### 试用
 
-- `ConnectionBudget.acquire_async()` 改用真等待队列（`asyncio.Future` 经 `call_soon_threadsafe` 唤醒），移除 v2.6 轮询；取消安全，异步等待者 FIFO。
-
-### 基准数据（P2.4）
-
-- 同步 Paramiko 路径每命令线程创建/join 约 100 µs，满载峰值线程≈并发数的 3 倍。是否重写为集中式 channel reader 将于 v2.7.x 依据该数据决策。
+```bash
+remote-cmd profile add aws -u ec2-user -k ~/.ssh/aws.pem -t cloud
+remote-cmd host add web-01 10.0.0.10 --profile aws
+remote-cmd batch-run web-01 web-02 "uptime" --format json | jq .
+```
 
 ## 目录
 
-- [v2.7.0 发布亮点](#v270-发布亮点)
+- [v2.8.0 发布亮点](#v280-发布亮点)
 - [为什么选择 Remote CMD？](#为什么选择-remote-cmd)
 - [快速开始](#快速开始)
 - [使用场景](#使用场景)
@@ -214,7 +216,9 @@ with SSHClient(config) as client:
 | **命令执行** | 单条、多行、带密码的 sudo 命令 |
 | **文件传输** | 通过 SFTP 上传/下载（`remote-cmd upload/download`） |
 | **主机管理** | CRUD，支持可插拔的 JSON 或 **SQLite** 持久化 |
-| **标签系统** | 按标签过滤主机（如 `production`、`web`、`db`） |
+| **连接 Profile** | 主机可引用的用户名/端口/私钥/标签默认值（`ProfileService`、`--profile`），绝不存储凭据 |
+| **输出格式** | `run` / `batch-run` 支持 `--format rich\|json\|table`（稳定 JSON schema，stdout 可解析） |
+| **标签系统** | 按标签过滤主机（如 `production`、`web`、`db`）；profile 标签参与筛选 |
 | **批量操作** | 跨任意主机组执行命令，支持同步与异步 |
 | **异步内核** | 通过 `[async]` 扩展启用 `AsyncSSHClient` / `AsyncConnectionPool` / `AsyncBatchExecutor` |
 | **全局连接预算** | 可选 `ConnectionBudget` 跨连接池与执行器封顶进程内存活 SSH 连接数 |

@@ -48,7 +48,7 @@ Remote CMD - SSH 远程服务器管理工具
     - 文档: 参见 docs/ 目录
 
 Author: Vae-Scrooge
-Version: 2.7.0（单一真相源见 remote_cmd._version）
+Version: 2.8.0（单一真相源见 remote_cmd._version）
 License: MIT
 """
 
@@ -78,6 +78,7 @@ if _HAS_ASYNC:
 from remote_cmd.api.host_manager import HostManager
 from remote_cmd.core.budget import ConnectionBudget
 from remote_cmd.core.host import Host
+from remote_cmd.core.profile import HostProfile
 from remote_cmd.core.ssh_client import SSHClient
 from remote_cmd.core.sync_connection_pool import SyncConnectionPool
 
@@ -105,6 +106,7 @@ from remote_cmd.service.batch_executor import (
     OutputPolicy,
 )
 from remote_cmd.service.credential_provider import KeyringCredentialProvider
+from remote_cmd.service.profile_service import ProfileService
 from remote_cmd.service.task_runner import Task, TaskRunner, TaskStatus
 from remote_cmd.utils.crypto import CredentialEncryption
 from remote_cmd.utils.exceptions import BudgetTimeoutError, PlaintextCredentialWarning
@@ -124,11 +126,13 @@ if _HAS_ASYNC:
         "AsyncConnectionPool",
         "AsyncBatchExecutor",
         "Host",
+        "HostProfile",
         "HostManager",
         # 新架构导出
         "HostRepository",
         "JsonHostRepository",
         "HostService",
+        "ProfileService",
         "SSHService",
         "CredentialProvider",
         "EnvCredentialProvider",
@@ -161,11 +165,13 @@ else:
         # 原有导出（向后兼容，不含异步符号）
         "SSHClient",
         "Host",
+        "HostProfile",
         "HostManager",
         # 新架构导出
         "HostRepository",
         "JsonHostRepository",
         "HostService",
+        "ProfileService",
         "SSHService",
         "CredentialProvider",
         "EnvCredentialProvider",

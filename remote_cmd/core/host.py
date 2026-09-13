@@ -33,6 +33,7 @@ class Host:
         key_filename: SSH 私钥文件路径（可选）
         tags: 主机标签列表，用于分类和筛选
         description: 主机描述信息
+        profile: 连接 Profile 名称（v2.8；引用式，连接解析时合并）
 
     Example:
         >>> host = Host(
@@ -52,6 +53,7 @@ class Host:
     key_filename: Optional[str] = None
     tags: list[str] = field(default_factory=list)
     description: str = ""
+    profile: Optional[str] = None
 
     def __post_init__(self):
         """初始化后处理：归一化外部传入的 None 标签（兼容旧数据）"""
@@ -103,6 +105,7 @@ class Host:
             "key_filename",
             "tags",
             "description",
+            "profile",
         }
         filtered = {k: v for k, v in data.items() if k in known_fields}
         return cls(**filtered)

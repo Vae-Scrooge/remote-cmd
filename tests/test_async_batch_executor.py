@@ -552,6 +552,53 @@ class TestAsyncBatchExecutor:
         assert results["srv2"].error == "user interrupted"
         assert results["srv3"].error == "user interrupted"
 
+    @pytest.mark.asyncio
+    async def test_worker_tasks_are_bounded(self, mock_async_client_class, monkeypatch):
+        """回归（v2.5 P1）：50 台主机、并发 4 时只创建 4 个 worker task，
+        而非每台主机一个 task；调度内存与主机数解耦。"""
+        cm, instance = mock_async_client_class
+        hosts = [
+            Host(name=f"srv{i}", hostname=f"10.0.0.{i}", username="admin") for i in range(50)
+        ]
+        ex = AsyncBatchExecutor(host_service=make_mock_service(hosts), max_concurrency=4)
+
+        created: list[asyncio.Task] = []
+        real_create_task = asyncio.create_task
+
+        def counting_create_task(coro, **kwargs):
+            task = real_create_task(coro, **kwargs)
+            created.append(task)
+            return task
+
+        monkeypatch.setattr(asyncio, "create_task", counting_create_task)
+        result = await ex.execute([h.name for h in hosts], "uptime")
+
+        assert result.success == 50
+        assert result.total == 50
+        # 旧实现（task-per-host）此处会是 50
+        assert len(created) == 4
+
+    @pytest.mark.asyncio
+    async def test_worker_count_capped_by_total(self, mock_async_client_class, monkeypatch):
+        """主机数少于 max_concurrency 时 worker 数收敛为主机数。"""
+        cm, instance = mock_async_client_class
+        hosts = [Host(name=f"srv{i}", hostname=f"10.0.0.{i}", username="admin") for i in range(2)]
+        ex = AsyncBatchExecutor(host_service=make_mock_service(hosts), max_concurrency=10)
+
+        created: list[asyncio.Task] = []
+        real_create_task = asyncio.create_task
+
+        def counting_create_task(coro, **kwargs):
+            task = real_create_task(coro, **kwargs)
+            created.append(task)
+            return task
+
+        monkeypatch.setattr(asyncio, "create_task", counting_create_task)
+        result = await ex.execute([h.name for h in hosts], "uptime")
+
+        assert result.success == 2
+        assert len(created) == 2
+
 
 # ============================================================================
 # BatchExecutor use_async 委托路径

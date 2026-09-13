@@ -25,21 +25,43 @@ from remote_cmd.repository.sqlite_host_repository import SqliteHostRepository
 from remote_cmd.utils.crypto import CredentialEncryption
 
 # 显式 storage_backend 取值 -> 仓库工厂
-BACKEND_FACTORIES: dict[str, Callable[[str, Optional[CredentialEncryption]], HostRepository]] = {
-    "json": lambda path, encryption: JsonHostRepository(
-        filepath=path, auto_load=True, encryption=encryption
+BACKEND_FACTORIES: dict[str, Callable[..., HostRepository]] = {
+    "json": lambda path, encryption, allow_plaintext=None: JsonHostRepository(
+        filepath=path,
+        auto_load=True,
+        encryption=encryption,
+        allow_plaintext_credentials=allow_plaintext,
     ),
-    "sqlite": lambda path, encryption: SqliteHostRepository(db_path=path, encryption=encryption),
-    "sqlite3": lambda path, encryption: SqliteHostRepository(db_path=path, encryption=encryption),
+    "sqlite": lambda path, encryption, allow_plaintext=None: SqliteHostRepository(
+        db_path=path,
+        encryption=encryption,
+        allow_plaintext_credentials=allow_plaintext,
+    ),
+    "sqlite3": lambda path, encryption, allow_plaintext=None: SqliteHostRepository(
+        db_path=path,
+        encryption=encryption,
+        allow_plaintext_credentials=allow_plaintext,
+    ),
 }
 
 # 扩展名 -> 仓库工厂
-EXTENSION_FACTORIES: dict[str, Callable[[str, Optional[CredentialEncryption]], HostRepository]] = {
-    ".json": lambda path, encryption: JsonHostRepository(
-        filepath=path, auto_load=True, encryption=encryption
+EXTENSION_FACTORIES: dict[str, Callable[..., HostRepository]] = {
+    ".json": lambda path, encryption, allow_plaintext=None: JsonHostRepository(
+        filepath=path,
+        auto_load=True,
+        encryption=encryption,
+        allow_plaintext_credentials=allow_plaintext,
     ),
-    ".db": lambda path, encryption: SqliteHostRepository(db_path=path, encryption=encryption),
-    ".sqlite": lambda path, encryption: SqliteHostRepository(db_path=path, encryption=encryption),
+    ".db": lambda path, encryption, allow_plaintext=None: SqliteHostRepository(
+        db_path=path,
+        encryption=encryption,
+        allow_plaintext_credentials=allow_plaintext,
+    ),
+    ".sqlite": lambda path, encryption, allow_plaintext=None: SqliteHostRepository(
+        db_path=path,
+        encryption=encryption,
+        allow_plaintext_credentials=allow_plaintext,
+    ),
 }
 
 
@@ -83,6 +105,7 @@ def build_repository(
     filepath: str,
     storage_backend: Optional[str] = None,
     encryption: Optional[CredentialEncryption] = None,
+    allow_plaintext_credentials: Optional[bool] = None,
 ) -> HostRepository:
     """
     根据扩展名或显式存储后端构建 HostRepository。
@@ -93,6 +116,9 @@ def build_repository(
         encryption: 凭据加密器（可选）。传入后仓库在写入时自动加密密码、
             读取时自动解密，作为防御深度（即使调用方绕过 HostService
             直接 save() 明文密码，落盘仍是密文）。
+        allow_plaintext_credentials: 明文密码持久化策略（v2.5；详见
+            JsonHostRepository / SqliteHostRepository）。默认 None 为兼容模式
+            （落盘明文时发出 PlaintextCredentialWarning）。
 
     Returns:
         HostRepository: 匹配的仓库实例
@@ -102,4 +128,4 @@ def build_repository(
     """
     backend = resolve_storage_backend(filepath, storage_backend)
     factory = BACKEND_FACTORIES[backend]
-    return factory(filepath, encryption)
+    return factory(filepath, encryption, allow_plaintext_credentials)

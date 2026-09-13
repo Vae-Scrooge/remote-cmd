@@ -117,14 +117,52 @@ class TestBuildRepository:
             conn.close()
 
     def test_without_encryption_preserves_old_behavior(self, tmp_path):
-        """测试：不传 encryption 时保持原有行为（明文直存，兼容）"""
+        """测试：不传 encryption 时保持原有行为（明文直存，兼容），
+        并在 flush 时发出 PlaintextCredentialWarning（v2.5 默认策略）。"""
         from remote_cmd.core.host import Host
+        from remote_cmd.utils.exceptions import PlaintextCredentialWarning
 
         path = str(tmp_path / "hosts.json")
         repo = build_repository(path)
         repo.save(Host(name="srv1", hostname="10.0.0.1", username="admin", password="secret"))
-        repo.flush()
+        with pytest.warns(PlaintextCredentialWarning):
+            repo.flush()
 
         with open(path, encoding="utf-8") as f:
             raw = json.load(f)
         assert raw["hosts"]["srv1"]["password"] == "secret"
+
+    def test_plaintext_policy_forwarded_to_json_repo(self, tmp_path):
+        """测试：allow_plaintext_credentials 转发到 JSON 仓库并生效。"""
+        from remote_cmd.core.host import Host
+        from remote_cmd.utils.exceptions import CredentialError
+
+        path = str(tmp_path / "hosts.json")
+        repo = build_repository(path, allow_plaintext_credentials=False)
+        repo.save(Host(name="srv1", hostname="10.0.0.1", username="admin", password="secret"))
+        with pytest.raises(CredentialError):
+            repo.flush()
+
+    def test_plaintext_policy_forwarded_to_sqlite_repo(self, tmp_path):
+        """测试：allow_plaintext_credentials 转发到 SQLite 仓库并生效。"""
+        from remote_cmd.core.host import Host
+        from remote_cmd.utils.exceptions import CredentialError
+
+        path = str(tmp_path / "hosts.db")
+        repo = build_repository(path, allow_plaintext_credentials=False)
+        with pytest.raises(CredentialError):
+            repo.save(Host(name="srv1", hostname="10.0.0.1", username="admin", password="secret"))
+
+    def test_plaintext_policy_opt_in_silent(self, tmp_path):
+        """测试：allow_plaintext_credentials=True 时无警告。"""
+        import warnings
+
+        from remote_cmd.core.host import Host
+        from remote_cmd.utils.exceptions import PlaintextCredentialWarning
+
+        path = str(tmp_path / "hosts.json")
+        repo = build_repository(path, allow_plaintext_credentials=True)
+        repo.save(Host(name="srv1", hostname="10.0.0.1", username="admin", password="secret"))
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", PlaintextCredentialWarning)
+            repo.flush()

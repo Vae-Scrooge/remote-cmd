@@ -245,3 +245,20 @@ class PoolClosedError(RemoteCmdError, RuntimeError):
     """
 
     pass
+
+
+class PlaintextCredentialWarning(Warning):
+    """
+    明文凭据即将被持久化的警告（v2.5 引入）
+
+    当仓库构造时未传入 ``encryption`` 且存在明文密码字段、同时未显式
+    ``allow_plaintext_credentials=True`` 时发出。v3.0 起
+    ``allow_plaintext_credentials`` 默认值计划切换为 False（拒绝明文落盘）。
+
+    Example:
+        >>> import warnings
+        >>> warnings.simplefilter("always")
+        >>> warnings.warn("...", PlaintextCredentialWarning)
+    """
+
+    pass

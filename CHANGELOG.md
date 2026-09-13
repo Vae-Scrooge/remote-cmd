@@ -7,6 +7,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.5.0] - 2026-09-13
+
+v2.5 is a hardening and scalability release: dependency security floors, Python 3.9
+removal, bounded async scheduling, and explicit output-retention /
+credential-persistence policies. Behavioral defaults are unchanged where backward
+compatibility matters (phased migration toward v3.0 defaults).
+
+### Changed
+
+- **Minimum supported Python is now 3.10** (3.9 reached end-of-life on 2025-10-31):
+  `requires-python = ">=3.10"`, classifiers and CI matrix updated, ruff target
+  raised to `py310`.
+- **Security floors raised**: `paramiko>=5.0,<6` (was `>=3.0`) and
+  `asyncssh>=2.24.0,<3` (was `>=2.14.0`; 2.23.x and earlier are affected by 2026
+  AsyncSSH advisories, including the SCP path-traversal CVE fixed in 2.23.1).
+- `AsyncBatchExecutor` scheduling replaced the task-per-host model with a
+  **bounded worker queue**: only `min(max_concurrency, host_count)` worker tasks
+  are created and pull hosts from a shared `asyncio.Queue`. `max_concurrency`
+  semantics are unchanged; scheduling memory is decoupled from host count.
+- The `dev` extra now includes `asyncssh`, so `pip install -e ".[dev]"` is
+  sufficient to collect and run the full test suite.
+
+### Added
+
+- `OutputPolicy` (exported from `remote_cmd`): explicit output-retention policy
+  accepted by `BatchExecutor` / `AsyncBatchExecutor` via `output_policy=`,
+  mutually exclusive with the legacy `max_output_bytes` parameter
+  (`ValidationError` when both are given). `OutputPolicy(max_output_bytes=None)`
+  keeps the v2.4 behavior (full retention); the constructor validates its value.
+- `allow_plaintext_credentials` parameter on `JsonHostRepository` /
+  `SqliteHostRepository` (forwarded by `build_repository`), a three-state policy:
+  `None` (default) still persists plaintext but emits
+  `PlaintextCredentialWarning`; `True` explicitly allows it silently; `False`
+  raises `CredentialError` instead of persisting. `$encrypted$` tokens are never
+  flagged as plaintext. v3.0 plans to make `False` the default.
+- `PlaintextCredentialWarning` exported from `remote_cmd` for warning filters.
+- JSON repository concurrency semantics are now documented as
+  **single-process/single-writer** (no cross-process lock); SQLite
+  (WAL + `busy_timeout`) is recommended for multi-process writers.
+
+### Migration Guide (v2.4 → v2.5)
+
+- **Python 3.9 users must upgrade to 3.10+** before installing v2.5.
+- **`max_output_bytes` continues to work unchanged**; new code may prefer
+  `OutputPolicy`. Do not pass both.
+- **Plaintext persistence still works by default**, but now emits
+  `PlaintextCredentialWarning`. Pass `encryption=CredentialEncryption()` to
+  encrypt at rest, `allow_plaintext_credentials=True` to opt in silently, or
+  `allow_plaintext_credentials=False` for strict rejection. Expect the strict
+  behavior to become the default in v3.0.
+- **Multi-process JSON writers** should migrate to `SqliteHostRepository`;
+  the JSON backend is documented as single-writer.
+
 ## [2.4.0] - 2026-09-12
 
 v2.4 adds an opt-in retained-output cap for batch execution and cleans up logging handler

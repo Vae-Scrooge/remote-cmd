@@ -4,8 +4,14 @@ JSON 文件主机仓库实现
 使用 JSON 文件存储主机配置，支持：
 - 原子写入（先写临时文件再重命名，防止崩溃导致数据丢失）
 - 可选加密（通过 CredentialEncryption 加密 password 字段）
+- 明文持久化策略（v2.5）
 - config version management
 - 自动从旧版本迁移
+
+并发语义（single-writer）：
+- 本实现面向**单进程/单写入者**"; 多进程并发写同一 JSON 文件
+  可能丢失更新（读-改-写无跨进程锁）。需要多进程/多写入者时，
+  请使用 SqliteHostRepository（WAL + busy_timeout 处理并发写）。
 """
 
 import builtins
@@ -14,13 +20,15 @@ import json
 import logging
 import os
 import tempfile
+import warnings
 from pathlib import Path
 from typing import Optional
 
 from remote_cmd.core.host import Host
 from remote_cmd.repository.host_repository import HostRepository
-from remote_cmd.utils.credential_guard import PasswordGuard
+from remote_cmd.utils.credential_guard import PasswordGuard, is_plaintext_password
 from remote_cmd.utils.crypto import CredentialEncryption
+from remote_cmd.utils.exceptions import CredentialError, PlaintextCredentialWarning
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +44,16 @@ class JsonHostRepository(HostRepository):
         filepath: JSON 文件路径
         encryption: 可选的凭据加密器（设置后自动加密 password）
         auto_load: 初始化时是否自动加载已有文件（默认 True）
+        allow_plaintext_credentials: 明文密码持久化策略（v2.5；默认 None
+            为兼容模式）。三态：
+            - None：允许，但在 flush 会持久化明文密码时发出
+              PlaintextCredentialWarning（兼容 v2.4 及更早）
+            - True：显式允许明文落盘（不再告警）
+            - False：flush 遇到明文密码时抛出 CredentialError
+            v3.0 起默认值计划切换为 False。
+
+    并发语义：单进程/单写入者（见模块 docstring）；多进程场景请使用
+    SqliteHostRepository。
     """
 
     def __init__(
@@ -43,10 +61,12 @@ class JsonHostRepository(HostRepository):
         filepath: str,
         encryption: Optional[CredentialEncryption] = None,
         auto_load: bool = True,
+        allow_plaintext_credentials: Optional[bool] = None,
     ) -> None:
         self._filepath = Path(filepath)
         self._encryption = encryption
         self._guard = PasswordGuard(encryption)
+        self._allow_plaintext = allow_plaintext_credentials
         self._hosts: dict[str, Host] = {}
 
         if auto_load and self._filepath.exists():
@@ -100,7 +120,14 @@ class JsonHostRepository(HostRepository):
     # ========================================================================
 
     def flush(self) -> None:
-        """原子写入 JSON 文件"""
+        """原子写入 JSON 文件
+
+        注意：JSON 持久化是单进程/单写入者语义，多进程并发写同一文件
+        可能丢失更新（无跨进程锁）；多进程场景请使用 SqliteHostRepository。
+
+        Raises:
+            CredentialError: allow_plaintext_credentials=False 且存在明文密码
+        """
         data = self._serialize_hosts()
         self._atomic_write(data)
 
@@ -112,11 +139,43 @@ class JsonHostRepository(HostRepository):
         if self._guard.enabled:
             for host_data in hosts_dict.values():
                 host_data["password"] = self._guard.encrypt(host_data.get("password"))
+        else:
+            self._enforce_plaintext_policy(hosts_dict)
 
         return {
             "version": CONFIG_VERSION,
             "hosts": hosts_dict,
         }
+
+    def _enforce_plaintext_policy(self, hosts_dict: dict) -> None:
+        """执行明文密码持久化策略（未配置加密器时）。
+
+        集合所有违规主机，一次 flush 最多发出一次警告或抛出一次异常。
+        """
+        if self._allow_plaintext is True:
+            return
+        offenders = [
+            name
+            for name, data in hosts_dict.items()
+            if is_plaintext_password(data.get("password"))
+        ]
+        if not offenders:
+            return
+        if self._allow_plaintext is False:
+            raise CredentialError(
+                "refusing to persist plaintext credentials for hosts: "
+                f"{', '.join(sorted(offenders))}. "
+                "Pass encryption=... to encrypt at rest, or set "
+                "allow_plaintext_credentials=True to explicitly opt in."
+            )
+        warnings.warn(
+            f"Plaintext credentials will be persisted for {len(offenders)} host(s): "
+            f"{', '.join(sorted(offenders))}. Pass encryption=... to encrypt at rest, or "
+            "allow_plaintext_credentials=True to suppress this warning "
+            "(v3.0 will reject plaintext persistence by default).",
+            PlaintextCredentialWarning,
+            stacklevel=4,
+        )
 
     def _load(self) -> None:
         """从 JSON 文件加载主机配置"""

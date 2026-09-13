@@ -2,7 +2,7 @@
   <img src="https://img.shields.io/pypi/v/remote_cmd_manager?style=for-the-badge&logo=pypi&logoColor=white&label=PyPI" alt="PyPI">
   <img src="https://img.shields.io/pypi/dm/remote_cmd_manager?style=for-the-badge&logo=python&logoColor=white&label=Downloads" alt="Downloads">
   <img src="https://img.shields.io/github/stars/Vae-Scrooge/remote-cmd?style=for-the-badge&logo=github" alt="Stars">
-  <img src="https://img.shields.io/badge/python-3.9%2B-blue?style=for-the-badge&logo=python" alt="Python">
+  <img src="https://img.shields.io/badge/python-3.10%2B-blue?style=for-the-badge&logo=python" alt="Python">
   <img src="https://img.shields.io/github/license/Vae-Scrooge/remote-cmd?style=for-the-badge" alt="License">
   <img src="https://img.shields.io/github/actions/workflow/status/Vae-Scrooge/remote-cmd/ci.yml?style=for-the-badge&logo=githubactions&label=CI" alt="CI">
 </p>
@@ -36,30 +36,36 @@ pip install remote_cmd_manager && remote-cmd host add web-01 192.168.1.10 ubuntu
 
 ---
 
-## v2.4.0 Release Highlights
+## v2.5.0 Release Highlights
 
-v2.4.0 adds an opt-in retained-output cap for batch execution and cleans up logging
-handler resources, with default behavior and public result schemas unchanged. See the
+v2.5.0 is a hardening and scalability release: dependency security floors, Python 3.9
+removal, bounded async scheduling, and explicit output-retention / credential-persistence
+policies. Backward-compatible defaults are preserved where behavior is involved. See the
 [full migration notes](./CHANGELOG.md) before upgrading automated callers.
 
-### Bounded Batch Output
+### Security & Platform
 
-- `BatchExecutor` / `AsyncBatchExecutor` accept an optional `max_output_bytes` (default `None`): `None` keeps full `stdout`/`stderr`, while a positive value caps each host's retained streams and appends a `[output truncated: N bytes omitted]` marker.
-- Truncation is deterministic and UTF-8 byte-boundary safe, applies to `stdout` and `stderr` independently, and never changes command success/failure or exit codes.
-- The cap bounds the retained `BatchResult`; the SSH client may still hold full output transiently during execution, so it is not a process-wide RSS limit.
+- Minimum supported Python is now **3.10** (3.9 reached EOL on 2025-10-31).
+- Security floors raised: **Paramiko >= 5.0,<6** and **AsyncSSH >= 2.24.0,<3** (2.23.x and earlier are affected by 2026 AsyncSSH advisories).
 
-### Reliability
+### Scalability
 
-- `setup_logging` now closes previous root-logger handlers before removing them, avoiding unclosed-file resource warnings when logging is reconfigured.
-- Connection-pool lifetime wording in the documentation now matches the actual behavior: internal pools are created lazily per host and closed as soon as that host finishes (including its retries).
+- `AsyncBatchExecutor` now uses a **bounded worker queue**: only `min(max_concurrency, host count)` worker tasks are created instead of one task per host, so scheduling memory no longer grows with fleet size.
+- New `OutputPolicy` (exported from `remote_cmd`) gives an explicit, mutually exclusive alternative to `max_output_bytes`; `None` still means full retention in v2.5, and a bounded default is planned for v3.0.
+
+### Credential Safety
+
+- `JsonHostRepository` / `SqliteHostRepository` accept `allow_plaintext_credentials` (default `None`): plaintext persistence now emits `PlaintextCredentialWarning`; pass `True` to opt in silently or `False` to reject it with `CredentialError`. v3.0 plans to reject by default.
+- JSON repository concurrency semantics are now explicit: single-process/single-writer; use SQLite for multi-process writers.
+- The `dev` extra now includes `asyncssh`, so `pip install -e ".[dev]"` runs the full test suite out of the box.
 
 ### Compatibility
 
-- Default behavior is unchanged (`max_output_bytes=None` retains full output) and the public `BatchResult` / `BatchHostResult` schemas are unchanged.
+- `max_output_bytes=None` still retains full output, and the public `BatchResult` / `BatchHostResult` schemas are unchanged; the legacy `max_output_bytes` parameter continues to work alongside `OutputPolicy`.
 
 ## Table of Contents
 
-- [v2.4.0 Release Highlights](#v240-release-highlights)
+- [v2.5.0 Release Highlights](#v250-release-highlights)
 - [Why Remote CMD?](#why-remote-cmd)
 - [Quick Start](#quick-start)
 - [Use Cases](#use-cases)
@@ -297,7 +303,7 @@ Good first issues are labelled `good first issue` in the
 developed independently as a focused alternative to heavyweight tools for the
 ad-hoc SSH tasks that come up in day-to-day server work.
 
-- **Project health:** CI runs on every PR, Python 3.9+ is supported, and the
+- **Project health:** CI runs on every PR, Python 3.10+ is supported, and the
   public API is versioned under [semantic versioning](https://semver.org/).
 - **Your code, your servers:** usage stays open under the MIT license — nothing
   is telemetry-driven or locked behind a service.

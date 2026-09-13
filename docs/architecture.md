@@ -448,6 +448,14 @@ await pool.release(client)
 
 ### Batch Operation Optimization
 
+- The async kernel uses a **bounded worker queue** (v2.5): only
+  `min(max_concurrency, host_count)` asyncio worker tasks are created and pull
+  hosts from a shared queue, so scheduling memory is decoupled from host count
+  (previously one task per host).
+- `OutputPolicy` / `max_output_bytes` bound the retained per-host output in
+  batch results; `None` (the v2.5 default) retains everything and can consume
+  substantial memory at scale.
+
 Parallel execution example:
 
 ```python
@@ -486,6 +494,14 @@ def parallel_execute(hosts, command):
    - Key file permission checks
    - Encrypted credential storage (`CredentialEncryption`)
 
+3. **Credential persistence policy (v2.5)**
+   - Repositories accept `allow_plaintext_credentials` (default `None`):
+     plaintext persistence still works but emits `PlaintextCredentialWarning`;
+     `False` rejects it with `CredentialError`; `True` explicitly allows it.
+   - `JsonHostRepository` is **single-process/single-writer** (no cross-process
+     lock; concurrent multi-process writes may lose updates). Use
+     `SqliteHostRepository` (WAL + `busy_timeout`) for multi-process writers.
+
 ### Transport Security
 
 - Uses encrypted SSH channels
@@ -517,7 +533,8 @@ class SecureConfig:
 
 | Library | Version | Purpose |
 |---------|---------|---------|
-| paramiko | >=3.0.0 | SSH protocol implementation |
+| paramiko | >=5.0,<6 | SSH protocol implementation (sync) |
+| asyncssh | >=2.24.0,<3 | Native async SSH implementation (`[async]` extra) |
 | click | >=8.0.0 | CLI framework |
 | pyyaml | >=6.0 | YAML parsing |
 
@@ -526,8 +543,8 @@ class SecureConfig:
 | Tool | Purpose |
 |------|---------|
 | pytest | Unit testing |
-| black | Code formatting |
-| flake8 | Code linting |
+| ruff | Code formatting and linting |
+| mypy | Type checking |
 | mypy | Type checking |
 
 ---

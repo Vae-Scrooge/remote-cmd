@@ -731,8 +731,29 @@ class HostRepository(ABC):
 
 | Class | Storage Format | Use Case |
 |-------|----------------|----------|
-| `JsonHostRepository` | JSON file (atomic write, optional encryption) | Default, lightweight config |
-| `SqliteHostRepository` | SQLite database (indexing, pagination, search) | Large host counts |
+| `JsonHostRepository` | JSON file (atomic write, optional encryption) | Default, lightweight config; **single-process/single-writer** — concurrent writes from multiple processes may lose updates |
+| `SqliteHostRepository` | SQLite database (indexing, pagination, search) | Large host counts and **multi-process writers** (WAL + `busy_timeout`) |
+
+##### Plaintext Credential Policy (v2.5)
+
+Both repositories accept `allow_plaintext_credentials` (default `None`, phased
+compatibility):
+
+| Value | Behavior |
+|-------|----------|
+| `None` (default) | Plaintext passwords are still persisted, but a `PlaintextCredentialWarning` is emitted |
+| `True` | Explicit opt-in; no warning |
+| `False` | Raise `CredentialError` instead of persisting plaintext (`flush()` for JSON, `save()` for SQLite) |
+
+Pass `encryption=CredentialEncryption()` to encrypt at rest; `$encrypted$`
+tokens are never flagged as plaintext. **v3.0 plans to flip the default to
+`False` (reject plaintext persistence).** Prefer SQLite for multi-process use:
+
+```python
+from remote_cmd.repository.sqlite_host_repository import SqliteHostRepository
+
+repo = SqliteHostRepository("hosts.db", allow_plaintext_credentials=False)
+```
 
 #### Automatic Storage Engine Switching
 
@@ -965,7 +986,8 @@ class BatchExecutor:
     def __init__(self, host_service: HostService, max_concurrency: int = 10,
                  command_timeout: int = 30, use_async: bool = False,
                  pool_factory: Optional[Callable] = None,
-                 max_output_bytes: Optional[int] = None)
+                 max_output_bytes: Optional[int] = None,
+                 output_policy: Optional[OutputPolicy] = None)
     def execute(self, host_names: List[str], command: str,
                 retry_count: int = 0, retry_delay: float = 1.0,
                 progress_callback: Optional[ProgressCallback] = None) -> BatchResult
@@ -977,9 +999,30 @@ class BatchExecutor:
 - When `pool_factory` is provided, the pool returned by the factory is caller-owned; the executor only borrows it and never closes it, suitable for long-lived services reusing pools across batches.
 - With `use_async=True` the factory must return an async pool; the sync kernel must return a sync pool.
 
-#### Output Retention (`max_output_bytes`)
+#### Output Retention (`max_output_bytes` / `OutputPolicy`)
 
-Both executors accept `max_output_bytes` (default `None`). `None` retains the complete `stdout`/`stderr` (existing behavior); a positive integer caps each host's retained stream at that many UTF-8 bytes and appends a deterministic `[output truncated: N bytes omitted]` marker. Truncation does not change command success/failure or exit codes, and only bounds the retained `BatchResult` — the client may still briefly hold the full output during execution.
+Both executors accept `max_output_bytes` (default `None`) or, since v2.5, an
+`OutputPolicy` instance (`output_policy=`). The two are mutually exclusive —
+passing both raises `ValidationError`. `None` retains the complete
+`stdout`/`stderr` (existing behavior); a positive integer caps each host's
+retained stream at that many UTF-8 bytes and appends a deterministic
+`[output truncated: N bytes omitted]` marker. Truncation does not change
+command success/failure or exit codes, and only bounds the retained
+`BatchResult` — the client may still briefly hold the full output during
+execution.
+
+```python
+from remote_cmd import BatchExecutor, OutputPolicy
+
+executor = BatchExecutor(
+    host_service,
+    output_policy=OutputPolicy(max_output_bytes=1_048_576),  # 1 MiB per stream
+)
+```
+
+> **Memory note:** `OutputPolicy(max_output_bytes=None)` means unlimited
+> retention and may consume substantial memory for large batches. A bounded
+> default is planned for v3.0; set an explicit cap in the meantime.
 
 #### Retry Behavior
 
@@ -989,7 +1032,10 @@ Authentication, credential, configuration, validation, and programming errors ar
 
 ### AsyncBatchExecutor
 
-Native async batch command executor based on `asyncio.Semaphore` to control concurrency.
+Native async batch command executor using a **bounded worker queue** (v2.5):
+only `min(max_concurrency, host_count)` worker tasks are created, pulling
+hosts from a shared `asyncio.Queue`. Scheduling memory is therefore decoupled
+from host count (previously one task per host).
 
 #### Class Definition
 
@@ -998,7 +1044,8 @@ class AsyncBatchExecutor:
     def __init__(self, host_service: HostService, max_concurrency: int = 10,
                  command_timeout: int = 30,
                  pool_factory: Optional[Callable] = None,
-                 max_output_bytes: Optional[int] = None)
+                 max_output_bytes: Optional[int] = None,
+                 output_policy: Optional[OutputPolicy] = None)
     async def execute(self, host_names: List[str], command: str,
                       retry_count: int = 0, retry_delay: float = 1.0,
                       progress_callback: Optional[ProgressCallback] = None) -> BatchResult
@@ -1009,10 +1056,11 @@ class AsyncBatchExecutor:
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `host_service` | `HostService` | required | Host service (provides host config and credential resolution) |
-| `max_concurrency` | `int` | 10 | Maximum concurrent hosts |
+| `max_concurrency` | `int` | 10 | Maximum concurrent hosts (also the worker count) |
 | `command_timeout` | `int` | 30 | Single-command timeout (seconds) |
 | `pool_factory` | `Optional[Callable]` | `None` | External async connection pool factory; the returned pool is caller-owned and not closed by the executor |
 | `max_output_bytes` | `Optional[int]` | `None` | Per-host per-stream retained output cap (UTF-8 bytes); `None` keeps full output; positive values truncate with a `[output truncated: N bytes omitted]` marker (success/failure unchanged) |
+| `output_policy` | `Optional[OutputPolicy]` | `None` | v2.5 explicit replacement for `max_output_bytes` (mutually exclusive with it) |
 
 The `execute` parameters are identical to the synchronous `BatchExecutor.execute`: `retry_count` is the number of retries on failure, `retry_delay` is the exponential-backoff base delay (with full jitter, capped at 60s), and `progress_callback` is a progress callback `(completed, total, host_name)` (may be sync or async).
 

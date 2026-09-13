@@ -18,7 +18,7 @@ This tutorial will help you master the basics of Remote CMD within 15 minutes.
 
 ### System Requirements
 
-- **Python**: 3.9 or higher
+- **Python**: 3.10 or higher
 - **OS**: Windows, macOS, Linux
 - **Network**: Ability to reach the target SSH server
 

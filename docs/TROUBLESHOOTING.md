@@ -535,14 +535,14 @@ SyntaxError: invalid syntax
 
 ```bash
 # Check the Python version
-python --version  # Requires 3.9+
+python --version  # Requires 3.10+
 
 # Use a specific version
-python3.9 -m remote_cmd --version
 python3.10 -m remote_cmd --version
+python3.11 -m remote_cmd --version
 
 # Create a virtual environment with the specified version
-python3.9 -m venv venv
+python3.10 -m venv venv
 ```
 
 ---
@@ -733,7 +733,7 @@ Most problems can be solved by checking the following:
 3. ✅ Username and password/key are correct
 4. ✅ File paths are correct
 5. ✅ Sufficient permissions
-6. ✅ Python version is compatible (3.9+)
+6. ✅ Python version is compatible (3.10+)
 7. ✅ Dependencies are installed
 
 ---

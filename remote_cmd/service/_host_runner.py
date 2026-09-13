@@ -23,7 +23,7 @@ from typing import Optional, Union
 
 from remote_cmd.core.host import Host
 from remote_cmd.core.ssh_client import CommandResult, ConnectionConfig
-from remote_cmd.service._types import BatchHostResult
+from remote_cmd.service._types import BatchHostResult, OutputPolicy
 from remote_cmd.service.host_service import HostService
 from remote_cmd.utils.exceptions import ValidationError
 
@@ -54,6 +54,36 @@ def validate_max_output_bytes(value: Optional[int]) -> Optional[int]:
             f"max_output_bytes must be None or a positive integer, got: {value!r}"
         )
     return value
+
+
+def resolve_max_output_bytes(
+    max_output_bytes: Optional[int],
+    output_policy: Optional[OutputPolicy],
+) -> Optional[int]:
+    """解析执行器的输出保留配置，返回生效的 max_output_bytes。
+
+    v2.5 引入 ``OutputPolicy`` 作为 ``max_output_bytes`` 的显式替代；
+    两者只能传且最多传一个，防止歧义。
+
+    Args:
+        max_output_bytes: legacy 参数（与 ``output_policy`` 互斥）
+        output_policy: ``OutputPolicy`` 实例（优先）
+
+    Returns:
+        Optional[int]: 生效的保留上限（``None`` 表示不限）
+
+    Raises:
+        ValidationError: 两者同时给出，或值非法
+    """
+    if max_output_bytes is not None and output_policy is not None:
+        raise ValidationError(
+            "ambiguous output policy: pass either max_output_bytes or "
+            "output_policy, not both"
+        )
+    if output_policy is not None:
+        return validate_max_output_bytes(output_policy.max_output_bytes)
+    return validate_max_output_bytes(max_output_bytes)
+
 
 
 def truncate_output(text: str, max_bytes: Optional[int]) -> str:

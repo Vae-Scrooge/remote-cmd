@@ -17,7 +17,7 @@
 - 版本：`1.2.3`，git HEAD = `b493a4e`（working tree clean）
 - 全量测试：**410 passed, 22 deselected**（benchmark + integration）
 - ruff check：**All checks passed**；ruff format：**53 files already formatted**
-- Python：`requires-python >= 3.9`，ruff target `py39`，mypy python_version `3.10`
+- Python：`requires-python >= 3.10`，ruff target `py310`，mypy python_version `3.10`
 
 **测试分布（19 个文件，410 用例）**
 

@@ -5,12 +5,16 @@ import sqlite3
 import subprocess
 import sys
 import time
+import warnings
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+
+import pytest
 
 from remote_cmd.core.host import Host
 from remote_cmd.repository.sqlite_host_repository import SqliteHostRepository
 from remote_cmd.utils.crypto import CredentialEncryption
+from remote_cmd.utils.exceptions import CredentialError, PlaintextCredentialWarning
 
 # 多进程写测试的 worker 源码：启动后先写 ready 文件，等待 go 文件存在
 # 再开始写入，确保各进程在 go 出现时同时争用数据库（确定性启动同步）。
@@ -59,9 +63,13 @@ class TestSqliteHostRepository:
             conn.close()
 
     def test_without_encryption_stores_plaintext(self, temp_db_path):
-        """测试：未配置 encryption 时明文直接落库（兼容旧行为）"""
+        """测试：未配置 encryption 时明文直接落库（兼容旧行为），
+        并发出 PlaintextCredentialWarning（v2.5 默认策略）。"""
         repo = SqliteHostRepository(temp_db_path)
-        repo.save(Host(name="srv1", hostname="10.0.0.1", username="admin", password="plain_secret"))
+        with pytest.warns(PlaintextCredentialWarning, match="Plaintext credential"):
+            repo.save(
+                Host(name="srv1", hostname="10.0.0.1", username="admin", password="plain_secret")
+            )
 
         conn = sqlite3.connect(temp_db_path)
         try:
@@ -69,6 +77,45 @@ class TestSqliteHostRepository:
             assert row[0] == "plain_secret"
         finally:
             conn.close()
+
+    def test_plaintext_policy_opt_in_silent(self, temp_db_path):
+        repo = SqliteHostRepository(temp_db_path, allow_plaintext_credentials=True)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", PlaintextCredentialWarning)
+            repo.save(
+                Host(name="srv1", hostname="10.0.0.1", username="admin", password="plain_secret")
+            )
+        assert repo.get("srv1").password == "plain_secret"
+
+    def test_plaintext_policy_reject_raises(self, temp_db_path):
+        repo = SqliteHostRepository(temp_db_path, allow_plaintext_credentials=False)
+        with pytest.raises(CredentialError, match="plaintext"):
+            repo.save(
+                Host(name="srv1", hostname="10.0.0.1", username="admin", password="plain_secret")
+            )
+        assert repo.count() == 0
+
+    def test_plaintext_policy_no_password_silent(self, temp_db_path):
+        repo = SqliteHostRepository(temp_db_path, allow_plaintext_credentials=False)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", PlaintextCredentialWarning)
+            repo.save(Host(name="srv1", hostname="10.0.0.1", username="admin"))
+        assert repo.count() == 1
+
+    def test_plaintext_policy_encrypted_token_not_flagged(self, temp_db_path):
+        """$encrypted$ token 即使仓库未配置 encryption 也不应被误报。"""
+        repo = SqliteHostRepository(temp_db_path, allow_plaintext_credentials=False)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", PlaintextCredentialWarning)
+            repo.save(
+                Host(
+                    name="srv1",
+                    hostname="10.0.0.1",
+                    username="admin",
+                    password="$encrypted$gAAAAABfake-token",
+                )
+            )
+        assert repo.count() == 1
 
     # --- CRUD ---
 

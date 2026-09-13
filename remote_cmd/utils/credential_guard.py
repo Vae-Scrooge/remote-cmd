@@ -40,6 +40,24 @@ logger = logging.getLogger(__name__)
 _DECRYPT_ERRORS = (ValueError, TypeError, KeyError, CredentialEncryptionError)
 
 
+def is_plaintext_password(value: Optional[str]) -> bool:
+    """判定密码值是否需要加密但当前是明文。
+
+    与仓库是否配置加密器无关：以 ``$encrypted$`` 前缀（CredentialEncryption
+    的类级约定标记）判定已加密 token，避免把 HostService 加密后的
+    token 误报为明文。
+
+    Args:
+        value: 密码值（可为 None）
+
+    Returns:
+        bool: 非空且不带加密前缀时返回 True
+    """
+    if not value:
+        return False
+    return not value.startswith(CredentialEncryption._PREFIX)
+
+
 class PasswordGuard:
     """
     密码加解密守卫

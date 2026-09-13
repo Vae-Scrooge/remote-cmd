@@ -22,12 +22,14 @@ import logging
 import sqlite3
 import threading
 import time
+import warnings
 from typing import Optional
 
 from remote_cmd.core.host import Host
 from remote_cmd.repository.host_repository import HostRepository
-from remote_cmd.utils.credential_guard import PasswordGuard
+from remote_cmd.utils.credential_guard import PasswordGuard, is_plaintext_password
 from remote_cmd.utils.crypto import CredentialEncryption
+from remote_cmd.utils.exceptions import CredentialError, PlaintextCredentialWarning
 
 logger = logging.getLogger(__name__)
 
@@ -79,9 +81,19 @@ class SqliteHostRepository(HostRepository):
         auto_create: 是否自动创建表和数据库，默认 True
         encryption: 可选的凭据加密器（设置后 save() 自动加密 password）
         busy_timeout_ms: 写锁等待上限（毫秒），默认 5000
+        allow_plaintext_credentials: 明文密码持久化策略（v2.5；默认 None
+            为兼容模式）。三态：
+            - None：允许，但 save() 将要持久化明文密码时发出
+              PlaintextCredentialWarning（兼容 v2.4 及更早）
+            - True：显式允许明文落盘（不再告警）
+            - False：save() 遇到明文密码时抛出 CredentialError
+            v3.0 起默认值计划切换为 False。
 
     注意: 密码的加密依赖传入 encryption。若直接以明文密码调用 save()
     且未提供 encryption，明文会被持久化到数据库。请勿绕过 HostService。
+
+    并发：WAL + busy_timeout 处理多进程并发写，适合作为多写入者后端
+    （与 JsonHostRepository 的 single-writer 语义不同）。
     """
 
     def __init__(
@@ -91,12 +103,14 @@ class SqliteHostRepository(HostRepository):
         auto_create: bool = True,
         encryption: Optional[CredentialEncryption] = None,
         busy_timeout_ms: int = DEFAULT_BUSY_TIMEOUT_MS,
+        allow_plaintext_credentials: Optional[bool] = None,
     ) -> None:
         self._db_path = db_path
         self._lock = threading.Lock()
         self._encryption = encryption
         self._guard = PasswordGuard(encryption)
         self._busy_timeout_ms = busy_timeout_ms
+        self._allow_plaintext = allow_plaintext_credentials
 
         if auto_create:
             self._init_db()
@@ -246,7 +260,13 @@ class SqliteHostRepository(HostRepository):
     # ========================================================================
 
     def save(self, host: Host) -> None:
-        """保存或更新主机"""
+        """保存或更新主机
+
+        Raises:
+            CredentialError: allow_plaintext_credentials=False 且密码为明文
+        """
+        if not self._guard.enabled:
+            self._enforce_plaintext_policy(host.name, host.password)
         with self._lock, self._txn(write=True) as conn:
             tags_json = json.dumps(host.tags or [], ensure_ascii=False)
             # 配置了加密器时，明文密码先加密再落库
@@ -288,6 +308,27 @@ class SqliteHostRepository(HostRepository):
             raise KeyError(f"Host '{name}' not found")
 
         return self._row_to_host(row)
+
+    def _enforce_plaintext_policy(self, name: str, password: Optional[str]) -> None:
+        """执行明文密码持久化策略（未配置加密器时）。"""
+        if self._allow_plaintext is True:
+            return
+        if not is_plaintext_password(password):
+            return
+        if self._allow_plaintext is False:
+            raise CredentialError(
+                f"refusing to persist plaintext credential for host '{name}'. "
+                "Pass encryption=... to encrypt at rest, or set "
+                "allow_plaintext_credentials=True to explicitly opt in."
+            )
+        warnings.warn(
+            f"Plaintext credential will be persisted for host '{name}'. "
+            "Pass encryption=... to encrypt at rest, or "
+            "allow_plaintext_credentials=True to suppress this warning "
+            "(v3.0 will reject plaintext persistence by default).",
+            PlaintextCredentialWarning,
+            stacklevel=4,
+        )
 
     def delete(self, name: str) -> None:
         """按名称删除主机"""

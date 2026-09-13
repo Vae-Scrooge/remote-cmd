@@ -2,7 +2,7 @@
   <img src="https://img.shields.io/pypi/v/remote_cmd_manager?style=for-the-badge&logo=pypi&logoColor=white&label=PyPI" alt="PyPI">
   <img src="https://img.shields.io/pypi/dm/remote_cmd_manager?style=for-the-badge&logo=python&logoColor=white&label=Downloads" alt="Downloads">
   <img src="https://img.shields.io/github/stars/Vae-Scrooge/remote-cmd?style=for-the-badge&logo=github" alt="Stars">
-  <img src="https://img.shields.io/badge/python-3.9%2B-blue?style=for-the-badge&logo=python" alt="Python">
+  <img src="https://img.shields.io/badge/python-3.10%2B-blue?style=for-the-badge&logo=python" alt="Python">
   <img src="https://img.shields.io/github/license/Vae-Scrooge/remote-cmd?style=for-the-badge" alt="License">
   <img src="https://img.shields.io/github/actions/workflow/status/Vae-Scrooge/remote-cmd/ci.yml?style=for-the-badge&logo=githubactions&label=CI" alt="CI">
 </p>
@@ -41,29 +41,34 @@ pip install remote_cmd_manager && remote-cmd host add web-01 192.168.1.10 ubuntu
 
 ---
 
-## v2.4.0 发布亮点
+## v2.5.0 发布亮点
 
-v2.4.0 为批量执行新增可选的保留输出上限，并清理日志处理器资源；默认行为与公共结果结构保持不变。
-升级自动化调用方前请查看[完整迁移说明](./CHANGELOG.md)。
+v2.5.0 是一次加固与可扩展性版本：依赖安全下限、移除 Python 3.9、异步有界调度，以及显式的输出保留 / 凭据持久化策略。
+涉及行为变化处均保持向后兼容的默认值。升级自动化调用方前请查看[完整迁移说明](./CHANGELOG.md)。
 
-### 批量输出上限
+### 安全与平台
 
-- `BatchExecutor` / `AsyncBatchExecutor` 新增可选参数 `max_output_bytes`（默认 `None`）：`None` 保留完整 `stdout`/`stderr`，正整数则限制每台主机保留的每个输出流并追加 `[output truncated: N bytes omitted]` 标记。
-- 截断是确定性的，且在 UTF-8 字节边界安全；`stdout` 与 `stderr` 独立受限，绝不改变命令成功/失败与退出码。
-- 上限约束的是保留的 `BatchResult` 数据；执行期间 SSH 客户端仍可能短暂持有完整输出，因此它不是进程级 RSS 硬上限。
+- 最低支持 Python 提升至 **3.10**（3.9 已于 2025-10-31 EOL）。
+- 安全下限提高：**Paramiko >= 5.0,<6**、**AsyncSSH >= 2.24.0,<3**（2.23.x 及更早版本受 2026 年 AsyncSSH 安全公告影响）。
 
-### 可靠性
+### 可扩展性
 
-- `setup_logging` 在移除旧处理器前先关闭它们，避免重新配置日志时出现未关闭文件的资源警告。
-- 文档中的连接池生命周期描述已与实际行为一致：内部池按主机惰性创建，并在该主机（含重试）结束后立即关闭。
+- `AsyncBatchExecutor` 改为**有界 worker 队列**：只创建 `min(max_concurrency, 主机数)` 个 worker task，而非每台主机一个 task，调度内存不再随集群规模增长。
+- 新增 `OutputPolicy`（从 `remote_cmd` 导出），作为 `max_output_bytes` 的显式替代（两者互斥）；v2.5 中 `None` 仍表示完整保留，v3.0 计划改为有界默认。
+
+### 凭据安全
+
+- `JsonHostRepository` / `SqliteHostRepository` 新增 `allow_plaintext_credentials`（默认 `None`）：明文落盘时发出 `PlaintextCredentialWarning`；传 `True` 可显式静默，传 `False` 则以 `CredentialError` 拒绝。v3.0 计划默认拒绝。
+- JSON 仓库并发语义明确为单进程/单写入者；多进程写入请使用 SQLite。
+- `dev` extra 现包含 `asyncssh`，`pip install -e ".[dev]"` 即可跑通完整测试套件。
 
 ### 兼容性
 
-- 默认行为不变（`max_output_bytes=None` 保留完整输出），公共 `BatchResult` / `BatchHostResult` 结构保持不变。
+- `max_output_bytes=None` 仍保留完整输出，公共 `BatchResult` / `BatchHostResult` 结构不变；legacy `max_output_bytes` 参数与 `OutputPolicy` 并存可用。
 
 ## 目录
 
-- [v2.4.0 发布亮点](#v240-发布亮点)
+- [v2.5.0 发布亮点](#v250-发布亮点)
 - [为什么选择 Remote CMD？](#为什么选择-remote-cmd)
 - [快速开始](#快速开始)
 - [使用场景](#使用场景)
@@ -282,7 +287,7 @@ pip install -e ".[dev]"
 **Remote CMD 是一个积极维护的开源项目。** 它作为重型工具的一个聚焦替代方案而独立设计与开发，
 专门解决日常服务器工作中遇到的临时 SSH 任务。
 
-- **项目健康度：** 每次 PR 都会运行 CI，支持 Python 3.9+，
+- **项目健康度：** 每次 PR 都会运行 CI，支持 Python 3.10+，
   公共 API 遵循[语义化版本](https://semver.org/lang/zh-CN/)进行版本管理。
 - **您的代码、您的服务器：** 基于 MIT 许可证开源——不收集遥测数据，也不锁定在任何服务之下。
 - **为什么开源？** 现有的临时 SSH 管理工具要么太重（Ansible），要么太简陋（裸用 shell 循环）。

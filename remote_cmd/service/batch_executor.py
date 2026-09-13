@@ -39,12 +39,13 @@ from remote_cmd.core.sync_connection_pool import SyncConnectionPool
 from remote_cmd.service._host_runner import (
     build_connection_config,
     resolve_host_or_error,
+    resolve_max_output_bytes,
     to_host_result,
-    validate_max_output_bytes,
 )
 from remote_cmd.service._types import (
     BatchHostResult,
     BatchResult,
+    OutputPolicy,
     ProgressCallback,
 )
 from remote_cmd.service.host_service import HostService
@@ -54,7 +55,7 @@ logger = logging.getLogger(__name__)
 
 # 公共 API 兼容 re-export：类型定义已迁移至 service._types
 # （外部仍可 from remote_cmd.service.batch_executor import BatchResult）
-__all__ = ["BatchExecutor", "BatchResult", "BatchHostResult"]
+__all__ = ["BatchExecutor", "BatchResult", "BatchHostResult", "OutputPolicy", "PoolFactory"]
 
 # 外部连接池工厂签名：接收连接配置，返回已配置的池。
 # 调用方保留所有权——executor 绝不 close 外部池。
@@ -89,7 +90,12 @@ class BatchExecutor:
             字节数（UTF-8），默认 ``None`` 保留完整输出（既有行为）。
             设置正整数时输出会被确定性截断并追加 ``[output truncated: N
             bytes omitted]`` 标记；截断不改变命令成功/失败与退出码。
-            仅约束保留的批量结果，客户端在执行期间仍可能短暂持有完整输出
+            仅约束保留的批量结果，客户端在执行期间仍可能短暂持有完整输出。
+            与 ``output_policy`` 互斥（两者同时传入时抛 ValidationError）。
+        output_policy: （v2.5 新增）``OutputPolicy`` 实例，作为
+            ``max_output_bytes`` 的显式替代。默认 ``None`` 表示使用
+            ``max_output_bytes`` 参数。``None`` 值保留完整输出（兼容默认），
+            大批量场景建议设置上限（见 ``OutputPolicy`` 文档）。
 
     连接池所有权约定（与 AsyncBatchExecutor 一致）：
 
@@ -112,6 +118,7 @@ class BatchExecutor:
         use_async: bool = False,
         pool_factory: Optional[PoolFactory] = None,
         max_output_bytes: Optional[int] = None,
+        output_policy: Optional[OutputPolicy] = None,
     ) -> None:
         if max_concurrency < 1:
             raise ValueError(f"max_concurrency must be >= 1, got: {max_concurrency}")
@@ -122,7 +129,7 @@ class BatchExecutor:
         self._command_timeout = command_timeout
         self._use_async = use_async
         self._pool_factory = pool_factory
-        self._max_output_bytes = validate_max_output_bytes(max_output_bytes)
+        self._max_output_bytes = resolve_max_output_bytes(max_output_bytes, output_policy)
         # 延迟导入以避免在未安装 asyncssh 的环境下的导入失败
         # 使用前向引用避免在模块加载期引入 asyncssh 硬依赖（开启 use_async 时才惰性导入）
         self._async_executor: Optional["AsyncBatchExecutor"] = None  # noqa: UP037

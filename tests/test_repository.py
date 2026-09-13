@@ -1,10 +1,13 @@
 """JSON 主机仓库测试"""
 
+import warnings
+
 import pytest
 
 from remote_cmd.core.host import Host
 from remote_cmd.repository.json_host_repository import JsonHostRepository
 from remote_cmd.utils.crypto import CredentialEncryption
+from remote_cmd.utils.exceptions import CredentialError, PlaintextCredentialWarning
 
 
 class TestJsonHostRepository:
@@ -242,3 +245,69 @@ class TestJsonHostRepositoryEncryption:
         repo.flush()
         assert path.exists()
         assert path.stat().st_size > 10
+
+
+class TestJsonPlaintextCredentialPolicy:
+    """明文密码持久化策略（v2.5，分阶段兼容）。
+
+    - None（默认）：允许落盘，但发出 PlaintextCredentialWarning
+    - True：显式允许，不告警
+    - False：拒绝落盘，抛 CredentialError
+    """
+
+    def test_legacy_default_warns(self, tmp_path):
+        repo = JsonHostRepository(filepath=str(tmp_path / "hosts.json"))
+        repo.save(Host(name="srv1", hostname="1", username="u", password="secret"))
+        with pytest.warns(PlaintextCredentialWarning, match="Plaintext credentials"):
+            repo.flush()
+
+    def test_opt_in_silent(self, tmp_path):
+        repo = JsonHostRepository(
+            filepath=str(tmp_path / "hosts.json"),
+            allow_plaintext_credentials=True,
+        )
+        repo.save(Host(name="srv1", hostname="1", username="u", password="secret"))
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", PlaintextCredentialWarning)
+            repo.flush()
+
+    def test_reject_raises_and_does_not_write(self, tmp_path):
+        path = tmp_path / "hosts.json"
+        repo = JsonHostRepository(filepath=str(path), allow_plaintext_credentials=False)
+        repo.save(Host(name="srv1", hostname="1", username="u", password="secret"))
+        with pytest.raises(CredentialError, match="plaintext"):
+            repo.flush()
+        assert not path.exists()
+
+    def test_no_password_no_warning(self, tmp_path):
+        repo = JsonHostRepository(filepath=str(tmp_path / "hosts.json"))
+        repo.save(Host(name="srv1", hostname="1", username="u"))
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", PlaintextCredentialWarning)
+            repo.flush()
+
+    def test_encrypted_token_not_flagged(self, tmp_path):
+        """HostService 加密后的 token（$encrypted$ 前缀）即使仓库未配置
+        encryption 也不应被误报为明文。"""
+        repo = JsonHostRepository(filepath=str(tmp_path / "hosts.json"))
+        repo.save(
+            Host(
+                name="srv1",
+                hostname="1",
+                username="u",
+                password="$encrypted$gAAAAABfake-token",
+            )
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", PlaintextCredentialWarning)
+            repo.flush()
+
+    def test_configured_encryption_no_warning(self, tmp_path):
+        repo = JsonHostRepository(
+            filepath=str(tmp_path / "hosts.json"),
+            encryption=CredentialEncryption(),
+        )
+        repo.save(Host(name="srv1", hostname="1", username="u", password="secret"))
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", PlaintextCredentialWarning)
+            repo.flush()

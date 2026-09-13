@@ -48,7 +48,7 @@ Remote CMD - SSH 远程服务器管理工具
     - 文档: 参见 docs/ 目录
 
 Author: Vae-Scrooge
-Version: 2.4.0（单一真相源见 remote_cmd._version）
+Version: 2.5.0（单一真相源见 remote_cmd._version）
 License: MIT
 """
 
@@ -96,10 +96,16 @@ from remote_cmd.service import (
     HostService,
     SSHService,
 )
-from remote_cmd.service.batch_executor import BatchExecutor, BatchHostResult, BatchResult
+from remote_cmd.service.batch_executor import (
+    BatchExecutor,
+    BatchHostResult,
+    BatchResult,
+    OutputPolicy,
+)
 from remote_cmd.service.credential_provider import KeyringCredentialProvider
 from remote_cmd.service.task_runner import Task, TaskRunner, TaskStatus
 from remote_cmd.utils.crypto import CredentialEncryption
+from remote_cmd.utils.exceptions import PlaintextCredentialWarning
 from remote_cmd.utils.logging_utils import (
     SensitiveDataFilter,
     get_logger,
@@ -134,6 +140,8 @@ if _HAS_ASYNC:
         "BatchExecutor",
         "BatchResult",
         "BatchHostResult",
+        "OutputPolicy",
+        "PlaintextCredentialWarning",
         "SyncConnectionPool",
         "TaskRunner",
         "Task",
@@ -167,6 +175,8 @@ else:
         "BatchExecutor",
         "BatchResult",
         "BatchHostResult",
+        "OutputPolicy",
+        "PlaintextCredentialWarning",
         "SyncConnectionPool",
         "TaskRunner",
         "Task",

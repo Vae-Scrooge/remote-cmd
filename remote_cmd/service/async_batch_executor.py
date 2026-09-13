@@ -1,8 +1,14 @@
 """异步批量命令执行器（基于 asyncio + asyncssh 原生异步实现）。
 
 与 `service.batch_executor.BatchExecutor`（基于 ThreadPoolExecutor + 同步
-Paramiko）相比，本执行器使用 `asyncio.Semaphore` 控制并发，并在事件循环上
-真正并发地执行 SSH 命令，避免线程池上下文切换开销。
+Paramiko）相比，本执行器在事件循环上真正并发地执行 SSH 命令，避免线程池
+上下文切换开销。
+
+调度模型（v2.5）：
+- 采用固定 worker 数的有界队列：只创建 ``min(max_concurrency, 主机数)``
+  个 worker task，从共享 ``asyncio.Queue`` 拉取主机执行，而非每台主机一个
+  task。信号量仅限制并发 SSH 操作，任务创建数仍有界于 worker 数。
+  大规模批次（1k+ 台）的调度内存占用因此与主机数解耦。
 
 连接池集成（v2.1 / v2.2）：
 - 多主机或需重试时，内部按主机**惰性**创建 ``AsyncConnectionPool``
@@ -35,10 +41,15 @@ from remote_cmd.core.ssh_client import ConnectionConfig
 from remote_cmd.service._host_runner import (
     build_connection_config,
     resolve_host_or_error,
+    resolve_max_output_bytes,
     to_host_result,
-    validate_max_output_bytes,
 )
-from remote_cmd.service._types import BatchHostResult, BatchResult, ProgressCallback
+from remote_cmd.service._types import (
+    BatchHostResult,
+    BatchResult,
+    OutputPolicy,
+    ProgressCallback,
+)
 from remote_cmd.service.host_service import HostService
 from remote_cmd.service.retry_policy import compute_backoff_delay, is_retryable
 
@@ -66,7 +77,12 @@ class AsyncBatchExecutor:
             字节数（UTF-8），默认 ``None`` 保留完整输出（既有行为）。
             设置正整数时输出会被确定性截断并追加 ``[output truncated: N
             bytes omitted]`` 标记；截断不改变命令成功/失败与退出码。
-            仅约束保留的批量结果，客户端在执行期间仍可能短暂持有完整输出
+            仅约束保留的批量结果，客户端在执行期间仍可能短暂持有完整输出。
+            与 ``output_policy`` 互斥（两者同时传入时抛 ValidationError）。
+        output_policy: （v2.5 新增）``OutputPolicy`` 实例，作为
+            ``max_output_bytes`` 的显式替代。默认 ``None`` 表示使用
+            ``max_output_bytes`` 参数。``None`` 值保留完整输出（兼容默认），
+            大批量场景建议设置上限（见 ``OutputPolicy`` 文档）。
 
     连接池所有权约定（与同步 BatchExecutor 一致）：
 
@@ -84,6 +100,7 @@ class AsyncBatchExecutor:
         command_timeout: int = 30,
         pool_factory: Optional[PoolFactory] = None,
         max_output_bytes: Optional[int] = None,
+        output_policy: Optional[OutputPolicy] = None,
     ) -> None:
         if max_concurrency < 1:
             raise ValueError(f"max_concurrency must be >= 1, got: {max_concurrency}")
@@ -93,7 +110,7 @@ class AsyncBatchExecutor:
         self._max_concurrency = max_concurrency
         self._command_timeout = command_timeout
         self._pool_factory = pool_factory
-        self._max_output_bytes = validate_max_output_bytes(max_output_bytes)
+        self._max_output_bytes = resolve_max_output_bytes(max_output_bytes, output_policy)
 
     async def execute(
         self,
@@ -135,7 +152,6 @@ class AsyncBatchExecutor:
         host_names = list(dict.fromkeys(host_names))
 
         total = len(host_names)
-        semaphore = asyncio.Semaphore(self._max_concurrency)
         start = time.time()
 
         logger.info(
@@ -158,52 +174,71 @@ class AsyncBatchExecutor:
         completed_lock = asyncio.Lock()
         results: dict[str, BatchHostResult] = {}
 
-        async def _per_host(name: str) -> None:
+        # 以前 task-per-host 调度的问题：信号量只限制并发 SSH 操作，
+        # task 创建数等于主机数，1k+ 主机的批次会创建 1k+ 个
+        # 高权重 Task 对象。改为固定 worker 数的有界队列：
+        # 只创建 min(max_concurrency, 主机数) 个 worker，从共享 queue
+        # 拉取主机执行；调度内存与主机数解耦。（评审 P1）
+
+        queue: asyncio.Queue[Optional[str]] = asyncio.Queue()
+        for name in host_names:
+            queue.put_nowait(name)
+        worker_count = min(self._max_concurrency, total)
+        # 每个 worker 消费一个 sentinel 后退出
+        for _ in range(worker_count):
+            queue.put_nowait(None)
+
+        async def _worker() -> None:
             nonlocal completed_counter
-            use_pool = self._pool_factory is not None or retry_count > 0 or total > 1
-            async with semaphore:
-                result = await self._execute_on_host(
-                    name,
-                    command,
-                    retry_count,
-                    retry_delay,
-                    pool=pools.get(name),
-                    use_pool=use_pool,
-                )
-            async with completed_lock:
-                results[name] = result
-                completed = completed_counter + 1
-                completed_counter = completed
+            while True:
+                name = await queue.get()
+                try:
+                    if name is None:
+                        return
+                    use_pool = self._pool_factory is not None or retry_count > 0 or total > 1
+                    result = await self._execute_on_host(
+                        name,
+                        command,
+                        retry_count,
+                        retry_delay,
+                        pool=pools.get(name),
+                        use_pool=use_pool,
+                    )
+                    async with completed_lock:
+                        results[name] = result
+                        completed = completed_counter + 1
+                        completed_counter = completed
 
-                if progress_callback is not None:
-                    # 包裹回调：用户提供的 progress_callback 抛异常时不应中断整个批次，
-                    # 否则 gather 会向上抛出首异常、BatchResult 永不构建、
-                    # 已完成结果丢失且其余 task 沦为孤儿。
-                    try:
-                        rv = progress_callback(completed, total, name)
-                        if asyncio.iscoroutine(rv):
-                            await rv
-                    except Exception as e:  # noqa: BLE001
-                        logger.warning("progress_callback for %s raised: %s", name, e)
+                        if progress_callback is not None:
+                            # 包裹回调：用户提供的 progress_callback 抛异常时不应中断整个批次，
+                            # 否则 gather 会向上抛出首异常、BatchResult 永不构建、
+                            # 已完成结果丢失且其余 task 沦为孤儿。
+                            try:
+                                rv = progress_callback(completed, total, name)
+                                if asyncio.iscoroutine(rv):
+                                    await rv
+                            except Exception as e:  # noqa: BLE001
+                                logger.warning("progress_callback for %s raised: %s", name, e)
 
-                logger.debug(
-                    "[%s/%s] %s: %s (%.1fs)",
-                    completed,
-                    total,
-                    name,
-                    "✓" if result.success else "✗",
-                    result.duration,
-                )
+                        logger.debug(
+                            "[%s/%s] %s: %s (%.1fs)",
+                            completed,
+                            total,
+                            name,
+                            "✓" if result.success else "✗",
+                            result.duration,
+                        )
+                finally:
+                    queue.task_done()
 
-        tasks = [asyncio.create_task(_per_host(n)) for n in host_names]
+        tasks = [asyncio.create_task(_worker()) for _ in range(worker_count)]
         try:
-            # return_exceptions=True 作为兜底：即使 _per_host 意外抛出异常，
-            # 也不会中断其他任务或使 BatchResult 构建被跳过。
-            # KeyboardInterrupt 属于 BaseException，仍会被下方 except 捕获。
-            await asyncio.gather(*tasks, return_exceptions=True)
+            await queue.join()
         except KeyboardInterrupt:
             logger.warning("batch execution interrupted by user")
             await self._cancel_and_mark_interrupted(tasks, host_names, results, command)
+        # worker 消费完 sentinel 后已全部退出，gather 立即返回
+        await asyncio.gather(*tasks, return_exceptions=True)
 
         duration = time.time() - start
         success_count = sum(1 for r in results.values() if r.success)

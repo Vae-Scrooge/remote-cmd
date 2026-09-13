@@ -13,8 +13,40 @@ from collections.abc import Awaitable
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
+from remote_cmd.utils.exceptions import ValidationError
+
 # 进度回调签名：completed, total, current_host_name；async 或 sync 均可
 ProgressCallback = Callable[[int, int, str], Optional[Awaitable[None]]]
+
+
+@dataclass(frozen=True)
+class OutputPolicy:
+    """批量执行的输出保留策略（v2.5 引入，为 v3 默认值迁移预留）。
+
+    Args:
+        max_output_bytes: 每台主机每个输出流（stdout/stderr）保留的最大
+            字节数（UTF-8）。``None`` 保留完整输出（兼容默认，与 v2.4 一致）；
+            正整数时确定性截断并追加 ``[output truncated: N bytes omitted]``
+            标记（语义见 _host_runner.truncate_output）。
+
+    Raises:
+        ValidationError: max_output_bytes 非 None、非正整数
+
+    Warning:
+        ``None`` 表示无保留上限：大批量 + 大输出组合下 BatchResult 的内存
+        占用可能显著。v3.0 计划改为有界默认（候选 1 MiB）。
+    """
+
+    max_output_bytes: Optional[int] = None
+
+    def __post_init__(self) -> None:
+        value = self.max_output_bytes
+        if value is None:
+            return
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise ValidationError(
+                f"max_output_bytes must be None or a positive integer, got: {value!r}"
+            )
 
 
 @dataclass
@@ -90,4 +122,4 @@ class BatchResult:
         )
 
 
-__all__ = ["BatchHostResult", "BatchResult", "ProgressCallback"]
+__all__ = ["BatchHostResult", "BatchResult", "OutputPolicy", "ProgressCallback"]

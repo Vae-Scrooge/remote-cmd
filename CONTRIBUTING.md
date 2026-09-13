@@ -62,7 +62,7 @@ Describe what actually happened.
 
 **Environment**
 - OS: [e.g. Windows 10, Ubuntu 20.04]
-- Python: [e.g. 3.9.0]
+- Python: [e.g. 3.10.0]
 - Version: [e.g. 1.0.0]
 
 **Error Log**
@@ -113,7 +113,7 @@ See the [Pull Request Process](#pull-request-process) below.
 
 ### Prerequisites
 
-- Python 3.9
+- Python 3.10
 - Git
 - (Optional) A virtual environment tool
 

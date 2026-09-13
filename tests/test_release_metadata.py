@@ -67,3 +67,16 @@ def test_missing_changelog_version_heading_fails(tmp_path: Path):
     proc = _run("--repo-root", str(tmp_path))
     assert proc.returncode == 1
     assert "9.9.9" in proc.stderr
+
+
+def test_dependency_security_floors_do_not_regress():
+    """v2.5 安全下限回归：Python / Paramiko / AsyncSSH 版本约束不得回退。
+
+    - Python 3.10+（3.9 已 EOL）
+    - Paramiko 5.x（SHA-1 相关 CVE 影响旧版本）
+    - AsyncSSH 2.24+（2026 年 SCP 路径穿越等 CVE 修复于 2.23.1+）
+    """
+    pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    assert 'requires-python = ">=3.10"' in pyproject
+    assert "paramiko>=5.0,<6" in pyproject
+    assert "asyncssh>=2.24.0,<3" in pyproject

@@ -1,11 +1,20 @@
 """连接池策略纯函数测试"""
 
-from remote_cmd.service._pool_policy import (
+from remote_cmd.core.pool_policy import (
     ConnectionMeta,
     idle_expired,
     lifetime_expired,
     should_close,
 )
+
+
+def test_service_shim_reexports_core_policy():
+    """v2.6（P2.1）：service._pool_policy 为 shim，canonical 在 core。"""
+    import remote_cmd.core.pool_policy as core_mod
+    import remote_cmd.service._pool_policy as shim_mod
+
+    assert shim_mod.ConnectionMeta is core_mod.ConnectionMeta
+    assert shim_mod.should_close is core_mod.should_close
 
 
 def _meta(created_at: float = 1000.0, last_used: float = 1000.0) -> ConnectionMeta:

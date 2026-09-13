@@ -27,12 +27,14 @@
     >>> print(f"succeeded: {result.success}/{result.total}")
 """
 
+import contextlib
 import logging
 import time
 from collections.abc import Callable, Coroutine
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Optional
 
+from remote_cmd.core.budget import ConnectionBudget
 from remote_cmd.core.host import Host
 from remote_cmd.core.ssh_client import ConnectionConfig, SSHClient
 from remote_cmd.core.sync_connection_pool import SyncConnectionPool
@@ -96,6 +98,13 @@ class BatchExecutor:
             ``max_output_bytes`` 的显式替代。默认 ``None`` 表示使用
             ``max_output_bytes`` 参数。``None`` 值保留完整输出（兼容默认），
             大批量场景建议设置上限（见 ``OutputPolicy`` 文档）。
+        connection_budget: （v2.6 新增）可选的全局连接预算
+            （:class:`~remote_cmd.core.budget.ConnectionBudget`）。提供时：
+            内部创建的连接池会占用预算（存活连接含空闲均计数），直连路径
+            也在建连期间占用预算；跨多个执行器共享同一预算实例可获得
+            全局连接上限。外部 ``pool_factory`` 注入的池由调用方负责
+            绑定预算。``use_async=True`` 时预算会转发给异步内核。
+            默认 ``None`` 不启用（既有行为）
 
     连接池所有权约定（与 AsyncBatchExecutor 一致）：
 
@@ -119,6 +128,7 @@ class BatchExecutor:
         pool_factory: Optional[PoolFactory] = None,
         max_output_bytes: Optional[int] = None,
         output_policy: Optional[OutputPolicy] = None,
+        connection_budget: Optional[ConnectionBudget] = None,
     ) -> None:
         if max_concurrency < 1:
             raise ValueError(f"max_concurrency must be >= 1, got: {max_concurrency}")
@@ -130,6 +140,7 @@ class BatchExecutor:
         self._use_async = use_async
         self._pool_factory = pool_factory
         self._max_output_bytes = resolve_max_output_bytes(max_output_bytes, output_policy)
+        self._connection_budget = connection_budget
         # 延迟导入以避免在未安装 asyncssh 的环境下的导入失败
         # 使用前向引用避免在模块加载期引入 asyncssh 硬依赖（开启 use_async 时才惰性导入）
         self._async_executor: Optional["AsyncBatchExecutor"] = None  # noqa: UP037
@@ -142,6 +153,7 @@ class BatchExecutor:
                 command_timeout=command_timeout,
                 pool_factory=pool_factory,
                 max_output_bytes=self._max_output_bytes,
+                connection_budget=connection_budget,
             )
 
     def execute(
@@ -459,6 +471,7 @@ class BatchExecutor:
                 build_connection_config(host, self._command_timeout),
                 max_connections=1,
                 client_factory=SSHClient,
+                connection_budget=self._connection_budget,
             )
             pool = internal_pool
 
@@ -483,13 +496,20 @@ class BatchExecutor:
                         )
 
                     # 非连接池路径：try/finally 确保即使 execute() 抛异常，
-                    # disconnect() 也会执行，避免 SSH 连接泄漏
-                    client = SSHClient(config)
-                    try:
-                        client.connect()
-                        cmd_result = client.execute(command, timeout=self._command_timeout)
-                    finally:
-                        client.disconnect()
+                    # disconnect() 也会执行，避免 SSH 连接泄漏。
+                    # v2.6：配置了全局连接预算时，建连期间占用一个预算槽位
+                    acquisition = (
+                        self._connection_budget.acquire_context()
+                        if self._connection_budget is not None
+                        else contextlib.nullcontext()
+                    )
+                    with acquisition:
+                        client = SSHClient(config)
+                        try:
+                            client.connect()
+                            cmd_result = client.execute(command, timeout=self._command_timeout)
+                        finally:
+                            client.disconnect()
 
                     return to_host_result(
                         host_name,

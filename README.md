@@ -36,36 +36,32 @@ pip install remote_cmd_manager && remote-cmd host add web-01 192.168.1.10 ubuntu
 
 ---
 
-## v2.5.0 Release Highlights
+## v2.6.0 Release Highlights
 
-v2.5.0 is a hardening and scalability release: dependency security floors, Python 3.9
-removal, bounded async scheduling, and explicit output-retention / credential-persistence
-policies. Backward-compatible defaults are preserved where behavior is involved. See the
-[full migration notes](./CHANGELOG.md) before upgrading automated callers.
+v2.6.0 is an architecture and runtime-scalability release: the compatibility facade
+moved out of `core` (eliminating the `core → service` dependency) and a process-wide
+live-connection budget was added for fleet-scale resource control. Public APIs remain
+backward compatible. See the [full migration notes](./CHANGELOG.md).
 
-### Security & Platform
+### Architecture
 
-- Minimum supported Python is now **3.10** (3.9 reached EOL on 2025-10-31).
-- Security floors raised: **Paramiko >= 5.0,<6** and **AsyncSSH >= 2.24.0,<3** (2.23.x and earlier are affected by 2026 AsyncSSH advisories).
+- `HostManager` now lives in `remote_cmd.api.host_manager`; `remote_cmd.core.host_manager` remains a re-export shim, so existing imports keep working.
+- Pool policy helpers moved to `remote_cmd.core.pool_policy` (shim kept at the old path); `core` no longer imports `service`.
+- The async kernel's worker queue now converts unexpected per-host errors into failure results, so a single internal error can no longer stall an entire batch.
 
-### Scalability
+### Global Connection Budget
 
-- `AsyncBatchExecutor` now uses a **bounded worker queue**: only `min(max_concurrency, host count)` worker tasks are created instead of one task per host, so scheduling memory no longer grows with fleet size.
-- New `OutputPolicy` (exported from `remote_cmd`) gives an explicit, mutually exclusive alternative to `max_output_bytes`; `None` still means full retention in v2.5, and a bounded default is planned for v3.0.
-
-### Credential Safety
-
-- `JsonHostRepository` / `SqliteHostRepository` accept `allow_plaintext_credentials` (default `None`): plaintext persistence now emits `PlaintextCredentialWarning`; pass `True` to opt in silently or `False` to reject it with `CredentialError`. v3.0 plans to reject by default.
-- JSON repository concurrency semantics are now explicit: single-process/single-writer; use SQLite for multi-process writers.
-- The `dev` extra now includes `asyncssh`, so `pip install -e ".[dev]"` runs the full test suite out of the box.
+- New `ConnectionBudget` (exported from `remote_cmd`): caps **live** SSH connections process-wide across pools and executors — idle pooled connections count, and slots release on close/cleanup/`close_all`.
+- One instance can be shared by both kernels via `connection_budget=` on `BatchExecutor`, `AsyncBatchExecutor`, `SyncConnectionPool`, and `AsyncConnectionPool`.
+- Optional `acquire_timeout` raises the transient `BudgetTimeoutError`; the default (`None`) keeps unlimited behavior.
 
 ### Compatibility
 
-- `max_output_bytes=None` still retains full output, and the public `BatchResult` / `BatchHostResult` schemas are unchanged; the legacy `max_output_bytes` parameter continues to work alongside `OutputPolicy`.
+- All existing imports and constructor signatures keep working; new parameters are optional and default to previous behavior.
 
 ## Table of Contents
 
-- [v2.5.0 Release Highlights](#v250-release-highlights)
+- [v2.6.0 Release Highlights](#v260-release-highlights)
 - [Why Remote CMD?](#why-remote-cmd)
 - [Quick Start](#quick-start)
 - [Use Cases](#use-cases)
@@ -215,6 +211,7 @@ with SSHClient(config) as client:
 | **Tag System** | Filter hosts by tag (e.g., `production`, `web`, `db`) |
 | **Batch Ops** | Run commands across any host group, synchronously or asynchronously; optional per-host retained-output cap (`max_output_bytes`) |
 | **Async Kernel** | `AsyncSSHClient` / `AsyncConnectionPool` / `AsyncBatchExecutor` via the `[async]` extra |
+| **Global Connection Budget** | Optional `ConnectionBudget` caps live SSH connections process-wide across pools and executors |
 | **Task Runner** | Track and schedule long-running remote tasks with statuses (`TaskRunner`) |
 | **Connection Test** | Test all host SSH connections and report status |
 | **Secure Logging** | Structured logging that filters sensitive data (`SensitiveDataFilter`) |

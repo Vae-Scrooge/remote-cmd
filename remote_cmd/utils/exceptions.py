@@ -16,12 +16,14 @@
     ├── ConfigError (配置错误，别名 ConfigurationError)
     ├── CredentialError (凭据解析/解密失败 - 永久性，不可重试)
     ├── ValidationError (验证错误 - 永久性，不可重试)
-    └── PoolClosedError (连接池已关闭 - 永久性，不可重试；
-        同时继承 RuntimeError 以兼容既有 ``except RuntimeError`` 捕获)
+    ├── PoolClosedError (连接池已关闭 - 永久性，不可重试；
+    │   同时继承 RuntimeError 以兼容既有 ``except RuntimeError`` 捕获)
+    └── BudgetTimeoutError (连接预算等待超时 - 瞬态，可重试)
 
 重试分类约定（详见 service/retry_policy.py）：
     - 瞬态（可重试）：SSHTimeoutError、SSHCommandTimeoutError、
-      非认证类的 SSHConnectionError / SSHCommandError、网络 OSError
+      非认证类的 SSHConnectionError / SSHCommandError、网络 OSError、
+      BudgetTimeoutError（拥塞类超时，退避后可能恢复）
     - 永久性（绝不重试）：SSHAuthenticationError、CredentialError、
       ConfigError、ValidationError、PoolClosedError
     - 未识别的其他 Exception（含裸 RuntimeError）保持历史行为可重试
@@ -259,6 +261,22 @@ class PlaintextCredentialWarning(Warning):
         >>> import warnings
         >>> warnings.simplefilter("always")
         >>> warnings.warn("...", PlaintextCredentialWarning)
+    """
+
+    pass
+
+
+class BudgetTimeoutError(RemoteCmdError):
+    """
+    连接预算等待超时（瞬态错误，可重试）
+
+    :class:`remote_cmd.core.budget.ConnectionBudget` 配置了
+    ``acquire_timeout`` 且等待超过该时限仍未获得连接槽位时抛出。
+    属于拥塞类瞬态错误：退避后重试可能成功，因此重试策略将其归为可重试
+    （见 service/retry_policy.py）。
+
+    Example:
+        >>> raise BudgetTimeoutError("connection budget exhausted after 5.0s")
     """
 
     pass

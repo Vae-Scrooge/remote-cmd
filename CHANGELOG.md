@@ -7,6 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.6.0] - 2026-09-13
+
+v2.6 is an architecture and runtime-scalability release (P2.1 + P2.5): the
+compatibility facade moves out of `core`, and a process-wide live-connection
+budget is introduced. All public APIs remain backward compatible; new behavior
+is opt-in.
+
+### Changed
+
+- **Architecture (P2.1)**: `HostManager` moved from `remote_cmd.core.host_manager`
+  to `remote_cmd.api.host_manager`; the old module is a re-export shim, so
+  `from remote_cmd.core.host_manager import HostManager` (and `Host`) keeps
+  working. `remote_cmd/__init__.py` imports from the canonical `api` path.
+- **Architecture (P2.1)**: pool policy helpers moved from
+  `remote_cmd.service._pool_policy` to `remote_cmd.core.pool_policy`; the old
+  module is a re-export shim. As a result `core` no longer imports `service`.
+- **Reliability**: `AsyncBatchExecutor`'s worker queue now catches unexpected
+  per-host exceptions (for example internal pool construction failures) and
+  converts them into failure results. Previously such an error could kill a
+  worker and leave `queue.join()` waiting forever, hanging the whole batch.
+
+### Added
+
+- `ConnectionBudget` (exported from `remote_cmd`, `remote_cmd.core.budget`):
+  process-wide **live** connection budget shared by any number of pools and
+  executors. One slot per live connection (idle pooled connections count);
+  slots are acquired before `connect` and released on disconnect/cleanup/
+  `close_all`. Sync (`acquire`/`release`/`acquire_context`) and async
+  (`acquire_async`/`release_async`/`acquire_context_async`) interfaces share a
+  single underlying semaphore, so one budget can serve both kernels.
+  `acquire_timeout` (default `None` = wait forever) raises the new transient
+  `BudgetTimeoutError`; `get_metrics()` exposes `in_use`/`available`/counters.
+- `connection_budget` optional parameter on `BatchExecutor`,
+  `AsyncBatchExecutor`, `SyncConnectionPool`, and `AsyncConnectionPool`
+  (default `None` = unlimited, existing behavior). Executors apply the budget
+  to internally created pools and to direct (non-pooled) connections; external
+  pools injected via `pool_factory` remain caller-owned and may bind the same
+  budget when constructed.
+- `BudgetTimeoutError` (transient/retryable) exported from `remote_cmd`.
+
+### Migration Guide (v2.5 → v2.6)
+
+- **No action required**: all existing import paths and constructor calls work.
+- `remote_cmd.core.host_manager` and `remote_cmd.service._pool_policy` are now
+  shims; new code may import from `remote_cmd.api.host_manager` and
+  `remote_cmd.core.pool_policy` respectively.
+- To bound fleet-wide connection usage, create one `ConnectionBudget` and pass
+  it as `connection_budget=` to the executors and/or pools that should share it.
+
 ## [2.5.0] - 2026-09-13
 
 v2.5 is a hardening and scalability release: dependency security floors, Python 3.9

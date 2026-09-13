@@ -78,9 +78,11 @@ Responsible for interacting with the user and providing multiple usage modes.
 - Supports subcommands and argument parsing
 - Colorized output and progress display
 
-#### Python API (`remote_cmd/core/`)
+#### Python API (`remote_cmd/api/` + top-level `remote_cmd`)
 
 - Provides a programmatic interface
+- `remote_cmd.api.host_manager.HostManager` hosts the legacy-compat facade (v2.6);
+  `remote_cmd.core.host_manager` remains a re-export shim for the old import path
 - Supports type hints and IDE autocomplete
 - Context managers ensure resource release
 
@@ -123,6 +125,19 @@ Core functions of the SSH client:
 - Use a context manager to ensure connections are closed
 - Exception translation for unified error handling
 - Supports `SyncConnectionPool` / `AsyncConnectionPool`; batch executors reuse connections on demand
+
+**Dependency direction (v2.6 / P2.1):**
+
+```text
+cli / api → service → core → utils
+repository ← service / cli
+core ↛ service / cli
+```
+
+- `HostManager` moved from `core` to `api`, so `core` no longer imports
+  `service`; pool policy helpers moved to `remote_cmd.core.pool_policy`.
+- Old import paths (`remote_cmd.core.host_manager`,
+  `remote_cmd.service._pool_policy`) are re-export shims and remain available.
 
 ### 4. Network Transport Layer
 
@@ -436,6 +451,10 @@ Current implementation:
 - The synchronous `BatchExecutor` uses `SyncConnectionPool` per host in multi-host or retry batches.
 - The async `AsyncBatchExecutor` uses `AsyncConnectionPool` (`remote_cmd.core.async_connection_pool`) per host in multi-host or retry batches, based on asyncssh, reusing connections with idle/lifetime recycling and health checks.
 - Both executors support `pool_factory` injection of an external pool; the external pool is caller-owned and never closed by the executor, while internally created pools are created lazily per host and closed as soon as that host finishes (including its retries).
+- A shared `ConnectionBudget` (`remote_cmd.core.budget`, v2.6) caps **live**
+  connections process-wide across pools and executors: one slot per live
+  connection (idle pooled connections count), released on close/cleanup/
+  `close_all`. Optional via `connection_budget=`; default is unlimited.
 
 ```python
 # Connection pool (implemented, used for async batch execution)

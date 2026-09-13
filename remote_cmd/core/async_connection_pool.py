@@ -19,13 +19,14 @@ import uuid
 from typing import Any, Optional
 
 from remote_cmd.core.async_ssh_client import AsyncSSHClient
-from remote_cmd.core.ssh_client import ConnectionConfig
-from remote_cmd.service._pool_policy import (
+from remote_cmd.core.budget import ConnectionBudget
+from remote_cmd.core.pool_policy import (
     ConnectionMeta,
     idle_expired,
     lifetime_expired,
     should_close,
 )
+from remote_cmd.core.ssh_client import ConnectionConfig
 from remote_cmd.utils.exceptions import PoolClosedError
 
 logger = logging.getLogger(__name__)
@@ -40,6 +41,9 @@ class AsyncConnectionPool:
         max_lifetime: 连接最大生命周期（秒），超过自动关闭
         idle_timeout: 空闲超时（秒），超过自动关闭
         health_check_interval: 后台清理任务周期（秒）
+        connection_budget: 可选的全局连接预算（v2.6）。提供时本池创建的
+            每条存活连接都占用一个预算槽位（含空闲连接），连接关闭/清理/
+            close_all 时释放；跨多个池共享同一预算实例可获得全局连接上限
     """
 
     def __init__(
@@ -50,6 +54,7 @@ class AsyncConnectionPool:
         idle_timeout: int = 300,
         health_check_interval: int = 60,
         client_factory: Optional[Any] = None,
+        connection_budget: Optional[ConnectionBudget] = None,
     ) -> None:
         """
         Args:
@@ -60,6 +65,7 @@ class AsyncConnectionPool:
             health_check_interval: 后台清理任务周期（秒）
             client_factory: 客户端工厂，默认为 AsyncSSHClient；测试可注入
                 mock（与 SyncConnectionPool 对齐）
+            connection_budget: 可选的全局连接预算（ConnectionBudget）
         """
         self.config = config
         self._max = max_connections
@@ -68,6 +74,7 @@ class AsyncConnectionPool:
         self._health_check_interval = health_check_interval
         # 客户端工厂：默认为 AsyncSSHClient；测试可注入 mock
         self._client_factory = client_factory or AsyncSSHClient
+        self._connection_budget = connection_budget
 
         # 容器
         self._connections: list[AsyncSSHClient] = []
@@ -190,10 +197,16 @@ class AsyncConnectionPool:
     # ------------------------------------------------------------------
     async def _create_connection(self) -> AsyncSSHClient:
         client = self._client_factory(self.config)
+        if self._connection_budget is not None:
+            await self._connection_budget.acquire_async()
         try:
             await client.connect()
         except Exception:  # noqa: BLE001
-            # 信号量由 acquire() 的 except 统一释放，此处不再释放
+            # 信号量由 acquire() 的 except 统一释放，此处不再释放。
+            # 连接预算仅在成功建连后由 _close_connection 释放；
+            # 建连失败立即归还预算，避免预算泄漏
+            if self._connection_budget is not None:
+                await self._connection_budget.release_async()
             self._total_failed += 1
             raise
         self._connections.append(client)
@@ -237,8 +250,14 @@ class AsyncConnectionPool:
         with contextlib.suppress(Exception):
             await conn.disconnect()
         self._meta.pop(id(conn), None)
-        if conn in self._connections:
+        tracked = conn in self._connections
+        if tracked:
             self._connections.remove(conn)
+        # exactly-once：仅对仍被池追踪的连接释放预算。
+        # close_all 与 release 可能对同一连接重复调用 _close_connection，
+        # 用 tracked 守卫避免预算被超额释放（BoundedSemaphore 会抛 ValueError）
+        if tracked and self._connection_budget is not None:
+            await self._connection_budget.release_async()
 
     # ------------------------------------------------------------------
     # 后台监控

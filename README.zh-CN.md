@@ -41,34 +41,30 @@ pip install remote_cmd_manager && remote-cmd host add web-01 192.168.1.10 ubuntu
 
 ---
 
-## v2.5.0 发布亮点
+## v2.6.0 发布亮点
 
-v2.5.0 是一次加固与可扩展性版本：依赖安全下限、移除 Python 3.9、异步有界调度，以及显式的输出保留 / 凭据持久化策略。
-涉及行为变化处均保持向后兼容的默认值。升级自动化调用方前请查看[完整迁移说明](./CHANGELOG.md)。
+v2.6.0 是架构与运行时可扩展性版本：兼容 facade 迁出 `core`（消除 `core → service` 依赖），并新增进程级存活连接预算用于 fleet 规模资源控制。
+公共 API 保持向后兼容。升级自动化调用方前请查看[完整迁移说明](./CHANGELOG.md)。
 
-### 安全与平台
+### 架构
 
-- 最低支持 Python 提升至 **3.10**（3.9 已于 2025-10-31 EOL）。
-- 安全下限提高：**Paramiko >= 5.0,<6**、**AsyncSSH >= 2.24.0,<3**（2.23.x 及更早版本受 2026 年 AsyncSSH 安全公告影响）。
+- `HostManager` 现位于 `remote_cmd.api.host_manager`；`remote_cmd.core.host_manager` 保留 re-export shim，既有导入不受影响。
+- 连接池策略助手迁至 `remote_cmd.core.pool_policy`（旧路径保留 shim）；`core` 不再 import `service`。
+- 异步内核 worker 队列将单主机意外异常转换为失败结果，单个内部错误不再可能拖垮整个批次。
 
-### 可扩展性
+### 全局连接预算
 
-- `AsyncBatchExecutor` 改为**有界 worker 队列**：只创建 `min(max_concurrency, 主机数)` 个 worker task，而非每台主机一个 task，调度内存不再随集群规模增长。
-- 新增 `OutputPolicy`（从 `remote_cmd` 导出），作为 `max_output_bytes` 的显式替代（两者互斥）；v2.5 中 `None` 仍表示完整保留，v3.0 计划改为有界默认。
-
-### 凭据安全
-
-- `JsonHostRepository` / `SqliteHostRepository` 新增 `allow_plaintext_credentials`（默认 `None`）：明文落盘时发出 `PlaintextCredentialWarning`；传 `True` 可显式静默，传 `False` 则以 `CredentialError` 拒绝。v3.0 计划默认拒绝。
-- JSON 仓库并发语义明确为单进程/单写入者；多进程写入请使用 SQLite。
-- `dev` extra 现包含 `asyncssh`，`pip install -e ".[dev]"` 即可跑通完整测试套件。
+- 新增 `ConnectionBudget`（从 `remote_cmd` 导出）：跨池/跨执行器封顶进程内**存活** SSH 连接数（空闲池连接计数，关闭/清理/`close_all` 时释放槽位）。
+- 同一实例可被同步与异步内核共享：`BatchExecutor`、`AsyncBatchExecutor`、`SyncConnectionPool`、`AsyncConnectionPool` 均接受 `connection_budget=`。
+- 可选 `acquire_timeout` 超时抛出瞬态 `BudgetTimeoutError`；默认 `None` 保持无上限行为。
 
 ### 兼容性
 
-- `max_output_bytes=None` 仍保留完整输出，公共 `BatchResult` / `BatchHostResult` 结构不变；legacy `max_output_bytes` 参数与 `OutputPolicy` 并存可用。
+- 既有导入与构造签名全部可用；新增参数均为可选且默认为既有行为。
 
 ## 目录
 
-- [v2.5.0 发布亮点](#v250-发布亮点)
+- [v2.6.0 发布亮点](#v260-发布亮点)
 - [为什么选择 Remote CMD？](#为什么选择-remote-cmd)
 - [快速开始](#快速开始)
 - [使用场景](#使用场景)
@@ -218,6 +214,7 @@ with SSHClient(config) as client:
 | **标签系统** | 按标签过滤主机（如 `production`、`web`、`db`） |
 | **批量操作** | 跨任意主机组执行命令，支持同步与异步 |
 | **异步内核** | 通过 `[async]` 扩展启用 `AsyncSSHClient` / `AsyncConnectionPool` / `AsyncBatchExecutor` |
+| **全局连接预算** | 可选 `ConnectionBudget` 跨连接池与执行器封顶进程内存活 SSH 连接数 |
 | **任务执行器** | 跟踪并调度长时间运行的远程任务并显示状态（`TaskRunner`） |
 | **连通性测试** | 测试所有主机的 SSH 连接并报告状态 |
 | **安全日志** | 结构化日志自动过滤敏感数据（`SensitiveDataFilter`） |

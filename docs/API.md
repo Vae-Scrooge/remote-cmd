@@ -861,7 +861,8 @@ class AsyncConnectionPool:
     def __init__(self, config: ConnectionConfig, max_connections: int = 10,
                  max_lifetime: int = 3600, idle_timeout: int = 300,
                  health_check_interval: int = 60,
-                 client_factory: Optional[Any] = None)
+                 client_factory: Optional[Any] = None,
+                 connection_budget: Optional[ConnectionBudget] = None)
     async def acquire(self) -> AsyncSSHClient
     async def release(self, conn: Optional[AsyncSSHClient]) -> None
     def acquire_context(self) -> "_AcquireContext"
@@ -880,6 +881,7 @@ class AsyncConnectionPool:
 | `idle_timeout` | `int` | 300 | Idle timeout (seconds), auto-closed when exceeded |
 | `health_check_interval` | `int` | 60 | Background cleanup task interval (seconds) |
 | `client_factory` | `Optional[Any]` | `None` | Optional client factory, defaults to `AsyncSSHClient` |
+| `connection_budget` | `Optional[ConnectionBudget]` | `None` | v2.6 global live-connection budget; every live connection (including idle) holds one slot, released on close/cleanup/`close_all` |
 
 After `close_all()` the pool cannot be borrowed from again; if `acquire()` was already waiting on the semaphore, it will raise `RuntimeError("connection pool is closed")` when woken after the pool closes.
 
@@ -931,7 +933,8 @@ class SyncConnectionPool:
     def __init__(self, config: ConnectionConfig, max_connections: int = 10,
                  max_lifetime: int = 3600, idle_timeout: int = 300,
                  health_check_interval: int = 60,
-                 client_factory: Optional[Any] = None)
+                 client_factory: Optional[Any] = None,
+                 connection_budget: Optional[ConnectionBudget] = None)
     def acquire(self) -> SSHClient
     def release(self, conn: Optional[SSHClient]) -> None
     def acquire_context(self) -> SyncConnectionPool._AcquireContext
@@ -964,6 +967,7 @@ pool.close_all()
 | `idle_timeout` | `int` | 300 | Idle timeout (seconds) |
 | `health_check_interval` | `int` | 60 | Background cleanup thread interval (seconds) |
 | `client_factory` | `Optional[Any]` | `None` | Optional client factory, defaults to `SSHClient` |
+| `connection_budget` | `Optional[ConnectionBudget]` | `None` | v2.6 global live-connection budget; see below |
 
 After `close_all()` the pool cannot be borrowed from again; if `acquire()` was already waiting on the semaphore, it will raise `RuntimeError("connection pool is closed")` when woken after the pool closes.
 
@@ -972,6 +976,38 @@ After `close_all()` the pool cannot be borrowed from again; if `acquire()` was a
 Same keys as `AsyncConnectionPool`: `active` / `idle` / `total_connections` / `total_created` / `reconnects` / `failed`.
 
 > **Note**: `BatchExecutor` (sync kernel) and `AsyncBatchExecutor` (async kernel) automatically reuse per-host connections in multi-host or retry batches. Internally created pools are created lazily per host (one connection per host) and closed as soon as that host finishes, including after its retries. An external pool injected via `pool_factory` is the caller's responsibility for lifecycle; the executor never closes it.
+
+### ConnectionBudget (v2.6)
+
+`ConnectionBudget` caps the number of **live SSH connections** process-wide, across any number of pools and executors. Unlike a per-pool `max_connections`, a shared budget cannot be exceeded by combining pools:
+
+```text
+pool A(max=10) + pool B(max=10) + …   → unbounded without a budget
+ConnectionBudget(max_connections=50)  → hard global cap of 50 live connections
+```
+
+Semantics:
+
+- one slot per live connection, including idle pooled connections;
+- acquired when a connection is created (`connect`), released when the connection is closed, discarded by cleanup, or on `close_all()`;
+- returning a connection to the idle queue does **not** release the slot;
+- the same instance can be shared by the sync and async kernels (single underlying `threading.BoundedSemaphore`; the async side waits with a non-blocking poll, 10 ms → 50 ms backoff).
+
+`acquire_timeout` (default `None` = wait forever) raises `BudgetTimeoutError` when the wait exceeds the limit; the error is classified as transient (retryable).
+
+```python
+from remote_cmd import BatchExecutor, ConnectionBudget
+
+budget = ConnectionBudget(max_connections=100, acquire_timeout=30.0)
+
+# One budget shared across executors (and pools) gives a global cap.
+executor = BatchExecutor(host_service, max_concurrency=20, connection_budget=budget)
+```
+
+Pass the same `connection_budget=` to `AsyncBatchExecutor` or directly to
+`SyncConnectionPool` / `AsyncConnectionPool` to include their connections.
+External pools injected via `pool_factory` are caller-owned: bind the budget
+when constructing them if they should be counted.
 
 ---
 
@@ -987,7 +1023,8 @@ class BatchExecutor:
                  command_timeout: int = 30, use_async: bool = False,
                  pool_factory: Optional[Callable] = None,
                  max_output_bytes: Optional[int] = None,
-                 output_policy: Optional[OutputPolicy] = None)
+                 output_policy: Optional[OutputPolicy] = None,
+                 connection_budget: Optional[ConnectionBudget] = None)
     def execute(self, host_names: List[str], command: str,
                 retry_count: int = 0, retry_delay: float = 1.0,
                 progress_callback: Optional[ProgressCallback] = None) -> BatchResult
@@ -1045,7 +1082,8 @@ class AsyncBatchExecutor:
                  command_timeout: int = 30,
                  pool_factory: Optional[Callable] = None,
                  max_output_bytes: Optional[int] = None,
-                 output_policy: Optional[OutputPolicy] = None)
+                 output_policy: Optional[OutputPolicy] = None,
+                 connection_budget: Optional[ConnectionBudget] = None)
     async def execute(self, host_names: List[str], command: str,
                       retry_count: int = 0, retry_delay: float = 1.0,
                       progress_callback: Optional[ProgressCallback] = None) -> BatchResult
@@ -1061,6 +1099,7 @@ class AsyncBatchExecutor:
 | `pool_factory` | `Optional[Callable]` | `None` | External async connection pool factory; the returned pool is caller-owned and not closed by the executor |
 | `max_output_bytes` | `Optional[int]` | `None` | Per-host per-stream retained output cap (UTF-8 bytes); `None` keeps full output; positive values truncate with a `[output truncated: N bytes omitted]` marker (success/failure unchanged) |
 | `output_policy` | `Optional[OutputPolicy]` | `None` | v2.5 explicit replacement for `max_output_bytes` (mutually exclusive with it) |
+| `connection_budget` | `Optional[ConnectionBudget]` | `None` | v2.6 global live-connection budget shared by internal pools and direct connections; `None` disables (existing behavior) |
 
 The `execute` parameters are identical to the synchronous `BatchExecutor.execute`: `retry_count` is the number of retries on failure, `retry_delay` is the exponential-backoff base delay (with full jitter, capped at 60s), and `progress_callback` is a progress callback `(completed, total, host_name)` (may be sync or async).
 
@@ -1437,7 +1476,7 @@ Raised on input validation failure.
 | SSHClient | 1.0.0+ | ✅ Stable |
 | ConnectionConfig | 1.0.0+ | ✅ Stable |
 | CommandResult | 1.0.0+ | ✅ Stable |
-| HostManager | 1.0.0+ | ⚠️ Deprecated (backward-compat layer delegating to HostService + JsonHostRepository; new code should use HostService) |
+| HostManager | 1.0.0+ | ⚠️ Deprecated (backward-compat facade; implementation lives in `remote_cmd.api.host_manager`, `remote_cmd.core.host_manager` remains a re-export shim; new code should use HostService) |
 | AsyncSSHClient | 1.1.0+ | ✅ Stable (requires the `[async]` extra) |
 | AsyncConnectionPool | 1.1.0+ | ✅ Stable (requires the `[async]` extra) |
 | AsyncBatchExecutor | 1.1.0+ | ✅ Stable (requires the `[async]` extra) |

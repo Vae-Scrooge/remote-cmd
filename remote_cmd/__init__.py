@@ -48,7 +48,7 @@ Remote CMD - SSH 远程服务器管理工具
     - 文档: 参见 docs/ 目录
 
 Author: Vae-Scrooge
-Version: 2.5.0（单一真相源见 remote_cmd._version）
+Version: 2.6.0（单一真相源见 remote_cmd._version）
 License: MIT
 """
 
@@ -74,8 +74,9 @@ try:
 except ImportError:  # pragma: no cover - 依赖 asyncssh，未安装时不导出异步符号
     _HAS_ASYNC = False
 
+from remote_cmd.api.host_manager import HostManager
+from remote_cmd.core.budget import ConnectionBudget
 from remote_cmd.core.host import Host
-from remote_cmd.core.host_manager import HostManager
 from remote_cmd.core.ssh_client import SSHClient
 from remote_cmd.core.sync_connection_pool import SyncConnectionPool
 
@@ -105,7 +106,7 @@ from remote_cmd.service.batch_executor import (
 from remote_cmd.service.credential_provider import KeyringCredentialProvider
 from remote_cmd.service.task_runner import Task, TaskRunner, TaskStatus
 from remote_cmd.utils.crypto import CredentialEncryption
-from remote_cmd.utils.exceptions import PlaintextCredentialWarning
+from remote_cmd.utils.exceptions import BudgetTimeoutError, PlaintextCredentialWarning
 from remote_cmd.utils.logging_utils import (
     SensitiveDataFilter,
     get_logger,
@@ -142,6 +143,8 @@ if _HAS_ASYNC:
         "BatchHostResult",
         "OutputPolicy",
         "PlaintextCredentialWarning",
+        "ConnectionBudget",
+        "BudgetTimeoutError",
         "SyncConnectionPool",
         "TaskRunner",
         "Task",
@@ -177,6 +180,8 @@ else:
         "BatchHostResult",
         "OutputPolicy",
         "PlaintextCredentialWarning",
+        "ConnectionBudget",
+        "BudgetTimeoutError",
         "SyncConnectionPool",
         "TaskRunner",
         "Task",

@@ -6,7 +6,7 @@
 - ``is_retryable``: 异常分类——瞬态（可重试）vs 永久性（绝不重试）
 - ``compute_backoff_delay``: 指数退避 + 抖动（full jitter）延迟计算
 
-设计约定（与 ``service/_pool_policy.py`` 一致的纯函数风格）：
+设计约定（与 ``core/pool_policy.py`` 一致的纯函数风格）：
 - 本模块不做任何 I/O、不 sleep、不记日志；重试循环留在各 executor 内。
 - ``compute_backoff_delay`` 支持注入 ``rng``（``random.Random`` 实例），
   保证测试确定性。

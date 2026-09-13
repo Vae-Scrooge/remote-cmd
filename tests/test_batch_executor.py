@@ -746,11 +746,12 @@ class TestBatchExecutorInternalPoolLifecycle:
         pools: list[SyncConnectionPool] = []
         real_pool_cls = SyncConnectionPool
 
-        def tracking_pool(config, max_connections=10, client_factory=None):  # noqa: ARG001
+        def tracking_pool(config, max_connections=10, client_factory=None, connection_budget=None):  # noqa: ARG001
             pool = real_pool_cls(
                 config,
                 max_connections=max_connections,
                 client_factory=_TrackingClient,
+                connection_budget=connection_budget,
             )
             pools.append(pool)
             return pool
@@ -791,11 +792,12 @@ class TestBatchExecutorInternalPoolLifecycle:
                     raise OSError("transient reset")
                 return CommandResult(command=command, stdout="ok", stderr="", exit_code=0)
 
-        def tracking_pool(config, max_connections=10, client_factory=None):  # noqa: ARG001
+        def tracking_pool(config, max_connections=10, client_factory=None, connection_budget=None):  # noqa: ARG001
             pool = real_pool_cls(
                 config,
                 max_connections=max_connections,
                 client_factory=FlakyClient,
+                connection_budget=connection_budget,
             )
             pools.append(pool)
             return pool
@@ -831,11 +833,12 @@ class TestBatchExecutorInternalPoolLifecycle:
                 self.calls += 1
                 raise SSHAuthenticationError("authentication failed")
 
-        def tracking_pool(config, max_connections=10, client_factory=None):  # noqa: ARG001
+        def tracking_pool(config, max_connections=10, client_factory=None, connection_budget=None):  # noqa: ARG001
             pool = real_pool_cls(
                 config,
                 max_connections=max_connections,
                 client_factory=AuthFailClient,
+                connection_budget=connection_budget,
             )
             pools.append(pool)
             return pool

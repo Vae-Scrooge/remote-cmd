@@ -130,3 +130,17 @@ def test_connection_methods_mock_sshclient(monkeypatch):
 
     ok = mgr.test_connection("conn-host")
     assert ok is True
+
+
+def test_host_manager_shim_matches_canonical_api():
+    """v2.6（P2.1）：core.host_manager 为 re-export shim，
+    canonical 实现在 api.host_manager；两者必须是同一对象。"""
+    import remote_cmd.api.host_manager as api_mod
+    import remote_cmd.core.host_manager as core_mod
+
+    assert core_mod.HostManager is api_mod.HostManager
+    assert core_mod.Host is api_mod.Host
+
+    import remote_cmd
+
+    assert remote_cmd.HostManager is api_mod.HostManager

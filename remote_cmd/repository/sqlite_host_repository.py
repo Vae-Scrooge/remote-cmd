@@ -27,6 +27,7 @@ from typing import Optional
 
 from remote_cmd.core.host import Host
 from remote_cmd.core.profile import HostProfile
+from remote_cmd.core.recipe import Recipe
 from remote_cmd.repository.host_repository import HostRepository
 from remote_cmd.utils.credential_guard import PasswordGuard, is_plaintext_password
 from remote_cmd.utils.crypto import CredentialEncryption
@@ -38,12 +39,12 @@ from remote_cmd.utils.exceptions import (
 
 logger = logging.getLogger(__name__)
 
-# SQLite 数据库版本（用于未来迁移；v2.8.1：hosts 表新增 profile 列）
-DB_VERSION = 2
+# SQLite 数据库版本（用于未来迁移；v2.9：hosts 表新增 profile 外键约束）
+DB_VERSION = 3
 
-# 建表 SQL
-CREATE_TABLE_SQL = """
-CREATE TABLE IF NOT EXISTS hosts (
+# hosts 建表 SQL 模板（v2.9：profile 外键 ON DELETE RESTRICT；重建迁移复用）
+CREATE_HOSTS_TABLE_TEMPLATE = """
+CREATE TABLE IF NOT EXISTS {table} (
     name TEXT PRIMARY KEY,
     hostname TEXT NOT NULL,
     username TEXT NOT NULL,
@@ -54,9 +55,11 @@ CREATE TABLE IF NOT EXISTS hosts (
     description TEXT DEFAULT '',
     profile TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (profile) REFERENCES profiles(name) ON DELETE RESTRICT
 );
 """
+CREATE_TABLE_SQL = CREATE_HOSTS_TABLE_TEMPLATE.format(table="hosts")
 
 # 索引 SQL
 CREATE_INDEXES_SQL = [
@@ -64,6 +67,19 @@ CREATE_INDEXES_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_hosts_hostname ON hosts(hostname);",
     "CREATE INDEX IF NOT EXISTS idx_hosts_name ON hosts(name);",
 ]
+
+# Recipe 表（v2.9；command 模板 + variables JSON；无凭据字段）
+CREATE_RECIPES_SQL = """
+CREATE TABLE IF NOT EXISTS recipes (
+    name TEXT PRIMARY KEY,
+    command TEXT NOT NULL,
+    variables TEXT DEFAULT '{}',
+    description TEXT DEFAULT '',
+    tags TEXT DEFAULT '[]',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+"""
 
 # 元数据表（用于版本管理）
 CREATE_META_SQL = """
@@ -148,9 +164,11 @@ class SqliteHostRepository(HostRepository):
     def _init_db(self) -> None:
         """初始化数据库：创建表和索引"""
         with self._txn(write=True) as conn:
-            conn.execute(CREATE_TABLE_SQL)
+            # profiles 必须先于 hosts 建表（hosts 的 FK 引用 profiles）
             conn.execute(CREATE_META_SQL)
             conn.execute(CREATE_PROFILES_SQL)
+            conn.execute(CREATE_RECIPES_SQL)
+            conn.execute(CREATE_TABLE_SQL)
             self._ensure_hosts_profile_column(conn)
             for idx_sql in CREATE_INDEXES_SQL:
                 conn.execute(idx_sql)
@@ -160,6 +178,8 @@ class SqliteHostRepository(HostRepository):
                 ("db_version", str(DB_VERSION)),
             )
             conn.commit()
+        # FK 迁移必须在事务外：PRAGMA foreign_keys 在事务内是 no-op
+        self._ensure_hosts_profile_fk()
         logger.debug(f"SQLite database initialized: {self._db_path}")
 
     def _ensure_hosts_profile_column(self, conn: sqlite3.Connection) -> None:
@@ -173,6 +193,51 @@ class SqliteHostRepository(HostRepository):
         if "profile" not in columns:
             conn.execute("ALTER TABLE hosts ADD COLUMN profile TEXT;")
             logger.info("migrated hosts table: added 'profile' column")
+
+    def _ensure_hosts_profile_fk(self) -> None:
+        """自动迁移：为 hosts.profile 添加 ``REFERENCES profiles(name)
+        ON DELETE RESTRICT`` 外键（v2.9）。
+
+        SQLite 不支持对已有表 ADD CONSTRAINT，需按官方推荐的
+        "新表 → 复制 → 删旧表 → 重命名" 流程重建。迁移在事务外先关闭
+        ``foreign_keys``（该 PRAGMA 在事务内为 no-op），并在重建后恢复。
+        """
+        conn = self._get_conn()
+        try:
+            fks = conn.execute("PRAGMA foreign_key_list(hosts);").fetchall()
+            if any(row["table"] == "profiles" and row["from"] == "profile" for row in fks):
+                return  # 已是 v3 schema
+            logger.info("migrating hosts table: adding profile foreign key")
+            conn.execute("PRAGMA foreign_keys=OFF;")
+            try:
+                conn.execute("BEGIN IMMEDIATE;")
+                conn.execute("DROP TABLE IF EXISTS hosts_new;")
+                conn.execute(CREATE_HOSTS_TABLE_TEMPLATE.format(table="hosts_new"))
+                conn.execute(
+                    """
+                    INSERT INTO hosts_new (name, hostname, username, port, password,
+                                           key_filename, tags, description, profile,
+                                           created_at, updated_at)
+                    SELECT name, hostname, username, port, password,
+                           key_filename, tags, description, profile,
+                           created_at, updated_at
+                    FROM hosts;
+                    """
+                )
+                conn.execute("DROP TABLE hosts;")
+                conn.execute("ALTER TABLE hosts_new RENAME TO hosts;")
+                for idx_sql in CREATE_INDEXES_SQL:
+                    conn.execute(idx_sql)
+                conn.execute("COMMIT;")
+            except BaseException:
+                with contextlib.suppress(sqlite3.Error):
+                    conn.execute("ROLLBACK;")
+                raise
+            finally:
+                with contextlib.suppress(sqlite3.Error):
+                    conn.execute("PRAGMA foreign_keys=ON;")
+        finally:
+            conn.close()
 
     def _get_conn(self) -> sqlite3.Connection:
         """获取数据库连接（线程安全）。
@@ -308,35 +373,42 @@ class SqliteHostRepository(HostRepository):
             tags_json = json.dumps(host.tags or [], ensure_ascii=False)
             # 配置了加密器时，明文密码先加密再落库
             password = self._guard.encrypt(host.password)
-            conn.execute(
-                """
-                    INSERT INTO hosts (name, hostname, username, port, password,
-                                       key_filename, tags, description, profile,
-                                       updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                    ON CONFLICT(name) DO UPDATE SET
-                        hostname = excluded.hostname,
-                        username = excluded.username,
-                        port = excluded.port,
-                        password = excluded.password,
-                        key_filename = excluded.key_filename,
-                        tags = excluded.tags,
-                        description = excluded.description,
-                        profile = excluded.profile,
-                        updated_at = CURRENT_TIMESTAMP
-                    """,
-                (
-                    host.name,
-                    host.hostname,
-                    host.username,
-                    host.port,
-                    password,
-                    host.key_filename,
-                    tags_json,
-                    host.description,
-                    host.profile,
-                ),
-            )
+            try:
+                conn.execute(
+                    """
+                        INSERT INTO hosts (name, hostname, username, port, password,
+                                           key_filename, tags, description, profile,
+                                           updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                        ON CONFLICT(name) DO UPDATE SET
+                            hostname = excluded.hostname,
+                            username = excluded.username,
+                            port = excluded.port,
+                            password = excluded.password,
+                            key_filename = excluded.key_filename,
+                            tags = excluded.tags,
+                            description = excluded.description,
+                            profile = excluded.profile,
+                            updated_at = CURRENT_TIMESTAMP
+                        """,
+                    (
+                        host.name,
+                        host.hostname,
+                        host.username,
+                        host.port,
+                        password,
+                        host.key_filename,
+                        tags_json,
+                        host.description,
+                        host.profile,
+                    ),
+                )
+            except sqlite3.IntegrityError as e:
+                # v2.9：FK ON DELETE RESTRICT 同时要求引用的 profile 存在。
+                # SQLite 在写入时快速失败（JSON 后端仍在解析时报 ConfigError）。
+                raise ValueError(
+                    f"host '{host.name}' references unknown profile {host.profile!r}"
+                ) from e
             conn.commit()
 
     def get(self, name: str) -> Host:
@@ -465,7 +537,15 @@ class SqliteHostRepository(HostRepository):
 
     def delete_profile(self, name: str) -> None:
         with self._lock, self._txn(write=True) as conn:
-            cursor = conn.execute("DELETE FROM profiles WHERE name = ?", (name,))
+            try:
+                cursor = conn.execute("DELETE FROM profiles WHERE name = ?", (name,))
+            except sqlite3.IntegrityError as e:
+                # v2.9：FK ON DELETE RESTRICT 阻止删除仍被引用的 profile。
+                # 服务层的引用检查是快速路径；本约束是竞态下的最终保障。
+                raise ValueError(
+                    f"profile '{name}' is still referenced by hosts "
+                    "(foreign key ON DELETE RESTRICT)"
+                ) from e
             conn.commit()
 
         if cursor.rowcount == 0:
@@ -482,6 +562,99 @@ class SqliteHostRepository(HostRepository):
             row = conn.execute("SELECT 1 FROM profiles WHERE name = ?", (name,)).fetchone()
 
         return row is not None
+
+    # ========================================================================
+    # RecipeStore 能力（v2.9）
+    # ========================================================================
+
+    def save_recipe(self, recipe: Recipe) -> None:
+        """保存或更新 Recipe（即时落库）。"""
+        variables_json = json.dumps(
+            {name: var.to_dict() for name, var in recipe.variables.items()},
+            ensure_ascii=False,
+        )
+        tags_json = json.dumps(list(recipe.tags or []), ensure_ascii=False)
+        with self._lock, self._txn(write=True) as conn:
+            conn.execute(
+                """
+                    INSERT INTO recipes (name, command, variables, description,
+                                         tags, updated_at)
+                    VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT(name) DO UPDATE SET
+                        command = excluded.command,
+                        variables = excluded.variables,
+                        description = excluded.description,
+                        tags = excluded.tags,
+                        updated_at = CURRENT_TIMESTAMP
+                    """,
+                (
+                    recipe.name,
+                    recipe.command,
+                    variables_json,
+                    recipe.description,
+                    tags_json,
+                ),
+            )
+            conn.commit()
+
+    def get_recipe(self, name: str) -> Recipe:
+        with self._lock, self._txn() as conn:
+            row = conn.execute("SELECT * FROM recipes WHERE name = ?", (name,)).fetchone()
+
+        if row is None:
+            raise KeyError(f"Recipe '{name}' not found")
+        return self._row_to_recipe(row)
+
+    def delete_recipe(self, name: str) -> None:
+        with self._lock, self._txn(write=True) as conn:
+            cursor = conn.execute("DELETE FROM recipes WHERE name = ?", (name,))
+            conn.commit()
+
+        if cursor.rowcount == 0:
+            raise KeyError(f"Recipe '{name}' not found")
+
+    def list_recipes(self) -> builtins.list[Recipe]:
+        with self._lock, self._txn() as conn:
+            rows = conn.execute("SELECT * FROM recipes ORDER BY name").fetchall()
+
+        return [self._row_to_recipe(row) for row in rows]
+
+    def contains_recipe(self, name: str) -> bool:
+        with self._lock, self._txn() as conn:
+            row = conn.execute("SELECT 1 FROM recipes WHERE name = ?", (name,)).fetchone()
+
+        return row is not None
+
+    def _row_to_recipe(self, row: sqlite3.Row) -> Recipe:
+        from remote_cmd.core.recipe import RecipeVariable
+
+        variables: dict[str, RecipeVariable] = {}
+        try:
+            parsed = json.loads(row["variables"] or "{}")
+            if isinstance(parsed, dict):
+                variables = {
+                    name: RecipeVariable.from_dict(var)
+                    for name, var in parsed.items()
+                    if isinstance(var, dict)
+                }
+        except (json.JSONDecodeError, TypeError, ValueError):
+            pass
+
+        tags: list[str] = []
+        try:
+            parsed_tags = json.loads(row["tags"] or "[]")
+            if isinstance(parsed_tags, list):
+                tags = [t for t in parsed_tags if isinstance(t, str)]
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+        return Recipe(
+            name=row["name"],
+            command=row["command"],
+            variables=variables,
+            description=row["description"] or "",
+            tags=tags,
+        )
 
     def _row_to_profile(self, row: sqlite3.Row) -> HostProfile:
         tags: list[str] = []

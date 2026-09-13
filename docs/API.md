@@ -559,6 +559,76 @@ assert effective.key_filename == "~/.ssh/aws.pem"
 
 ---
 
+### Recipe (v2.9)
+
+Secure parameterized command templates. Recipes use **typed variables** and
+never raw string interpolation — there is no `str.format`/f-string path.
+
+```python
+@dataclass
+class RecipeVariable:
+    name: str
+    type: str = "shell_arg"      # shell_arg | env
+    required: bool = True
+    default: Optional[str] = None
+    description: str = ""
+
+@dataclass
+class Recipe:
+    name: str
+    command: str
+    variables: Dict[str, RecipeVariable] = field(default_factory=dict)
+    description: str = ""
+    tags: List[str] = field(default_factory=list)
+```
+
+#### Variable types and rendering
+
+| Type | Rendering | Example value | Rendered |
+|------|-----------|---------------|----------|
+| `shell_arg` (default) | `shlex.quote(value)` inline | `foo; rm -rf /` | `'foo; rm -rf /'` |
+| `env` | exported via the SSH client's `environment=`; placeholder renders as `"$NAME"` | `$(id)` | command keeps `"$TOKEN"`, `environment={"TOKEN": "$(id)"}` |
+
+`render_recipe(recipe, values)` is single-pass: values containing `{{ ... }}`
+are not re-parsed. Strict validation rejects undeclared placeholders at
+`Recipe` construction and missing-required / unknown / non-string values at
+render time (before any connection is made).
+
+> **Authoring note:** `env` placeholders render as `"$NAME"`, so they should
+> be used as normal shell tokens; the surrounding quoting context is the
+> recipe author's responsibility (e.g. inside a single-quoted shell string the
+> reference will not expand).
+
+Recipes are persisted through the optional **`RecipeStore`** capability
+protocol (`save_recipe`/`get_recipe`/`delete_recipe`/`list_recipes`/
+`contains_recipe`), implemented by both repositories (JSON `recipes` section /
+SQLite `recipes` table; old stores load with zero recipes). `RecipeService`
+(exported from `remote_cmd`) provides CRUD + `render()`.
+
+```python
+from remote_cmd import Recipe, RecipeVariable, RecipeService
+
+service = RecipeService(store=repo)
+service.add_recipe(Recipe(
+    name="deploy",
+    command="deploy {{ package }}",
+    variables={"package": RecipeVariable(name="package")},
+))
+rendered = service.render("deploy", {"package": "app; rm -rf /"})
+assert rendered.command == "deploy 'app; rm -rf /'"
+```
+
+Execute a rendered recipe with the batch executors via the new optional
+`environment` parameter:
+
+```python
+result = BatchExecutor(host_service).execute(
+    ["web-1"], rendered.command, environment=rendered.environment or None,
+)
+```
+
+---
+
 ### HostService
 
 Host service class carrying the business logic of host management, delegating persistence to `HostRepository`.
@@ -1114,7 +1184,8 @@ class BatchExecutor:
                  connection_budget: Optional[ConnectionBudget] = None)
     def execute(self, host_names: List[str], command: str,
                 retry_count: int = 0, retry_delay: float = 1.0,
-                progress_callback: Optional[ProgressCallback] = None) -> BatchResult
+                progress_callback: Optional[ProgressCallback] = None,
+                environment: Optional[Dict[str, str]] = None) -> BatchResult
 ```
 
 #### Connection Pool Ownership
@@ -1173,7 +1244,8 @@ class AsyncBatchExecutor:
                  connection_budget: Optional[ConnectionBudget] = None)
     async def execute(self, host_names: List[str], command: str,
                       retry_count: int = 0, retry_delay: float = 1.0,
-                      progress_callback: Optional[ProgressCallback] = None) -> BatchResult
+                      progress_callback: Optional[ProgressCallback] = None,
+                      environment: Optional[Dict[str, str]] = None) -> BatchResult
 ```
 
 #### Parameters
@@ -1363,6 +1435,37 @@ remote-cmd profile remove <name> [--force]
 remote-cmd profile add aws -u ec2-user -k ~/.ssh/aws.pem -t cloud
 remote-cmd host add web-01 10.0.0.10 --profile aws
 remote-cmd host show web-01        # shows Profile: aws (effective view)
+```
+
+##### recipe command group (v2.9)
+
+Manage and safely run parameterized command templates.
+
+```bash
+remote-cmd recipe add <name> --command 'CMD' \
+    [-V NAME[=DEFAULT]]... [-E NAME[=DEFAULT]]... [-d DESC] [-t TAG]...
+remote-cmd recipe list
+remote-cmd recipe show <name>
+remote-cmd recipe remove <name>
+remote-cmd recipe run <name> <host>... \
+    [-V NAME=VALUE]... [-C N] [-T SECONDS] [-r N] [--async] [--format FMT]
+```
+
+`-V` declares `shell_arg` variables (auto shell-quoted at render), `-E`
+declares `env` variables (exported as remote environment variables). At run
+time `-V NAME=VALUE` supplies values; type comes from the declaration.
+Missing required or unknown variables fail before any connection is made.
+Declaring the same name as both `shell_arg` and `env` is rejected
+(`ValidationError`); repeating the same type keeps the last declaration.
+
+**Example:**
+
+```bash
+remote-cmd recipe add deploy --command 'deploy {{ package }}' -V package=app
+remote-cmd recipe run deploy web-1 web-2 -V package=api-2026.09 --format json
+remote-cmd recipe add token-check --command 'curl -sf {{ url }} -H "Auth: {{ TOKEN }}"' \
+    -V url -E TOKEN
+remote-cmd recipe run token-check web-1 -V url=https://example.com -V TOKEN=secret
 ```
 
 #### run command

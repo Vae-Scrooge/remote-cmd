@@ -129,6 +129,7 @@ class AsyncBatchExecutor:
         retry_count: int = 0,
         retry_delay: float = 1.0,
         progress_callback: Optional[ProgressCallback] = None,
+        environment: Optional[dict[str, str]] = None,
     ) -> BatchResult:
         """在多台主机上异步并发执行同一命令。
 
@@ -143,6 +144,8 @@ class AsyncBatchExecutor:
                 0 到 retry_delay * 2^n（含端点）内的随机值（上限 60s）
             progress_callback: 进度回调，签名为 `(completed, total, host_name)`；
                 回调可为同步或 async 函数（async 时会被 await）。
+            environment: 命令执行前导出的远端环境变量（可选，v2.9）；
+                键名在客户端层校验，值经 shlex.quote 安全导出
 
         Returns:
             BatchResult: 批量结果（与同步 BatchExecutor 完全一致）
@@ -214,6 +217,7 @@ class AsyncBatchExecutor:
                             retry_delay,
                             pool=pools.get(name),
                             use_pool=use_pool,
+                            environment=environment,
                         )
                     except Exception as e:  # noqa: BLE001
                         # 兜底：单主机执行意外异常（如内部池构造失败）不得
@@ -335,6 +339,7 @@ class AsyncBatchExecutor:
         retry_delay: float,
         pool: Optional[AsyncConnectionPool] = None,
         use_pool: bool = False,
+        environment: Optional[dict[str, str]] = None,
     ) -> BatchHostResult:
         """在单台主机上异步执行命令（含重试逻辑）。
 
@@ -378,6 +383,7 @@ class AsyncBatchExecutor:
                             cmd_result = await client.execute(
                                 command,
                                 timeout=self._command_timeout,
+                                environment=environment,
                             )
                     else:
                         acquisition = (
@@ -389,6 +395,7 @@ class AsyncBatchExecutor:
                             cmd_result = await client.execute(
                                 command,
                                 timeout=self._command_timeout,
+                                environment=environment,
                             )
                     return to_host_result(
                         host_name,

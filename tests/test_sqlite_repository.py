@@ -653,7 +653,7 @@ class TestSqliteConcurrentWriters:
         conn = sqlite3.connect(temp_db_path)
         try:
             version = conn.execute("SELECT value FROM meta WHERE key = 'db_version'").fetchone()[0]
-            assert version == "2"
+            assert version == "3"
             cols = {row[1] for row in conn.execute("PRAGMA table_info(hosts)")}
             assert {
                 "name",
@@ -674,6 +674,87 @@ class TestSqliteConcurrentWriters:
         # 重新打开：读取行为不变
         repo2 = SqliteHostRepository(temp_db_path)
         assert repo2.get("srv").hostname == "10.0.0.1"
+
+    def test_profile_foreign_key_present_on_new_db(self, temp_db_path):
+        """v2.9：新库 hosts.profile 带 ON DELETE RESTRICT 外键。"""
+        repo = SqliteHostRepository(temp_db_path)
+        fks = repo._get_conn().execute("PRAGMA foreign_key_list(hosts);").fetchall()
+        assert any(
+            row["table"] == "profiles" and row["from"] == "profile"
+            and row["on_delete"].upper() == "RESTRICT"
+            for row in fks
+        )
+
+    def test_save_host_with_unknown_profile_fails_fast(self, temp_db_path):
+        """v2.9：SQLite 写入时即拒绝引用不存在 profile 的主机（FK 存在性）。"""
+        repo = SqliteHostRepository(temp_db_path)
+        with pytest.raises(ValueError, match="unknown profile 'ghost'"):
+            repo.save(Host(name="web1", hostname="10.0.0.1", username="", profile="ghost"))
+
+    def test_profile_fk_blocks_referenced_delete(self, temp_db_path):
+        """v2.9：数据库层外键阻止删除仍被引用的 profile（竞态安全网）。"""
+        from remote_cmd.core.profile import HostProfile
+
+        repo = SqliteHostRepository(temp_db_path)
+        repo.save_profile(HostProfile(name="aws", username="ec2-user"))
+        repo.save(Host(name="web1", hostname="10.0.0.1", username="", profile="aws"))
+
+        with pytest.raises(ValueError, match="still referenced"):
+            repo.delete_profile("aws")
+
+        repo.delete("web1")
+        repo.delete_profile("aws")  # 解除引用后可删
+        assert not repo.contains_profile("aws")
+
+    def test_v2_database_rebuild_migration_preserves_data(self, tmp_path):
+        """v2.9：v2.8.x 库（有 profile 列、无 FK）重建迁移，数据保留且 FK 生效。"""
+        db_path = str(tmp_path / "v2.db")
+        conn = sqlite3.connect(db_path)
+        try:
+            conn.execute(
+                """
+                CREATE TABLE hosts (
+                    name TEXT PRIMARY KEY, hostname TEXT NOT NULL, username TEXT NOT NULL,
+                    port INTEGER DEFAULT 22, password TEXT, key_filename TEXT,
+                    tags TEXT DEFAULT '[]', description TEXT DEFAULT '', profile TEXT,
+                    created_at TIMESTAMP, updated_at TIMESTAMP
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE profiles (
+                    name TEXT PRIMARY KEY, username TEXT, port INTEGER, key_filename TEXT,
+                    tags TEXT DEFAULT '[]', description TEXT DEFAULT '',
+                    created_at TIMESTAMP, updated_at TIMESTAMP
+                )
+                """
+            )
+            conn.execute("INSERT INTO profiles (name, username) VALUES ('aws', 'ec2-user')")
+            conn.execute(
+                "INSERT INTO hosts (name, hostname, username, profile) "
+                "VALUES ('web1', '10.0.0.1', '', 'aws')"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        repo = SqliteHostRepository(db_path)  # 触发重建迁移
+        assert repo.get("web1").profile == "aws"
+        assert repo.get_profile("aws").username == "ec2-user"
+        fks = repo._get_conn().execute("PRAGMA foreign_key_list(hosts);").fetchall()
+        assert any(row["table"] == "profiles" for row in fks)
+
+        # 迁移后 FK 立即生效
+        with pytest.raises(ValueError, match="still referenced"):
+            repo.delete_profile("aws")
+
+    def test_fk_migration_idempotent(self, temp_db_path):
+        repo = SqliteHostRepository(temp_db_path)
+        repo._ensure_hosts_profile_fk()
+        repo._ensure_hosts_profile_fk()
+        fks = repo._get_conn().execute("PRAGMA foreign_key_list(hosts);").fetchall()
+        assert len([r for r in fks if r["table"] == "profiles"]) == 1
 
 
 class TestSqliteCheckpointPolicy:
@@ -726,14 +807,20 @@ class TestSqliteHostProfilePersistence:
     """v2.8.0 曾在 SQLite 后端丢失 Host.profile（save/行映射缺列）。"""
 
     def test_profile_roundtrip(self, temp_db_path):
+        from remote_cmd.core.profile import HostProfile
+
         repo = SqliteHostRepository(temp_db_path)
+        repo.save_profile(HostProfile(name="aws", username="ec2-user"))
         repo.save(Host(name="web1", hostname="10.0.0.1", username="", profile="aws"))
 
         again = SqliteHostRepository(temp_db_path)
         assert again.get("web1").profile == "aws"
 
     def test_profile_survives_upsert(self, temp_db_path):
+        from remote_cmd.core.profile import HostProfile
+
         repo = SqliteHostRepository(temp_db_path)
+        repo.save_profile(HostProfile(name="aws", username="ec2-user"))
         repo.save(Host(name="web1", hostname="10.0.0.1", username="", profile="aws"))
         host = repo.get("web1")
         host.description = "updated"
@@ -791,7 +878,10 @@ class TestSqliteHostProfilePersistence:
         }
         assert "profile" in columns
 
-        # 迁移后可正常写入并读取 profile 引用
+        # 迁移后可正常写入并读取 profile 引用（先建 profile，FK 要求存在）
+        from remote_cmd.core.profile import HostProfile
+
+        repo.save_profile(HostProfile(name="aws", username="ec2-user"))
         repo.save(Host(name="new1", hostname="10.0.0.10", username="u", profile="aws"))
         assert SqliteHostRepository(db_path).get("new1").profile == "aws"
 

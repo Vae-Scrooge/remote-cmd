@@ -30,7 +30,9 @@ from remote_cmd.cli.formatters import format_batch_result, format_single_result
 from remote_cmd.cli.formatters.base import FORMAT_CHOICES
 from remote_cmd.core.host import Host
 from remote_cmd.core.profile import HostProfile
+from remote_cmd.core.recipe import Recipe, RecipeVariable
 from remote_cmd.repository.profile_store import ProfileStore
+from remote_cmd.repository.recipe_store import RecipeStore
 from remote_cmd.service.batch_executor import BatchExecutor
 from remote_cmd.service.credential_provider import (
     ChainCredentialProvider,
@@ -39,6 +41,7 @@ from remote_cmd.service.credential_provider import (
 )
 from remote_cmd.service.host_service import HostService
 from remote_cmd.service.profile_service import ProfileService
+from remote_cmd.service.recipe_service import RecipeService
 from remote_cmd.service.storage_factory import build_repository
 from remote_cmd.utils.config import get_default_config_path, load_config
 from remote_cmd.utils.crypto import CredentialEncryption
@@ -47,7 +50,7 @@ from remote_cmd.utils.exceptions import ValidationError
 
 def _build_service(
     config_file: str, storage_backend: Optional[str] = None
-) -> tuple[HostService, ProfileService]:
+) -> tuple[HostService, ProfileService, RecipeService]:
     """Build a HostService and ProfileService from a config file.
 
     Credential chain order: env var -> encrypted file storage.
@@ -75,10 +78,13 @@ def _build_service(
         ]
     )
     service = HostService(repository=repo, credential_provider=cred_provider)
-    # 内置仓库均实现 ProfileStore（v2.8）；assert 同时用于类型收窄
+    # 内置仓库均实现 ProfileStore（v2.8）/ RecipeStore（v2.9）；
+    # assert 同时用于类型收窄
     assert isinstance(repo, ProfileStore)
+    assert isinstance(repo, RecipeStore)
     profile_service = ProfileService(store=repo, host_repository=repo)
-    return service, profile_service
+    recipe_service = RecipeService(store=repo)
+    return service, profile_service, recipe_service
 
 
 @click.group()
@@ -129,9 +135,10 @@ def cli(
     # （扩展名推断覆盖 .json/.db/.sqlite 常见场景）
     hosts_file = hosts_file_override or ctx.obj["config"].get("hosts_file", "hosts.json")
     storage_backend = ctx.obj["config"].get("storage_backend")
-    service, profile_service = _build_service(hosts_file, storage_backend)
+    service, profile_service, recipe_service = _build_service(hosts_file, storage_backend)
     ctx.obj["service"] = service
     ctx.obj["profile_service"] = profile_service
+    ctx.obj["recipe_service"] = recipe_service
 
     if verbose:
         click.echo(f"Using config file: {config_path}")
@@ -478,6 +485,233 @@ def profile_remove(ctx: click.Context, name: str, force: bool) -> None:
         ctx.exit(1)
 
 
+@cli.group()
+def recipe() -> None:
+    """
+    Recipe management and safe execution (v2.9)
+
+    Recipes are parameterized command templates with **typed** variables:
+    ``shell_arg`` values are ``shlex.quote``-escaped before substitution and
+    ``env`` values are exported as remote environment variables. Raw string
+    interpolation is intentionally not supported.
+
+    Commands:
+        add     Create a recipe
+        list    List recipes
+        show    Show recipe details
+        remove  Remove a recipe
+        run     Render and execute a recipe across hosts
+    """
+    pass
+
+
+@recipe.command("add")
+@click.argument("name", required=True)
+@click.option(
+    "--command",
+    "-c",
+    "command_template",
+    required=True,
+    help="Command template containing {{ var }} placeholders",
+)
+@click.option(
+    "--var",
+    "-V",
+    "shell_vars",
+    multiple=True,
+    help="shell_arg variable declaration: NAME or NAME=DEFAULT (repeatable)",
+)
+@click.option(
+    "--env",
+    "-E",
+    "env_vars",
+    multiple=True,
+    help="env variable declaration: NAME or NAME=DEFAULT (repeatable)",
+)
+@click.option("--description", "-d", default="", help="Description")
+@click.option("--tag", "-t", multiple=True, help="Tag (may be repeated)")
+@click.pass_context
+def recipe_add(
+    ctx: click.Context,
+    name: str,
+    command_template: str,
+    shell_vars: tuple,
+    env_vars: tuple,
+    description: str,
+    tag: tuple,
+) -> None:
+    """Create a recipe (typed variables; no raw interpolation)."""
+    recipes: RecipeService = ctx.obj["recipe_service"]
+    try:
+        shell_variables = _parse_var_declarations(shell_vars, "shell_arg")
+        env_variables = _parse_var_declarations(env_vars, "env")
+
+        # 同名变量不得跨类型声明（-V TOKEN -E TOKEN）：静默覆盖会改变
+        # 变量的安全语义（内联转义 vs 环境导出），必须显式拒绝。
+        overlap = shell_variables.keys() & env_variables.keys()
+        if overlap:
+            raise ValidationError(
+                "variable(s) declared as both shell_arg and env: " + ", ".join(sorted(overlap))
+            )
+
+        variables = {**shell_variables, **env_variables}
+        recipes.add_recipe(
+            Recipe(
+                name=name,
+                command=command_template,
+                variables=variables,
+                description=description,
+                tags=list(tag),
+            )
+        )
+        click.echo(f"✓ Recipe '{name}' added successfully")
+    except (Exit, click.Abort):
+        raise
+    except (ValueError, ValidationError) as e:
+        click.echo(f"✗ Error: {e}", err=True)
+        ctx.exit(1)
+
+
+@recipe.command("list")
+@click.pass_context
+def recipe_list(ctx: click.Context) -> None:
+    """List all recipes."""
+    recipes: RecipeService = ctx.obj["recipe_service"]
+    items = recipes.list_recipes()
+    if not items:
+        click.echo("No recipes.")
+        return
+    click.echo(f"{'NAME':<24} {'VARIABLES':<32} TAGS")
+    for r in items:
+        var_desc = ", ".join(
+            f"{v.name}:{v.type}" for v in r.variables.values()
+        )
+        click.echo(f"{r.name:<24} {var_desc:<32} {','.join(r.tags)}")
+
+
+@recipe.command("show")
+@click.argument("name", required=True)
+@click.pass_context
+def recipe_show(ctx: click.Context, name: str) -> None:
+    """Show one recipe's details."""
+    recipes: RecipeService = ctx.obj["recipe_service"]
+    try:
+        r = recipes.get_recipe(name)
+    except KeyError:
+        click.echo(f"✗ Error: recipe '{name}' not found", err=True)
+        ctx.exit(1)
+    click.echo(f"Name:        {r.name}")
+    click.echo(f"Command:     {r.command}")
+    click.echo(f"Description: {r.description or '-'}")
+    click.echo(f"Tags:        {', '.join(r.tags) if r.tags else '-'}")
+    if r.variables:
+        click.echo("Variables:")
+        for v in r.variables.values():
+            default = f", default={v.default!r}" if v.default is not None else ""
+            required = "required" if v.required and v.default is None else "optional"
+            click.echo(f"  - {v.name} ({v.type}, {required}{default})")
+    else:
+        click.echo("Variables:   -")
+
+
+@recipe.command("remove")
+@click.argument("name", required=True)
+@click.confirmation_option(prompt="Are you sure you want to remove this recipe?")
+@click.pass_context
+def recipe_remove(ctx: click.Context, name: str) -> None:
+    """Remove a recipe."""
+    recipes: RecipeService = ctx.obj["recipe_service"]
+    try:
+        recipes.remove_recipe(name)
+        click.echo(f"✓ Recipe '{name}' removed")
+    except KeyError:
+        click.echo(f"✗ Error: recipe '{name}' not found", err=True)
+        ctx.exit(1)
+
+
+@recipe.command("run")
+@click.argument("name", required=True)
+@click.argument("host_names", nargs=-1, required=True)
+@click.option(
+    "--var",
+    "-V",
+    "var_values",
+    multiple=True,
+    help="Variable value NAME=VALUE (repeatable; type comes from the recipe)",
+)
+@click.option("--concurrency", "-C", default=10, help="Max concurrency (default: 10)")
+@click.option("--timeout", "-T", default=30, help="Command timeout in seconds (default: 30)")
+@click.option("--retry", "-r", default=0, help="Failure retry count (default: 0)")
+@click.option("--async", "use_async", is_flag=True, help="Use async execution engine")
+@click.option("--show-failures", is_flag=True, help="Show only failed hosts")
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(FORMAT_CHOICES),
+    default="rich",
+    help="Output format: rich (default) or json/table for scripting",
+)
+@click.pass_context
+def recipe_run(
+    ctx: click.Context,
+    name: str,
+    host_names: tuple,
+    var_values: tuple,
+    concurrency: int,
+    timeout: int,
+    retry: int,
+    use_async: bool,
+    show_failures: bool,
+    output_format: str,
+) -> None:
+    """Render a recipe safely and run it across hosts.
+
+    Rendering is type-aware: shell_arg values are shell-quoted, env values
+    are exported as environment variables. Missing required variables and
+    unknown variables fail before any connection is made.
+    """
+    recipes: RecipeService = ctx.obj["recipe_service"]
+    service: HostService = ctx.obj["service"]
+
+    try:
+        values = _parse_var_values(var_values)
+        rendered = recipes.render(name, values)
+    except KeyError:
+        click.echo(f"✗ Error: recipe '{name}' not found", err=True)
+        ctx.exit(1)
+    except (ValueError, ValidationError) as e:
+        click.echo(f"✗ Error: {e}", err=True)
+        ctx.exit(1)
+
+    if output_format == "rich":
+        click.echo(
+            f"Recipe '{name}' on {len(host_names)} hosts, "
+            f"command={rendered.command!r}"
+        )
+
+    executor = BatchExecutor(
+        host_service=service,
+        max_concurrency=concurrency,
+        command_timeout=timeout,
+        use_async=use_async,
+    )
+    result = executor.execute(
+        host_names=list(host_names),
+        command=rendered.command,
+        retry_count=retry,
+        retry_delay=1.0,
+        environment=rendered.environment or None,
+    )
+
+    if output_format != "rich":
+        click.echo(format_batch_result(result, output_format, show_failures=show_failures))
+    else:
+        _echo_batch_rich(result, show_failures)
+
+    if result.failed > 0:
+        ctx.exit(1)
+
+
 @cli.command()
 @click.argument("host_name", required=True)
 @click.argument("command", required=True)
@@ -590,6 +824,58 @@ def download(ctx: click.Context, host_name: str, local_path: str, remote_path: s
         ctx.exit(1)
 
 
+def _echo_batch_rich(result: Any, show_failures: bool) -> None:
+    """rich（默认）批量结果渲染：摘要 + 失败/成功主机列表。"""
+    click.echo()
+    click.echo("=" * 50)
+    click.echo("  Batch result summary")
+    click.echo("=" * 50)
+    click.echo(f"  Total:    {result.total}")
+    click.echo(f"  Succeeded: {result.success}")
+    click.echo(f"  Failed:   {result.failed}")
+    click.echo(f"  Duration: {result.duration:.1f}s")
+    click.echo(f"  Success:  {result.success_rate:.1%}")
+    click.echo("=" * 50)
+
+    if result.failed_hosts:
+        click.echo()
+        click.echo(click.style("Failed hosts:", fg="red"))
+        for host in result.failed_hosts:
+            host_result = result.results[host]
+            error_msg = host_result.error or f"exit_code={host_result.exit_code}"
+            click.echo(click.style(f"  ✗ {host}: {error_msg}", fg="red"))
+
+    if not show_failures and result.success_hosts:
+        click.echo()
+        click.echo(click.style("Successful hosts:", fg="green"))
+        for host in result.success_hosts:
+            click.echo(click.style(f"  ✓ {host}", fg="green"))
+
+
+def _parse_var_declarations(items: tuple, var_type: str) -> dict:
+    """解析 CLI 变量声明（NAME 或 NAME=DEFAULT）。"""
+    variables: dict = {}
+    for item in items:
+        name, sep, default = item.partition("=")
+        if not name:
+            raise ValidationError(f"invalid variable declaration: {item!r}")
+        variables[name] = RecipeVariable(
+            name=name, type=var_type, default=default if sep else None
+        )
+    return variables
+
+
+def _parse_var_values(items: tuple) -> dict:
+    """解析 CLI 变量取值（必须 NAME=VALUE）。"""
+    values: dict = {}
+    for item in items:
+        name, sep, value = item.partition("=")
+        if not sep or not name:
+            raise ValidationError(f"expected NAME=VALUE, got: {item!r}")
+        values[name] = value
+    return values
+
+
 @cli.command()
 @click.argument("host_names", nargs=-1, required=True)
 @click.argument("command", required=True)
@@ -683,35 +969,7 @@ def batch_run(
             progress_callback=progress,
         )
 
-    click.echo()
-    click.echo("=" * 50)
-    click.echo("  Batch result summary")
-    click.echo("=" * 50)
-    click.echo(f"  Total:    {result.total}")
-    click.echo(f"  Succeeded: {result.success}")
-    click.echo(f"  Failed:   {result.failed}")
-    click.echo(f"  Duration: {result.duration:.1f}s")
-    click.echo(f"  Success:  {result.success_rate:.1%}")
-    click.echo("=" * 50)
-
-    if result.failed_hosts:
-        click.echo()
-        click.echo(click.style("Failed hosts:", fg="red"))
-        for host in result.failed_hosts:
-            host_result = result.results[host]
-            error_msg = host_result.error or f"exit_code={host_result.exit_code}"
-            click.echo(
-                click.style(
-                    f"  ✗ {host}: {error_msg}",
-                    fg="red",
-                )
-            )
-
-    if not show_failures and result.success_hosts:
-        click.echo()
-        click.echo(click.style("Successful hosts:", fg="green"))
-        for host in result.success_hosts:
-            click.echo(click.style(f"  ✓ {host}", fg="green"))
+    _echo_batch_rich(result, show_failures)
 
     if result.failed > 0:
         ctx.exit(1)

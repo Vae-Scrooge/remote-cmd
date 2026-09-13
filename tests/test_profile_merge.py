@@ -4,6 +4,8 @@
 未知 profile 错误映射、无 ProfileStore 仓库的降级错误。
 """
 
+from __future__ import annotations
+
 from typing import Optional
 
 import pytest
@@ -47,12 +49,14 @@ class TestMergeRules:
         assert service.resolve_host("web1").port == 2020
 
     def test_key_filename_merge_and_host_priority(self, setup):
+        """相对文件名在 POSIX/Windows 上语义一致（expanduser 为 no-op），
+        避免硬编码 POSIX 根路径导致 Windows 下被 Path 归一化为反斜杠。"""
         repo, service = setup
-        repo.save_profile(HostProfile(name="aws", key_filename="/profile.pem"))
+        repo.save_profile(HostProfile(name="aws", key_filename="profile.pem"))
         _add_host(repo, name="a", profile="aws")
-        _add_host(repo, name="b", profile="aws", key_filename="/host.pem")
-        assert service.resolve_host("a").key_filename == "/profile.pem"
-        assert service.resolve_host("b").key_filename == "/host.pem"
+        _add_host(repo, name="b", profile="aws", key_filename="host.pem")
+        assert service.resolve_host("a").key_filename == "profile.pem"
+        assert service.resolve_host("b").key_filename == "host.pem"
 
     def test_tags_union_host_first(self, setup):
         repo, service = setup

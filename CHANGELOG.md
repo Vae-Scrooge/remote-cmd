@@ -7,6 +7,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.9.0] - 2026-09-13
+
+v2.9 adds a secure Recipe engine (P3) and closes the profile-deletion race
+(P2). Public APIs remain backward compatible; existing stores upgrade in place.
+
+### Added
+
+- **Secure Recipe engine**: `Recipe` / `RecipeVariable` / `RenderedRecipe`
+  (exported from `remote_cmd`) are parameterized command templates with
+  **typed variables**:
+  - `shell_arg` (default): values are `shlex.quote`d before substitution;
+  - `env`: values are exported as remote environment variables through the
+    SSH client, and placeholders render as `"$NAME"`.
+  Raw string interpolation (`str.format` / f-strings) is intentionally not
+  supported. Undeclared placeholders are rejected at construction; rendering
+  is single-pass, so `{{ ... }}` inside values is never re-parsed.
+- `RecipeService` (exported): CRUD + `render(name, values)` with strict
+  validation (missing required / unknown / non-string values fail before any
+  connection is made).
+- Recipes persist through the optional **`RecipeStore` capability protocol**
+  (JSON `recipes` section / SQLite `recipes` table; old stores load with zero
+  recipes); the `HostRepository` ABC is unchanged.
+- CLI: `recipe add/list/show/remove/run`; `recipe run` renders type-safely and
+  executes through the batch executors (`-C/-T/-r/--async/--format`). A
+  variable declared as both `shell_arg` (`-V`) and `env` (`-E`) is rejected
+  with `ValidationError` — silent last-wins would change its safety semantics;
+  same-type repeated declarations keep the last value.
+- `BatchExecutor.execute` / `AsyncBatchExecutor.execute` accept an optional
+  `environment` mapping, forwarded to `SSHClient.execute` /
+  `AsyncSSHClient.execute` (names validated, values quoted by the client).
+
+### Changed
+
+- **SQLite profile deletion is now atomic (P2)**: `hosts.profile` carries
+  `FOREIGN KEY (profile) REFERENCES profiles(name) ON DELETE RESTRICT`
+  (`DB_VERSION` 2 → 3). Existing databases are rebuilt in place on first open
+  (new table → copy → drop → rename) with data preserved. The service-level
+  reference check remains a friendly fast path; the database constraint is the
+  race-condition safety net.
+- Saving a host that references an unknown profile now fails fast with
+  `ValueError` on SQLite (the JSON backend remains single-writer and reports
+  `ConfigError` at resolve time).
+
+### Migration Guide (v2.8.1 → v2.9.0)
+
+- **No action required**: JSON stores load unchanged; SQLite databases upgrade
+  automatically on first open. Rows referencing a missing profile are
+  preserved by the rebuild (the constraint is enforced going forward).
+- Recipes are new objects; no existing behavior changes.
+
+### Security
+
+- The recipe renderer is covered by an injection payload matrix executed in a
+  real `/bin/sh`: `; touch`, `$(...)`, backticks, newlines, quotes, globs,
+  `$VAR`, `${IFS}`, redirections and pipes all remain literal; env values are
+  passed through the client's validated export mechanism.
+
 ## [2.8.1] - 2026-09-13
 
 ### Fixed

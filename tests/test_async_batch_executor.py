@@ -1107,3 +1107,25 @@ class TestOutputCapParity:
         assert sync_host.exit_code == async_host.exit_code == 7
         assert sync_host.success is async_host.success is False
         assert "[output truncated" in sync_host.stdout
+
+
+class TestAsyncBatchExecutorEnvironment:
+    """v2.9：environment 透传到 AsyncSSHClient.execute。"""
+
+    @pytest.mark.asyncio
+    async def test_direct_path_passes_environment(self, mock_async_client_class):
+        cm, instance = mock_async_client_class
+        host = Host(name="srv1", hostname="10.0.0.1", username="admin")
+        ex = AsyncBatchExecutor(host_service=make_mock_service([host]), max_concurrency=1)
+        result = await ex.execute(["srv1"], "cmd", environment={"TOKEN": "x"})
+        assert result.success == 1
+        assert instance.execute.call_args.kwargs["environment"] == {"TOKEN": "x"}
+
+    @pytest.mark.asyncio
+    async def test_internal_pool_path_passes_environment(self, mock_async_client_class):
+        cm, instance = mock_async_client_class
+        hosts = [Host(name=f"srv{i}", hostname=f"10.0.0.{i}", username="u") for i in range(3)]
+        ex = AsyncBatchExecutor(host_service=make_mock_service(hosts), max_concurrency=2)
+        result = await ex.execute([h.name for h in hosts], "cmd", environment={"A": "1"})
+        assert result.success == 3
+        assert instance.execute.call_args_list[0].kwargs["environment"] == {"A": "1"}

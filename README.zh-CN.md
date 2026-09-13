@@ -41,35 +41,31 @@ pip install remote_cmd_manager && remote-cmd host add web-01 192.168.1.10 ubuntu
 
 ---
 
-## v2.8.0 发布亮点
+## v2.9.0 发布亮点
 
-v2.8.0 带来首批 P3 用户功能：**连接 Profile** 与**机器可读 CLI 输出**。
-公共 API 保持向后兼容；默认 CLI 输出与既有命令行为完全不变。升级前请查看[完整迁移说明](./CHANGELOG.md)。
+v2.9.0 新增**安全 Recipe 引擎**，并让 **SQLite profile 删除具备原子性**。
+公共 API 保持向后兼容；既有存储自动升级。升级前请查看[完整迁移说明](./CHANGELOG.md)。
 
-### 连接 Profile
+### 安全 Recipe
 
-- 新增 `HostProfile`（从 `remote_cmd` 导出）：可复用的连接默认值——用户名、端口、私钥、标签、描述；JSON/SQLite 仓库通过可选的 `ProfileStore` 能力协议持久化（`HostRepository` ABC 保持不变）。
-- 主机以引用方式绑定 profile（`host add --profile aws`），连接解析时合并（引用式）：端口在主机为默认 22 时生效、私钥为空时生效、描述为空时生效、标签取并集、用户名为空时取自 profile（live default，后续修改 profile.username 会对引用主机生效）。
-- 修改 profile 对全部引用主机生效；未知 profile 抛出清晰的 `ConfigError`（批量执行按主机报告）。
-- `ProfileService` CRUD + `remote-cmd profile add/list/show/remove`，删除时保护仍被引用的 profile。
+- 新增 `Recipe` / `RecipeVariable`（从 `remote_cmd` 导出）：带**类型化变量**的参数化命令模板——`shell_arg` 值自动 `shlex.quote`，`env` 值作为远端环境变量导出；有意不支持裸字符串插值。
+- 占位符必须声明：未声明占位符在创建时报错，缺失/未知变量在建立任何连接前即失败；渲染为单遍，变量值中的 `{{ ... }}` 不会被二次解析。
+- Recipe 通过可选的 `RecipeStore` 能力协议持久化（JSON `recipes` 段 / SQLite `recipes` 表），可用 `remote-cmd recipe run ...` 或 `RecipeService` + 批量执行器运行。
 
-### 机器可读输出
+### 原子化 Profile 删除
 
-- `remote-cmd run` 与 `remote-cmd batch-run` 支持 `--format rich|json|table`（默认 `rich`，与既有输出字节兼容）。
-- JSON 使用稳定 schema 且结果键排序；table 为纯文本对齐；机器格式下自动静默进度条/表头，保证 stdout 可解析。
-- 格式化层位于 `remote_cmd/cli/formatters/`，绝不触碰执行内核。
+- SQLite `hosts.profile` 现带 `FOREIGN KEY ... ON DELETE RESTRICT`（`DB_VERSION` 2 → 3）；既有数据库打开时自动重建迁移且数据保留。服务层引用检查保留为友好的快速路径。
 
 ### 试用
 
 ```bash
-remote-cmd profile add aws -u ec2-user -k ~/.ssh/aws.pem -t cloud
-remote-cmd host add web-01 10.0.0.10 --profile aws
-remote-cmd batch-run web-01 web-02 "uptime" --format json | jq .
+remote-cmd recipe add deploy --command 'deploy {{ package }}' -V package=app
+remote-cmd recipe run deploy web-01 web-02 -V package=api-2026.09 --format json | jq .
 ```
 
 ## 目录
 
-- [v2.8.0 发布亮点](#v280-发布亮点)
+- [v2.9.0 发布亮点](#v290-发布亮点)
 - [为什么选择 Remote CMD？](#为什么选择-remote-cmd)
 - [快速开始](#快速开始)
 - [使用场景](#使用场景)
@@ -218,6 +214,7 @@ with SSHClient(config) as client:
 | **主机管理** | CRUD，支持可插拔的 JSON 或 **SQLite** 持久化 |
 | **连接 Profile** | 主机可引用的用户名/端口/私钥/标签默认值（`ProfileService`、`--profile`），绝不存储凭据 |
 | **输出格式** | `run` / `batch-run` 支持 `--format rich\|json\|table`（稳定 JSON schema，stdout 可解析） |
+| **安全 Recipe** | 类型化命令模板（`shell_arg` 自动转义 / `env` 环境变量导出），仓储存储并跨主机执行；无裸插值 |
 | **标签系统** | 按标签过滤主机（如 `production`、`web`、`db`）；profile 标签参与筛选 |
 | **批量操作** | 跨任意主机组执行命令，支持同步与异步 |
 | **异步内核** | 通过 `[async]` 扩展启用 `AsyncSSHClient` / `AsyncConnectionPool` / `AsyncBatchExecutor` |

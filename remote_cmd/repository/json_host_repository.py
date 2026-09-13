@@ -26,6 +26,7 @@ from typing import Optional
 
 from remote_cmd.core.host import Host
 from remote_cmd.core.profile import HostProfile
+from remote_cmd.core.recipe import Recipe
 from remote_cmd.repository.host_repository import HostRepository
 from remote_cmd.utils.credential_guard import PasswordGuard, is_plaintext_password
 from remote_cmd.utils.crypto import CredentialEncryption
@@ -77,6 +78,7 @@ class JsonHostRepository(HostRepository):
         self._allow_plaintext = allow_plaintext_credentials
         self._hosts: dict[str, Host] = {}
         self._profiles: dict[str, HostProfile] = {}
+        self._recipes: dict[str, Recipe] = {}
 
         if auto_load and self._filepath.exists():
             self._load()
@@ -149,6 +151,30 @@ class JsonHostRepository(HostRepository):
         return name in self._profiles
 
     # ========================================================================
+    # RecipeStore 能力（v2.9）
+    # ========================================================================
+
+    def save_recipe(self, recipe: Recipe) -> None:
+        """保存 Recipe 到内存，随后需要调用 flush() 写入文件。"""
+        self._recipes[recipe.name] = recipe
+
+    def get_recipe(self, name: str) -> Recipe:
+        if name not in self._recipes:
+            raise KeyError(f"Recipe '{name}' not found")
+        return self._recipes[name]
+
+    def delete_recipe(self, name: str) -> None:
+        if name not in self._recipes:
+            raise KeyError(f"Recipe '{name}' not found")
+        del self._recipes[name]
+
+    def list_recipes(self) -> builtins.list[Recipe]:
+        return [self._recipes[name] for name in sorted(self._recipes)]
+
+    def contains_recipe(self, name: str) -> bool:
+        return name in self._recipes
+
+    # ========================================================================
     # 持久化
     # ========================================================================
 
@@ -179,6 +205,7 @@ class JsonHostRepository(HostRepository):
             "version": CONFIG_VERSION,
             "hosts": hosts_dict,
             "profiles": {name: profile.to_dict() for name, profile in self._profiles.items()},
+            "recipes": {name: recipe.to_dict() for name, recipe in self._recipes.items()},
         }
 
     def _enforce_plaintext_policy(self, hosts_dict: dict) -> None:
@@ -254,6 +281,16 @@ class JsonHostRepository(HostRepository):
                     self._profiles[name] = HostProfile.from_dict(profile_data)
                 except (ValueError, TypeError, KeyError, ValidationError) as e:
                     logger.warning(f"skipping invalid profile '{name}': {e}")
+
+        # Recipe（v2.9；旧文件无该段时为空）
+        self._recipes = {}
+        recipes_data = raw.get("recipes", {})
+        if isinstance(recipes_data, dict):
+            for name, recipe_data in recipes_data.items():
+                try:
+                    self._recipes[name] = Recipe.from_dict(recipe_data)
+                except (ValueError, TypeError, KeyError, ValidationError) as e:
+                    logger.warning(f"skipping invalid recipe '{name}': {e}")
 
     def _atomic_write(self, data: dict) -> None:
         """原子写入：写临时文件 → rename 覆盖原文件"""

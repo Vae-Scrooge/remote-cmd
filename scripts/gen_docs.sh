@@ -8,6 +8,12 @@
 # 中 pinned 的 pdoc。请尽量使用 Python 3.12 生成，否则 CI 可能报文档漂移。
 set -euo pipefail
 
+# 确定性构建契约：关闭 pdoc 的环境变量遮蔽（否则值等于构建环境某环境变量
+# 的模块常量会被渲染成 $ENVVAR，例如 CI 上的 __author__ 与 actor 同名）。
+# 必须与 scripts/check_docs_drift.py 的 PDOC_DETERMINISTIC_ENV 保持一致。
+: "${PDOC_DISPLAY_ENV_VARS:=1}"
+export PDOC_DISPLAY_ENV_VARS
+
 cd "$(dirname "$0")/.."
 
 PYTHON_BIN="${PYTHON:-}"

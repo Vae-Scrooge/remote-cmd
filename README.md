@@ -36,37 +36,32 @@ pip install remote_cmd_manager && remote-cmd host add web-01 192.168.1.10 ubuntu
 
 ---
 
-## v2.8.0 Release Highlights
+## v2.9.0 Release Highlights
 
-v2.8.0 adds the first P3 user-facing features: **connection profiles** and
-**machine-readable CLI output**. Public APIs remain backward compatible; the
-default CLI output and all existing commands behave exactly as before. See the
-[full migration notes](./CHANGELOG.md).
+v2.9.0 adds the **secure Recipe engine** and makes **SQLite profile deletion
+atomic**. Public APIs remain backward compatible; existing stores upgrade in
+place. See the [full migration notes](./CHANGELOG.md).
 
-### Connection Profiles
+### Secure Recipes
 
-- New `HostProfile` (exported from `remote_cmd`): reusable connection defaults — username, port, key file, tags, description — stored by both JSON and SQLite repositories via the optional `ProfileStore` capability (the `HostRepository` ABC is unchanged).
-- Hosts reference a profile (`host add --profile aws`); values merge at connect time (reference model): port when the host uses the default 22, key file when unset, description when empty, tags as a union, username when the host stores none (live default — later profile username changes propagate).
-- Changing a profile applies to every referencing host; unknown profiles fail with a clear `ConfigError` (batch execution reports them per host).
-- `ProfileService` CRUD + `remote-cmd profile add/list/show/remove`, with deletion protection for profiles still referenced by hosts.
+- New `Recipe` / `RecipeVariable` (exported from `remote_cmd`): parameterized command templates with **typed variables** — `shell_arg` values are `shlex.quote`d, `env` values are exported as remote environment variables. Raw string interpolation is intentionally unsupported.
+- Placeholders must be declared; undeclared placeholders fail at creation, and missing/unknown values fail before any connection is made. Rendering is single-pass, so `{{ ... }}` inside values stays literal.
+- Recipes persist through the optional `RecipeStore` capability (JSON `recipes` section / SQLite `recipes` table) and run via `remote-cmd recipe run ...` or `RecipeService` + the batch executors.
 
-### Machine-Readable Output
+### Atomic Profile Deletion
 
-- `remote-cmd run` and `remote-cmd batch-run` accept `--format rich|json|table` (default `rich` = byte-compatible with previous output).
-- JSON uses a stable schema with sorted result keys; table output is plain aligned text. Machine formats suppress the progress bar/header so stdout stays parseable.
-- The formatter layer lives in `remote_cmd/cli/formatters/` and never touches the execution kernels.
+- SQLite `hosts.profile` now carries `FOREIGN KEY ... ON DELETE RESTRICT` (`DB_VERSION` 2 → 3); existing databases are rebuilt automatically on open with data preserved. The service-level reference check stays as a friendly fast path.
 
 ### Try It
 
 ```bash
-remote-cmd profile add aws -u ec2-user -k ~/.ssh/aws.pem -t cloud
-remote-cmd host add web-01 10.0.0.10 --profile aws
-remote-cmd batch-run web-01 web-02 "uptime" --format json | jq .
+remote-cmd recipe add deploy --command 'deploy {{ package }}' -V package=app
+remote-cmd recipe run deploy web-01 web-02 -V package=api-2026.09 --format json | jq .
 ```
 
 ## Table of Contents
 
-- [v2.8.0 Release Highlights](#v280-release-highlights)
+- [v2.9.0 Release Highlights](#v290-release-highlights)
 - [Why Remote CMD?](#why-remote-cmd)
 - [Quick Start](#quick-start)
 - [Use Cases](#use-cases)
@@ -214,6 +209,7 @@ with SSHClient(config) as client:
 | **File Transfer** | Upload/download via SFTP (`remote-cmd upload/download`) |
 | **Host Management** | CRUD with pluggable JSON or **SQLite** persistence |
 | **Connection Profiles** | Reusable username/port/key/tag defaults referenced by hosts (`ProfileService`, `--profile`); never stores credentials |
+| **Secure Recipes** | Typed command templates (`shell_arg` auto-quoted / `env` exported), stored in the repository and run across hosts; no raw interpolation |
 | **Output Formats** | `--format rich\|json\|table` for `run` / `batch-run` (stable JSON schema, parseable stdout) |
 | **Tag System** | Filter hosts by tag (e.g., `production`, `web`, `db`); profile tags participate in filtering |
 | **Batch Ops** | Run commands across any host group, synchronously or asynchronously; optional per-host retained-output cap (`max_output_bytes`) |
@@ -292,9 +288,9 @@ are simply not exported.
 - [x] Async SSH operations (parallel execution) — v1.1.0
 - [x] Pluggable storage backends (JSON + SQLite) — v1.2.x
 - [x] Chainable credential providers + at-rest encryption — v1.2.x
-- [ ] Configuration profiles (AWS, GCP, custom)
-- [ ] Output formatting (JSON, table)
-- [ ] Templated command recipes
+- [x] Configuration profiles (AWS, GCP, custom) — v2.8.0
+- [x] Output formatting (JSON, table) — v2.8.0
+- [x] Templated command recipes (typed variables, shell-quoted) — v2.9.0
 
 Good first issues are labelled `good first issue` in the
 [issue tracker](https://github.com/Vae-Scrooge/remote-cmd/issues) — contributions welcome.

@@ -118,6 +118,14 @@ Core responsibilities of the host service:
 - **CLI output formatting** lives in `remote_cmd/cli/formatters/` and only
   renders `CommandResult` / `BatchResult` (rich default, plus json/table);
   execution kernels never see output formats.
+- **Recipes (v2.9)** are typed command templates stored via the optional
+  `RecipeStore` capability; rendering is type-aware (`shell_arg` →
+  `shlex.quote`, `env` → exported environment) and never uses raw string
+  interpolation. Recipes execute through the same batch executors.
+- **SQLite referential integrity (v2.9)**: `hosts.profile` carries
+  `FOREIGN KEY ... ON DELETE RESTRICT`; existing databases are rebuilt in
+  place on open (`DB_VERSION` 2 → 3), making profile deletion race-safe at the
+  database level while the service check remains a friendly fast path.
 
 ### 3. Core Function Layer
 

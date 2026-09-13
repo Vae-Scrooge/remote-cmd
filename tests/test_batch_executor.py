@@ -230,7 +230,7 @@ class TestBatchExecutor:
         mock_ssh_class.return_value = mock_instance
 
         # 第一次调用抛出异常触发重试，第二次返回成功
-        def execute_side_effect(command, timeout=None):  # noqa: ARG001
+        def execute_side_effect(command, timeout=None, environment=None):  # noqa: ARG001, ARG002
             if execute_side_effect.call_count == 0:
                 execute_side_effect.call_count += 1
                 raise Exception("Connection reset")
@@ -264,7 +264,7 @@ class TestBatchExecutor:
         mock_instance = MagicMock()
         mock_ssh_class.return_value = mock_instance
 
-        def execute_always_fail(command, timeout=None):  # noqa: ARG001
+        def execute_always_fail(command, timeout=None, environment=None):  # noqa: ARG001, ARG002
             raise Exception("Connection reset")
 
         mock_instance.execute.side_effect = execute_always_fail
@@ -949,3 +949,47 @@ class TestBatchExecutorOutputCap:
         marker_allowance = 64  # 标记本身很小，给足空间
         assert retained <= 20 * 2 * (4096 + marker_allowance)
         assert retained < 20 * 2 * len(chunk) // 10
+
+
+class TestBatchExecutorEnvironment:
+    """v2.9：environment 透传到 client.execute（直连/池路径 + use_async 委托）。"""
+
+    @patch("remote_cmd.service.batch_executor.SSHClient")
+    def test_direct_path_passes_environment(self, mock_ssh_class):
+        from remote_cmd.core.ssh_client import CommandResult
+
+        host = Host(name="srv1", hostname="10.0.0.1", username="admin")
+        instance = MagicMock()
+        instance.execute.return_value = CommandResult("cmd", "ok", "", 0)
+        mock_ssh_class.return_value = instance
+
+        executor = BatchExecutor(host_service=make_mock_service([host]), max_concurrency=1)
+        result = executor.execute(["srv1"], "cmd", environment={"TOKEN": "x"})
+        assert result.success == 1
+        assert instance.execute.call_args.kwargs["environment"] == {"TOKEN": "x"}
+
+    @patch("remote_cmd.service.batch_executor.SSHClient")
+    def test_pool_path_passes_environment(self, mock_ssh_class):
+        from remote_cmd.core.ssh_client import CommandResult
+
+        hosts = [Host(name=f"srv{i}", hostname=f"10.0.0.{i}", username="u") for i in range(3)]
+        instance = MagicMock()
+        instance.execute.return_value = CommandResult("cmd", "ok", "", 0)
+        instance.is_connected.return_value = True
+        mock_ssh_class.return_value = instance
+
+        executor = BatchExecutor(host_service=make_mock_service(hosts), max_concurrency=2)
+        result = executor.execute([h.name for h in hosts], "cmd", environment={"A": "1"})
+        assert result.success == 3
+        assert instance.execute.call_args_list[0].kwargs["environment"] == {"A": "1"}
+
+    def test_use_async_delegates_environment(self):
+        from unittest.mock import AsyncMock
+
+        with patch("remote_cmd.service.async_batch_executor.AsyncBatchExecutor") as mock_async:
+            mock_async.return_value.execute = AsyncMock(
+                return_value=BatchResult(total=1, success=1, failed=0, duration=0.1)
+            )
+            executor = BatchExecutor(host_service=MagicMock(), use_async=True)
+            executor.execute(["h1"], "cmd", environment={"A": "1"})
+            assert mock_async.return_value.execute.call_args.kwargs["environment"] == {"A": "1"}

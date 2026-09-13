@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import os
 import subprocess
 import sys
 import tempfile
@@ -36,6 +37,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 TRACKED_DIR = REPO_ROOT / "docs" / "api"
 # pdoc 15 对单包默认输出：index.html + <package>.html + search.js
 GENERATED_SUFFIXES = (".html", ".js")
+# 说明：pdoc 默认会把"值等于构建环境某环境变量的模块常量"渲染为 $ENVVAR。
+# CI runner 上 GITHUB_TRIGGERING_ACTOR 的值恰为项目作者名，导致 __author__
+# 被遮蔽成 $GITHUB_TRIGGERING_ACTOR，与本地（无该变量）生成的 docs/api
+# 产生漂移。此开关关闭该行为，使本地与 CI 使用同一确定性构建契约。
+PDOC_DETERMINISTIC_ENV = {"PDOC_DISPLAY_ENV_VARS": "1"}
 _MAX_DIFF_LINES = 60
 
 
@@ -45,6 +51,9 @@ def _normalize(text: str) -> str:
 
 
 def _generate(output_dir: Path) -> None:
+    # 确定性构建契约：本地与 CI 都强制关闭 pdoc 的环境变量遮蔽，
+    # 保证 docs/api 生成结果只由源码 + pdoc 版本决定（不依赖 runner env）。
+    os.environ.update(PDOC_DETERMINISTIC_ENV)
     try:
         subprocess.run(
             [

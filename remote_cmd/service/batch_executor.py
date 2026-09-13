@@ -163,6 +163,7 @@ class BatchExecutor:
         retry_count: int = 0,
         retry_delay: float = 1.0,
         progress_callback: Optional[ProgressCallback] = None,
+        environment: Optional[dict[str, str]] = None,
     ) -> BatchResult:
         """
         在指定主机上批量执行命令
@@ -178,6 +179,8 @@ class BatchExecutor:
                 0 到 retry_delay * 2^n（含端点）内的随机值（上限 60s）
             progress_callback: 进度回调，参数 (completed, total, current_host_name)。
                 同步内核下回调应为同步函数；异步回调请使用 use_async=True。
+            environment: 命令执行前导出的远端环境变量（可选，v2.9）；
+                键名在客户端层校验，值经 shlex.quote 安全导出
 
         Returns:
             BatchResult: 批量执行结果
@@ -199,10 +202,12 @@ class BatchExecutor:
         # 异步内核委托路径：同步接口 + asyncio.run(异步实现)
         if self._async_executor is not None:
             return self._delegate_to_async(
-                host_names, command, retry_count, retry_delay, progress_callback
+                host_names, command, retry_count, retry_delay, progress_callback, environment
             )
 
-        return self._execute_sync(host_names, command, retry_count, retry_delay, progress_callback)
+        return self._execute_sync(
+            host_names, command, retry_count, retry_delay, progress_callback, environment
+        )
 
     def _delegate_to_async(
         self,
@@ -211,6 +216,7 @@ class BatchExecutor:
         retry_count: int,
         retry_delay: float,
         progress_callback: Optional[ProgressCallback],
+        environment: Optional[dict[str, str]] = None,
     ) -> BatchResult:
         """异步内核委托路径：同步接口 + asyncio.run(异步实现)"""
         # 仅当 _async_executor 已初始化时才进入此路径（见 execute() 的窄化判断）
@@ -239,6 +245,7 @@ class BatchExecutor:
                 retry_count=retry_count,
                 retry_delay=retry_delay,
                 progress_callback=progress_callback,
+                environment=environment,
             )
         )
 
@@ -249,6 +256,7 @@ class BatchExecutor:
         retry_count: int,
         retry_delay: float,
         progress_callback: Optional[ProgressCallback],
+        environment: Optional[dict[str, str]] = None,
     ) -> BatchResult:
         """同步路径：ThreadPoolExecutor + 按主机惰性创建/关闭连接池"""
         total = len(host_names)
@@ -265,6 +273,7 @@ class BatchExecutor:
                 retry_count,
                 retry_delay,
                 total,
+                environment,
             )
             self._collect_results(
                 future_map, host_names, command, progress_callback, results, total
@@ -281,6 +290,7 @@ class BatchExecutor:
         retry_count: int,
         retry_delay: float,
         total: int,
+        environment: Optional[dict[str, str]] = None,
     ) -> dict:
         """提交任务到线程池，返回 future_map
 
@@ -309,6 +319,7 @@ class BatchExecutor:
                 retry_delay,
                 external_pools.get(host_name),
                 use_pool,
+                environment,
             )
             future_map[future] = host_name
         return future_map
@@ -442,6 +453,7 @@ class BatchExecutor:
         retry_delay: float,
         pool: Optional[SyncConnectionPool] = None,
         use_pool: bool = False,
+        environment: Optional[dict[str, str]] = None,
     ) -> BatchHostResult:
         """
         在单台主机上执行命令（包含重试逻辑）
@@ -486,7 +498,11 @@ class BatchExecutor:
                     if pool is not None:
                         # 连接池模式：复用主机连接，避免每次操作握手
                         with pool.acquire_context() as client:
-                            cmd_result = client.execute(command, timeout=self._command_timeout)
+                            cmd_result = client.execute(
+                                command,
+                                timeout=self._command_timeout,
+                                environment=environment,
+                            )
                         return to_host_result(
                             host_name,
                             command,
@@ -507,7 +523,11 @@ class BatchExecutor:
                         client = SSHClient(config)
                         try:
                             client.connect()
-                            cmd_result = client.execute(command, timeout=self._command_timeout)
+                            cmd_result = client.execute(
+                                command,
+                                timeout=self._command_timeout,
+                                environment=environment,
+                            )
                         finally:
                             client.disconnect()
 

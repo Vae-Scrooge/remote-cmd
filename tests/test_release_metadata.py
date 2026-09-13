@@ -6,6 +6,7 @@ CI 与 publish 工作流使用该脚本作为门禁；此处通过真实调用�
 - 缺少对应 CHANGELOG 版本标题时被检出
 """
 
+import os
 import re
 import subprocess
 import sys
@@ -16,11 +17,22 @@ SCRIPT = REPO_ROOT / "scripts" / "check_release_metadata.py"
 
 
 def _run(*args: str) -> subprocess.CompletedProcess:
+    """调用门禁脚本，强制子进程与父进程均按 UTF-8 处理输出。
+
+    脚本会打印中文错误（如 ``不一致``）；Windows runner 的默认控制台编码
+    （cp1252）会让子进程 stderr 退化为 ``\\uXXXX`` 转义字面量。这里显式
+    固定两侧编码，使断言与平台无关。
+    """
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = "utf-8"
     return subprocess.run(
         [sys.executable, str(SCRIPT), *args],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=env,
     )
 
 

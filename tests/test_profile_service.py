@@ -147,3 +147,24 @@ class TestJsonProfileLoadCompat:
         )
         repo = JsonHostRepository(filepath=str(path))
         assert [p.name for p in repo.list_profiles()] == ["good"]
+
+
+class TestHostProfileBackendParity:
+    """v2.8.1：Host.profile 引用在 JSON / SQLite 双后端往返一致。"""
+
+    def test_host_profile_roundtrip_parity(self, tmp_path):
+        from remote_cmd.core.host import Host
+
+        json_repo = JsonHostRepository(filepath=str(tmp_path / "h.json"))
+        sqlite_repo = SqliteHostRepository(str(tmp_path / "h.db"))
+        host = Host(name="web1", hostname="10.0.0.1", username="", profile="aws")
+
+        for repo in (json_repo, sqlite_repo):
+            repo.save_profile(HostProfile(name="aws", username="ec2-user", port=2222))
+            repo.save(host)
+        json_repo.flush()  # JSON 内存模型需落盘；SQLite 即时生效
+
+        json_reloaded = JsonHostRepository(filepath=str(tmp_path / "h.json")).get("web1")
+        sqlite_reloaded = SqliteHostRepository(str(tmp_path / "h.db")).get("web1")
+        assert json_reloaded.profile == sqlite_reloaded.profile == "aws"
+        assert json_reloaded.username == sqlite_reloaded.username == ""

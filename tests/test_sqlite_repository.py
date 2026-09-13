@@ -646,14 +646,14 @@ class TestSqliteConcurrentWriters:
         assert names == expected
 
     def test_schema_version_and_columns_preserved(self, temp_db_path):
-        """schema 兼容性：db_version 与 hosts 列定义保持 v1"""
+        """schema 兼容性：v2.8.1 起 db_version=2，hosts 表含 profile 列且旧列不变"""
         repo = SqliteHostRepository(temp_db_path)
         repo.save(Host(name="srv", hostname="10.0.0.1", username="u"))
 
         conn = sqlite3.connect(temp_db_path)
         try:
             version = conn.execute("SELECT value FROM meta WHERE key = 'db_version'").fetchone()[0]
-            assert version == "1"
+            assert version == "2"
             cols = {row[1] for row in conn.execute("PRAGMA table_info(hosts)")}
             assert {
                 "name",
@@ -664,6 +664,7 @@ class TestSqliteConcurrentWriters:
                 "key_filename",
                 "tags",
                 "description",
+                "profile",
                 "created_at",
                 "updated_at",
             } <= cols
@@ -714,3 +715,91 @@ class TestSqliteCheckpointPolicy:
         repo = SqliteHostRepository(str(tmp_path / "hosts.db"))
         with pytest.raises(ValidationError, match="checkpoint mode"):
             repo.checkpoint("DROP TABLE hosts")
+
+
+# ============================================================================
+# v2.8.1：Host.profile 引用持久化 + 旧库自动迁移
+# ============================================================================
+
+
+class TestSqliteHostProfilePersistence:
+    """v2.8.0 曾在 SQLite 后端丢失 Host.profile（save/行映射缺列）。"""
+
+    def test_profile_roundtrip(self, temp_db_path):
+        repo = SqliteHostRepository(temp_db_path)
+        repo.save(Host(name="web1", hostname="10.0.0.1", username="", profile="aws"))
+
+        again = SqliteHostRepository(temp_db_path)
+        assert again.get("web1").profile == "aws"
+
+    def test_profile_survives_upsert(self, temp_db_path):
+        repo = SqliteHostRepository(temp_db_path)
+        repo.save(Host(name="web1", hostname="10.0.0.1", username="", profile="aws"))
+        host = repo.get("web1")
+        host.description = "updated"
+        repo.save(host)
+
+        assert SqliteHostRepository(temp_db_path).get("web1").profile == "aws"
+
+    def test_profile_persisted_end_to_end_with_service(self, temp_db_path):
+        from remote_cmd.core.profile import HostProfile
+        from remote_cmd.service.host_service import HostService
+
+        repo = SqliteHostRepository(temp_db_path)
+        repo.save_profile(HostProfile(name="aws", username="ec2-user", port=2222))
+        repo.save(Host(name="web1", hostname="10.0.0.1", username="", profile="aws"))
+
+        resolved = HostService(repository=repo).resolve_host("web1")
+        assert resolved.username == "ec2-user"
+        assert resolved.port == 2222
+
+    def test_legacy_database_auto_migration(self, tmp_path):
+        """v2.8.0 旧库（hosts 表无 profile 列）打开时自动 ALTER TABLE，数据保留。"""
+        db_path = str(tmp_path / "legacy.db")
+        legacy_sql = """
+        CREATE TABLE hosts (
+            name TEXT PRIMARY KEY,
+            hostname TEXT NOT NULL,
+            username TEXT NOT NULL,
+            port INTEGER DEFAULT 22,
+            password TEXT,
+            key_filename TEXT,
+            tags TEXT DEFAULT '[]',
+            description TEXT DEFAULT '',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """
+        conn = sqlite3.connect(db_path)
+        try:
+            conn.execute(legacy_sql)
+            conn.execute(
+                "INSERT INTO hosts (name, hostname, username, port, tags, description) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                ("legacy1", "10.0.0.9", "root", 22, "[]", "old row"),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        repo = SqliteHostRepository(db_path)  # __init__ 触发迁移
+        assert repo.get("legacy1").description == "old row"
+        assert repo.get("legacy1").profile is None
+
+        columns = {
+            row[1] for row in repo._get_conn().execute("PRAGMA table_info(hosts);").fetchall()
+        }
+        assert "profile" in columns
+
+        # 迁移后可正常写入并读取 profile 引用
+        repo.save(Host(name="new1", hostname="10.0.0.10", username="u", profile="aws"))
+        assert SqliteHostRepository(db_path).get("new1").profile == "aws"
+
+    def test_migration_is_idempotent(self, temp_db_path):
+        repo = SqliteHostRepository(temp_db_path)
+        repo._init_db()
+        repo._init_db()  # 重复初始化不得报错
+        columns = [
+            row[1] for row in repo._get_conn().execute("PRAGMA table_info(hosts);").fetchall()
+        ]
+        assert columns.count("profile") == 1

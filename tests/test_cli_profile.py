@@ -260,3 +260,31 @@ class TestFormatFlags:
         assert r.exit_code == 0
         assert "HOST" in r.output
         assert "h1" in r.output
+
+
+class TestSqliteBackendProfileFlow:
+    """v2.8.1：.db 后端下 host→profile 引用必须持久化并参与解析。"""
+
+    def test_profile_flow_with_db_backend(self, runner, tmp_path):
+        from remote_cmd.repository.sqlite_host_repository import SqliteHostRepository
+
+        config = tmp_path / "config.yaml"
+        db = tmp_path / "hosts.db"
+        config.write_text(f"hosts_file: {db}\n", encoding="utf-8")
+
+        r = _invoke(
+            runner, str(config), "profile", "add", "aws",
+            "-u", "ec2-user", "-p", "2222", "-k", "/aws.pem",
+        )
+        assert r.exit_code == 0, r.output
+
+        r = _invoke(runner, str(config), "host", "add", "web1", "10.0.0.1", "--profile", "aws")
+        assert r.exit_code == 0, r.output
+
+        stored = SqliteHostRepository(str(db)).get("web1")
+        assert stored.profile == "aws"  # v2.8.0 此处为 None
+        assert stored.username == ""
+
+        r = _invoke(runner, str(config), "host", "show", "web1")
+        assert "ec2-user" in r.output
+        assert "2222" in r.output

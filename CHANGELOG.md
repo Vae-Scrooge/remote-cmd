@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.8.1] - 2026-09-13
+
+### Fixed
+
+- **SQLite backend dropped `Host.profile` references (v2.8.0 regression)**:
+  `SqliteHostRepository.save()` and its row mapping omitted the `profile`
+  field, so hosts created with `--profile` silently lost the reference on
+  `.db`/`.sqlite` stores (JSON was unaffected). The `hosts` table now has a
+  `profile TEXT` column, read/write paths persist it, and existing databases
+  are migrated automatically on open (`ALTER TABLE ... ADD COLUMN`,
+  `DB_VERSION` 1 → 2) with existing data preserved.
+
+### Migration Guide (v2.8.0 → v2.8.1)
+
+- **No action required**: opening an existing SQLite database upgrades its
+  schema in place on first use; JSON stores are unchanged.
+
+### Notes
+
+- Found during post-release cross-check: the v2.8.0 audit verified
+  `ProfileStore` CRUD parity but not the host→profile reference roundtrip on
+  SQLite. Regression tests now cover SQLite roundtrip, upsert retention,
+  legacy-database auto-migration, JSON/SQLite parity, and the CLI flow with a
+  `.db` store.
+
 ## [2.8.0] - 2026-09-13
 
 v2.8 delivers the first P3 user-facing features — configuration profiles and

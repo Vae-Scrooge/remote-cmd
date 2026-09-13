@@ -38,8 +38,8 @@ from remote_cmd.utils.exceptions import (
 
 logger = logging.getLogger(__name__)
 
-# SQLite 数据库版本（用于未来迁移）
-DB_VERSION = 1
+# SQLite 数据库版本（用于未来迁移；v2.8.1：hosts 表新增 profile 列）
+DB_VERSION = 2
 
 # 建表 SQL
 CREATE_TABLE_SQL = """
@@ -52,6 +52,7 @@ CREATE TABLE IF NOT EXISTS hosts (
     key_filename TEXT,
     tags TEXT DEFAULT '[]',
     description TEXT DEFAULT '',
+    profile TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -150,6 +151,7 @@ class SqliteHostRepository(HostRepository):
             conn.execute(CREATE_TABLE_SQL)
             conn.execute(CREATE_META_SQL)
             conn.execute(CREATE_PROFILES_SQL)
+            self._ensure_hosts_profile_column(conn)
             for idx_sql in CREATE_INDEXES_SQL:
                 conn.execute(idx_sql)
             # 设置数据库版本
@@ -159,6 +161,18 @@ class SqliteHostRepository(HostRepository):
             )
             conn.commit()
         logger.debug(f"SQLite database initialized: {self._db_path}")
+
+    def _ensure_hosts_profile_column(self, conn: sqlite3.Connection) -> None:
+        """自动迁移：为 v2.8.0 及更早创建的 hosts 表补充 profile 列。
+
+        v2.8.0 的 SQLite 后端在 save()/行映射中遗漏了 ``Host.profile``，
+        导致 profile 引用被静默丢弃（v2.8.1 修复）。旧库在此通过
+        ``ALTER TABLE ... ADD COLUMN`` 原地升级，已有数据保留。
+        """
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(hosts);").fetchall()}
+        if "profile" not in columns:
+            conn.execute("ALTER TABLE hosts ADD COLUMN profile TEXT;")
+            logger.info("migrated hosts table: added 'profile' column")
 
     def _get_conn(self) -> sqlite3.Connection:
         """获取数据库连接（线程安全）。
@@ -297,8 +311,9 @@ class SqliteHostRepository(HostRepository):
             conn.execute(
                 """
                     INSERT INTO hosts (name, hostname, username, port, password,
-                                       key_filename, tags, description, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                                       key_filename, tags, description, profile,
+                                       updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                     ON CONFLICT(name) DO UPDATE SET
                         hostname = excluded.hostname,
                         username = excluded.username,
@@ -307,6 +322,7 @@ class SqliteHostRepository(HostRepository):
                         key_filename = excluded.key_filename,
                         tags = excluded.tags,
                         description = excluded.description,
+                        profile = excluded.profile,
                         updated_at = CURRENT_TIMESTAMP
                     """,
                 (
@@ -318,6 +334,7 @@ class SqliteHostRepository(HostRepository):
                     host.key_filename,
                     tags_json,
                     host.description,
+                    host.profile,
                 ),
             )
             conn.commit()
@@ -637,6 +654,7 @@ class SqliteHostRepository(HostRepository):
             key_filename=row["key_filename"],
             tags=tags,
             description=row["description"] or "",
+            profile=row["profile"],
         )
 
 

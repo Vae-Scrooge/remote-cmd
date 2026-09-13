@@ -278,7 +278,9 @@ class AsyncConnectionPool:
             except asyncio.CancelledError:
                 break
             except Exception:  # noqa: BLE001
-                logger.warning("connection pool monitor error")
+                # 后台清理任务必须吞掉一切非取消异常以保持存活（单次清理
+                # 失败不应终止后续周期）；保留完整堆栈便于定位
+                logger.warning("connection pool monitor error", exc_info=True)
 
     async def _cleanup_expired(self) -> None:
         now = time.time()

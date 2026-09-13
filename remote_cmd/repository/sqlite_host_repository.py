@@ -29,7 +29,11 @@ from remote_cmd.core.host import Host
 from remote_cmd.repository.host_repository import HostRepository
 from remote_cmd.utils.credential_guard import PasswordGuard, is_plaintext_password
 from remote_cmd.utils.crypto import CredentialEncryption
-from remote_cmd.utils.exceptions import CredentialError, PlaintextCredentialWarning
+from remote_cmd.utils.exceptions import (
+    CredentialError,
+    PlaintextCredentialWarning,
+    ValidationError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +73,9 @@ CREATE TABLE IF NOT EXISTS meta (
 
 # 写锁等待上限（毫秒）：多进程并发写同一数据库时，等待对方短事务提交/回滚
 DEFAULT_BUSY_TIMEOUT_MS = 5000
+
+# 显式 checkpoint 允许的模式白名单（防 SQL 注入；SQLite wal_checkpoint 模式）
+CHECKPOINT_MODES = frozenset({"PASSIVE", "FULL", "RESTART", "TRUNCATE"})
 
 
 class SqliteHostRepository(HostRepository):
@@ -384,12 +391,41 @@ class SqliteHostRepository(HostRepository):
         return row["cnt"] if row else 0
 
     def flush(self) -> None:
-        """
-        SQLite 写入即时生效，flush 为空操作
-        此处仅触发一个检查点以压缩 WAL 日志
+        """轻量刷新：执行一次 PASSIVE WAL checkpoint（v2.7 P2.3）。
+
+        SQLite 写入即时生效，本方法是与 JsonHostRepository 对齐的接口。
+
+        v2.7 起不再在每次 flush 执行 ``wal_checkpoint(TRUNCATE)``：
+        HostService 的 add/update/remove 每次都会调用 flush，TRUNCATE 会
+        等待所有读者并在 checkpoint 后截断 WAL 文件，造成写放大与读阻塞
+        风险。PASSIVE 不等待、不截断，仅将可安全写回的帧写回数据库；
+        WAL 增长由 SQLite 自动 checkpoint（默认 1000 页）控制。
+        需要主动压缩 WAL 时请调用 :meth:`checkpoint`。
         """
         with self._lock, self._txn() as conn:
-            conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+            conn.execute("PRAGMA wal_checkpoint(PASSIVE);")
+
+    def checkpoint(self, mode: str = "TRUNCATE") -> None:
+        """执行显式 WAL checkpoint（v2.7 P2.3），用于按需压缩 WAL 文件。
+
+        Args:
+            mode: checkpoint 模式（大小写不敏感）：
+                - ``PASSIVE``：不等待读者、不截断（与 flush 相同）
+                - ``FULL``：等待所有读者完成
+                - ``RESTART``：等待读者完成后重启 WAL 日志
+                - ``TRUNCATE``（默认）：等待读者完成后截断 WAL 文件
+
+        Raises:
+            ValidationError: mode 不在白名单内（防 SQL 注入）
+        """
+        normalized = mode.strip().upper()
+        if normalized not in CHECKPOINT_MODES:
+            raise ValidationError(
+                f"unsupported checkpoint mode: {mode!r} "
+                f"(expected one of: {', '.join(sorted(CHECKPOINT_MODES))})"
+            )
+        with self._lock, self._txn() as conn:
+            conn.execute(f"PRAGMA wal_checkpoint({normalized});")
 
     # ========================================================================
     # 扩展方法（非 ABC 接口）

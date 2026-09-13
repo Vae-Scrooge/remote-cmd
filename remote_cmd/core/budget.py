@@ -1,5 +1,5 @@
 """
-全局连接预算（v2.6 P2.5；同步 / 异步内核共用）
+全局连接预算（v2.6 P2.5；v2.7 真异步等待队列）
 
 用于在**多个连接池 / 多个执行器**之间封顶进程内同时存活的 SSH 连接数，
 避免大规模 fleet 场景下 per-pool 上限叠加导致的 fd/socket 耗尽：
@@ -7,7 +7,7 @@
     池 A(max=10) + 池 B(max=10) + …   无预算时可无限叠加
     预算(max=50)                       全局硬上限 50 条存活连接
 
-预算语义（评审定稿：存活连接预算）：
+预算语义（存活连接预算）：
 - 预算单位 = **存活连接**（含池中空闲连接）。
 - 获取时机：连接创建（``connect``）前；释放时机：连接断开 / 关闭 /
   被清理 / 池 ``close_all``。
@@ -19,10 +19,17 @@
 - 异步：:meth:`acquire_async` / :meth:`release_async` /
   :meth:`acquire_context_async`
 
-同一实例可被同步与异步执行器共享（底层是单个
-``threading.BoundedSemaphore``；异步侧以非阻塞轮询等待，轮询间隔
-10ms 起步、指数退避至 50ms——相对于 SSH 建连耗时（数十到数百 ms）
-开销可忽略）。
+同一实例可被同步与异步执行器共享：容量与等待队列由单个
+``threading.Condition`` 保护；异步等待者注册 ``asyncio.Future``，
+释放时通过 ``loop.call_soon_threadsafe`` 精准唤醒（v2.7 P2.5 优化：
+取代 v2.6 的 10→50ms 轮询，无空转 wakeup）。
+
+唤醒语义（condition-variable 模式）：
+- 唤醒只是"提示"而非预留：被唤醒者需重新竞争容量；释放方不预占槽位。
+- 异步等待者之间 FIFO；同步等待者之间 FIFO；跨类型顺序不作保证。
+- 等待者超时/取消时会从队列移除；若唤醒权已派发给它，
+  ``_resolve_waiter`` 检测到 future 已完成会补唤醒下一个等待者，
+  不会因取消竞态丢失唤醒。
 
 超时：``acquire_timeout=None``（默认）无限等待；配置正整数/浮点秒数时
 超时抛出 :class:`~remote_cmd.utils.exceptions.BudgetTimeoutError`。
@@ -44,13 +51,10 @@ import asyncio
 import contextlib
 import threading
 import time
-from typing import Any, AsyncIterator, Iterator, Optional
+from collections import deque
+from typing import Any, AsyncIterator, Deque, Iterator, Optional
 
 from remote_cmd.utils.exceptions import BudgetTimeoutError, ValidationError
-
-# 异步轮询等待参数（秒）：起步 10ms，指数退避至 50ms 上限
-_DEFAULT_POLL_INTERVAL = 0.01
-_MAX_POLL_INTERVAL = 0.05
 
 
 class ConnectionBudget:
@@ -89,12 +93,13 @@ class ConnectionBudget:
 
         self._max = max_connections
         self._acquire_timeout = acquire_timeout
-        # 单一底层信号量：同步/异步共享同一个全局上限
-        self._semaphore = threading.BoundedSemaphore(max_connections)
-        self._lock = threading.Lock()
+
+        # 单一互斥 + 条件变量：保护容量计数与等待队列（同步/异步共享）
+        self._cond = threading.Condition(threading.Lock())
+        self._in_use = 0
+        self._async_waiters: Deque[asyncio.Future[None]] = deque()
 
         # 指标
-        self._in_use = 0
         self._total_acquired = 0
         self._total_released = 0
         self._total_timeouts = 0
@@ -114,7 +119,7 @@ class ConnectionBudget:
 
     def get_metrics(self) -> dict[str, Any]:
         """预算指标快照。"""
-        with self._lock:
+        with self._cond:
             return {
                 "max_connections": self._max,
                 "in_use": self._in_use,
@@ -133,31 +138,37 @@ class ConnectionBudget:
         Raises:
             BudgetTimeoutError: 等待超过 ``acquire_timeout``
         """
-        acquired = self._semaphore.acquire(timeout=self._acquire_timeout)
-        if not acquired:
-            with self._lock:
-                self._total_timeouts += 1
-            raise BudgetTimeoutError(
-                "connection budget exhausted: "
-                f"waited {self._acquire_timeout}s for a slot "
-                f"(max_connections={self._max})"
-            )
-        with self._lock:
+        timeout = self._acquire_timeout
+        deadline = None if timeout is None else time.monotonic() + timeout
+        with self._cond:
+            while self._in_use >= self._max:
+                remaining = None if deadline is None else deadline - time.monotonic()
+                if remaining is not None and remaining <= 0:
+                    self._total_timeouts += 1
+                    # 超时者退出前让出一次唤醒权，避免其他同步等待者
+                    # 因槽位空闲却无人被通知而饥饿
+                    self._cond.notify()
+                    raise BudgetTimeoutError(
+                        "connection budget exhausted: "
+                        f"waited {timeout}s for a slot "
+                        f"(max_connections={self._max})"
+                    )
+                self._cond.wait(remaining)
             self._in_use += 1
             self._total_acquired += 1
 
     def release(self) -> None:
-        """释放一个连接预算槽位。
+        """释放一个连接预算槽位并唤醒一个等待者。
 
         Raises:
-            ValueError: 释放次数超过获取次数（BoundedSemaphore 保护）
+            ValueError: 释放次数超过获取次数
         """
-        # 先释放信号量：超额释放时 BoundedSemaphore 抛出 ValueError，
-        # 指标不会进入不一致状态
-        self._semaphore.release()
-        with self._lock:
+        with self._cond:
+            if self._in_use <= 0:
+                raise ValueError("release without a matching acquire")
             self._in_use -= 1
             self._total_released += 1
+            self._wake_next_locked()
 
     @contextlib.contextmanager
     def acquire_context(self) -> Iterator[None]:
@@ -172,27 +183,51 @@ class ConnectionBudget:
     # 异步接口
     # ------------------------------------------------------------------
     async def acquire_async(self) -> None:
-        """获取一个连接预算槽位（asyncio 友好，受 ``acquire_timeout`` 约束）。
+        """获取一个连接预算槽位（asyncio 原生等待，受 ``acquire_timeout`` 约束）。
 
-        以非阻塞尝试 + 指数退避轮询等待，不阻塞事件循环。
+        通过注册 ``asyncio.Future`` 等待释放方唤醒，不使用轮询。
         """
         timeout = self._acquire_timeout
         deadline = None if timeout is None else time.monotonic() + timeout
-        interval = _DEFAULT_POLL_INTERVAL
-        while not self._semaphore.acquire(blocking=False):
-            if deadline is not None and time.monotonic() >= deadline:
-                with self._lock:
+        loop = asyncio.get_running_loop()
+        while True:
+            with self._cond:
+                if self._in_use < self._max:
+                    self._in_use += 1
+                    self._total_acquired += 1
+                    return
+                remaining = None if deadline is None else deadline - time.monotonic()
+                if remaining is not None and remaining <= 0:
                     self._total_timeouts += 1
+                    self._cond.notify()
+                    raise BudgetTimeoutError(
+                        "connection budget exhausted: "
+                        f"waited {timeout}s for a slot "
+                        f"(max_connections={self._max})"
+                    )
+                fut: asyncio.Future[None] = loop.create_future()
+                self._async_waiters.append(fut)
+            try:
+                if remaining is None:
+                    await fut
+                else:
+                    await asyncio.wait_for(fut, remaining)
+            except asyncio.TimeoutError:
+                with self._cond:
+                    self._discard_waiter_locked(fut)
+                    self._total_timeouts += 1
+                    # 若唤醒权已被派发给本 future（弹出后 resolve 前超时），
+                    # _resolve_waiter 会发现 fut 已完成并补唤醒下一个等待者
                 raise BudgetTimeoutError(
                     "connection budget exhausted: "
                     f"waited {timeout}s for a slot "
                     f"(max_connections={self._max})"
-                )
-            await asyncio.sleep(interval)
-            interval = min(interval * 2, _MAX_POLL_INTERVAL)
-        with self._lock:
-            self._in_use += 1
-            self._total_acquired += 1
+                ) from None
+            except asyncio.CancelledError:
+                with self._cond:
+                    self._discard_waiter_locked(fut)
+                raise
+            # 被唤醒后回到循环顶部重新竞争容量（唤醒不预留槽位）
 
     async def release_async(self) -> None:
         """释放一个连接预算槽位（异步接口；与 :meth:`release` 等价）。"""
@@ -206,6 +241,43 @@ class ConnectionBudget:
             yield
         finally:
             await self.release_async()
+
+    # ------------------------------------------------------------------
+    # 内部：等待队列
+    # ------------------------------------------------------------------
+    def _discard_waiter_locked(self, fut: asyncio.Future[None]) -> None:
+        """从异步等待队列移除 future（不存在则忽略）。须持锁调用。"""
+        with contextlib.suppress(ValueError):
+            self._async_waiters.remove(fut)
+
+    def _wake_next_locked(self) -> None:
+        """唤醒一个等待者（异步优先 FIFO，否则通知一个同步等待者）。
+
+        唤醒不预留槽位；被唤醒者会重新检查容量。须持锁调用。
+        """
+        while self._async_waiters:
+            fut = self._async_waiters.popleft()
+            if fut.done():
+                continue
+            loop = fut.get_loop()
+            if loop.is_closed():
+                continue
+            try:
+                loop.call_soon_threadsafe(self._resolve_waiter, fut)
+            except RuntimeError:
+                # 事件循环正在关闭：跳过该等待者，尝试下一个
+                continue
+            return
+        self._cond.notify()
+
+    def _resolve_waiter(self, fut: asyncio.Future[None]) -> None:
+        """在事件循环线程内完成 future（或补唤醒下一个等待者）。"""
+        if fut.done():
+            # 等待者已超时/取消：唤醒权未被消费，补唤醒下一个
+            with self._cond:
+                self._wake_next_locked()
+            return
+        fut.set_result(None)
 
 
 __all__ = ["ConnectionBudget"]

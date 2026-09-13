@@ -91,7 +91,7 @@ class CredentialEncryption:
         try:
             token = self._cipher.encrypt(plaintext.encode("utf-8"))
             return self._PREFIX + token.decode("utf-8")
-        except Exception as e:
+        except (TypeError, ValueError) as e:
             raise CredentialEncryptionError(f"encryption failed: {e}") from e
 
     def decrypt(self, ciphertext: str) -> str:
@@ -110,10 +110,15 @@ class CredentialEncryption:
         if not ciphertext.startswith(self._PREFIX):
             raise CredentialEncryptionError("invalid ciphertext format")
 
+        from cryptography.fernet import InvalidToken
+
         try:
             token = ciphertext[len(self._PREFIX) :].encode("utf-8")
             return self._cipher.decrypt(token).decode("utf-8")
-        except Exception as e:
+        # InvalidToken：签名/内容损坏；ValueError（含 binascii.Error）：
+        # base64/格式非法；TypeError：token 类型错误。其余异常（如密钥加载
+        # 缺陷或 cryptography 内部错误）向上传播，不再伪装为"解密失败"。
+        except (InvalidToken, ValueError, TypeError) as e:
             raise CredentialEncryptionError(f"decryption failed: {e}") from e
 
     def is_encrypted(self, value: str) -> bool:

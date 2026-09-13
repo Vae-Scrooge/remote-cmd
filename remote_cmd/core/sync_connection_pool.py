@@ -279,7 +279,9 @@ class SyncConnectionPool:
                     break
                 self._cleanup_expired()
             except Exception:  # noqa: BLE001
-                logger.warning("connection pool monitor error")
+                # 后台清理线程必须吞掉一切异常以保持存活（守护线程；
+                # 单次清理失败不应终止后续周期）；保留完整堆栈便于定位
+                logger.warning("connection pool monitor error", exc_info=True)
 
     def _cleanup_expired(self) -> None:
         now = time.time()

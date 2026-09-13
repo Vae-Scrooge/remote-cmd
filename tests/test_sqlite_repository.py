@@ -562,6 +562,7 @@ class TestSqliteConcurrentWriters:
         finally:
             conn.close()
 
+
     def test_multiprocess_concurrent_writers_no_lost_updates(self, tmp_path):
         """多个独立进程同时写同一数据库：全部成功且无丢失更新"""
         db_path = str(tmp_path / "multiproc.db")
@@ -672,3 +673,44 @@ class TestSqliteConcurrentWriters:
         # 重新打开：读取行为不变
         repo2 = SqliteHostRepository(temp_db_path)
         assert repo2.get("srv").hostname == "10.0.0.1"
+
+
+class TestSqliteCheckpointPolicy:
+    """v2.7（P2.3）：flush 只做 PASSIVE checkpoint，压缩 WAL 走显式 checkpoint()。"""
+
+    def _wal_size(self, db_path: str) -> int:
+        wal = Path(f"{db_path}-wal")
+        return wal.stat().st_size if wal.exists() else 0
+
+    def test_flush_is_passive_and_checkpoint_truncates(self, tmp_path):
+        db_path = str(tmp_path / "hosts.db")
+        repo = SqliteHostRepository(db_path)
+        # observer 连接保持打开，避免最后一个连接关闭时 SQLite 自动删除 WAL 文件
+        observer = sqlite3.connect(db_path)
+        try:
+            observer.execute("PRAGMA journal_mode=WAL;")
+            for i in range(200):
+                repo.save(Host(name=f"srv{i}", hostname=f"10.0.0.{i}", username="u"))
+
+            wal_before = self._wal_size(db_path)
+            assert wal_before > 0
+
+            repo.flush()  # PASSIVE：不截断
+            assert self._wal_size(db_path) >= wal_before
+
+            repo.checkpoint("TRUNCATE")
+            assert self._wal_size(db_path) == 0
+        finally:
+            observer.close()
+
+    def test_checkpoint_modes_case_insensitive(self, tmp_path):
+        repo = SqliteHostRepository(str(tmp_path / "hosts.db"))
+        for mode in ("passive", "Full", " restart ", "truncate"):
+            repo.checkpoint(mode)  # 不抛错即可
+
+    def test_checkpoint_invalid_mode_raises(self, tmp_path):
+        from remote_cmd.utils.exceptions import ValidationError
+
+        repo = SqliteHostRepository(str(tmp_path / "hosts.db"))
+        with pytest.raises(ValidationError, match="checkpoint mode"):
+            repo.checkpoint("DROP TABLE hosts")

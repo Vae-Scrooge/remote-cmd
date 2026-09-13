@@ -36,32 +36,36 @@ pip install remote_cmd_manager && remote-cmd host add web-01 192.168.1.10 ubuntu
 
 ---
 
-## v2.6.0 Release Highlights
+## v2.7.0 Release Highlights
 
-v2.6.0 is an architecture and runtime-scalability release: the compatibility facade
-moved out of `core` (eliminating the `core → service` dependency) and a process-wide
-live-connection budget was added for fleet-scale resource control. Public APIs remain
-backward compatible. See the [full migration notes](./CHANGELOG.md).
+v2.7.0 is a runtime-efficiency and error-semantics release: credential-layer
+exceptions are narrowed so real bugs surface, SQLite no longer truncates its WAL
+on every write, and the global connection budget waits on a true async queue
+instead of polling. Public APIs remain backward compatible. See the
+[full migration notes](./CHANGELOG.md).
 
-### Architecture
+### Error Semantics
 
-- `HostManager` now lives in `remote_cmd.api.host_manager`; `remote_cmd.core.host_manager` remains a re-export shim, so existing imports keep working.
-- Pool policy helpers moved to `remote_cmd.core.pool_policy` (shim kept at the old path); `core` no longer imports `service`.
-- The async kernel's worker queue now converts unexpected per-host errors into failure results, so a single internal error can no longer stall an entire batch.
+- Keyring, encryption, and host-service decrypt paths now catch only expected failure classes; programming errors propagate instead of being silently swallowed.
+- Background pool monitor loops keep their catch-all guard but log full stack traces.
+- Optional `asyncssh` detection uses `find_spec`, so a defect in the async modules themselves can no longer masquerade as "dependency not installed".
 
-### Global Connection Budget
+### SQLite WAL Efficiency
 
-- New `ConnectionBudget` (exported from `remote_cmd`): caps **live** SSH connections process-wide across pools and executors — idle pooled connections count, and slots release on close/cleanup/`close_all`.
-- One instance can be shared by both kernels via `connection_budget=` on `BatchExecutor`, `AsyncBatchExecutor`, `SyncConnectionPool`, and `AsyncConnectionPool`.
-- Optional `acquire_timeout` raises the transient `BudgetTimeoutError`; the default (`None`) keeps unlimited behavior.
+- `flush()` now runs a **PASSIVE** checkpoint instead of `TRUNCATE` — no more writer waits or WAL rewrites on every host add/update/remove.
+- New explicit `repo.checkpoint("TRUNCATE")` (also `PASSIVE`/`FULL`/`RESTART`) for deliberate WAL compaction.
 
-### Compatibility
+### Connection Budget
 
-- All existing imports and constructor signatures keep working; new parameters are optional and default to previous behavior.
+- `ConnectionBudget.acquire_async()` now waits on a real queue (`asyncio.Future` woken via `call_soon_threadsafe`), removing the v2.6 polling loop; cancellation-safe and FIFO among async waiters.
+
+### Benchmark Data (P2.4)
+
+- The sync Paramiko path costs ~100 µs per command in thread create/join and peaks at ≈ 3× sustained concurrency in live threads. A centralized channel-reader rewrite is a v2.7.x decision based on these measurements.
 
 ## Table of Contents
 
-- [v2.6.0 Release Highlights](#v260-release-highlights)
+- [v2.7.0 Release Highlights](#v270-release-highlights)
 - [Why Remote CMD?](#why-remote-cmd)
 - [Quick Start](#quick-start)
 - [Use Cases](#use-cases)

@@ -455,6 +455,8 @@ Current implementation:
   connections process-wide across pools and executors: one slot per live
   connection (idle pooled connections count), released on close/cleanup/
   `close_all`. Optional via `connection_budget=`; default is unlimited.
+  v2.7 replaced the async polling wait with a queue-based wake
+  (`threading.Condition` + `asyncio.Future` + `call_soon_threadsafe`).
 
 ```python
 # Connection pool (implemented, used for async batch execution)

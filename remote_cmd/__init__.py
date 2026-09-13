@@ -48,7 +48,7 @@ Remote CMD - SSH 远程服务器管理工具
     - 文档: 参见 docs/ 目录
 
 Author: Vae-Scrooge
-Version: 2.6.0（单一真相源见 remote_cmd._version）
+Version: 2.7.0（单一真相源见 remote_cmd._version）
 License: MIT
 """
 
@@ -59,20 +59,21 @@ __author__ = "Vae-Scrooge"
 __email__ = "vae-scrooge@example.com"
 __license__ = "MIT"
 
+import importlib.util
 import logging
 
 logging.getLogger(__name__).addHandler(logging.NullHandler())
 
-# 异步原生模块依赖 asyncssh（optional extra [async]），未安装时优雅降级，
-# 避免 `import remote_cmd` 直接失败
-try:
+# 异步原生模块依赖 asyncssh（optional extra [async]）。v2.7（P2.2）起用
+# find_spec 显式探测可选依赖：仅当 asyncssh 缺失时才降级；若 asyncssh 已
+# 安装而我们自己的异步模块 import 失败（代码缺陷/依赖损坏），import
+# 错误会向上传播，不再被静默误判为"未安装 asyncssh"。
+_HAS_ASYNC = importlib.util.find_spec("asyncssh") is not None
+
+if _HAS_ASYNC:
     from remote_cmd.core.async_connection_pool import AsyncConnectionPool
     from remote_cmd.core.async_ssh_client import AsyncSSHClient
     from remote_cmd.service.async_batch_executor import AsyncBatchExecutor
-
-    _HAS_ASYNC = True
-except ImportError:  # pragma: no cover - 依赖 asyncssh，未安装时不导出异步符号
-    _HAS_ASYNC = False
 
 from remote_cmd.api.host_manager import HostManager
 from remote_cmd.core.budget import ConnectionBudget

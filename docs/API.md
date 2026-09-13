@@ -755,6 +755,23 @@ from remote_cmd.repository.sqlite_host_repository import SqliteHostRepository
 repo = SqliteHostRepository("hosts.db", allow_plaintext_credentials=False)
 ```
 
+##### SQLite WAL Checkpoint Policy (v2.7)
+
+`SqliteHostRepository.flush()` performs a **PASSIVE** WAL checkpoint only
+(non-blocking, no truncation) — the `HostService` CRUD path calls `flush()`
+after every add/update/remove, and a per-call `TRUNCATE` would wait on readers
+and rewrite the WAL file each time. WAL growth is bounded by SQLite's automatic
+checkpoint (default 1000 pages).
+
+To compact the WAL explicitly (e.g., after bulk changes or in a maintenance
+window), call:
+
+```python
+repo.checkpoint("TRUNCATE")  # PASSIVE / FULL / RESTART / TRUNCATE
+```
+
+Mode is validated against an allowlist (`ValidationError` otherwise).
+
 #### Automatic Storage Engine Switching
 
 You can use `remote_cmd.service.storage_factory.build_repository` to auto-select the storage engine by file extension (`.json` / `.db` / `.sqlite`), or explicitly specify `storage_backend`:
@@ -991,7 +1008,7 @@ Semantics:
 - one slot per live connection, including idle pooled connections;
 - acquired when a connection is created (`connect`), released when the connection is closed, discarded by cleanup, or on `close_all()`;
 - returning a connection to the idle queue does **not** release the slot;
-- the same instance can be shared by the sync and async kernels (single underlying `threading.BoundedSemaphore`; the async side waits with a non-blocking poll, 10 ms → 50 ms backoff).
+- the same instance can be shared by the sync and async kernels: a single `threading.Condition` guards capacity and wait queues; async waiters register `asyncio.Future`s and are woken directly by `loop.call_soon_threadsafe` (v2.7 queue-based wake, no polling). Wake-ups are hints — woken waiters re-check capacity; async waiters are FIFO and cancellation-safe (removed from the queue).
 
 `acquire_timeout` (default `None` = wait forever) raises `BudgetTimeoutError` when the wait exceeds the limit; the error is classified as transient (retryable).
 

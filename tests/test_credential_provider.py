@@ -2,10 +2,13 @@
 
 import os
 
+import pytest
+
 from remote_cmd.core.host import Host
 from remote_cmd.service.credential_provider import (
     ChainCredentialProvider,
     EnvCredentialProvider,
+    KeyringCredentialProvider,
 )
 
 
@@ -131,3 +134,69 @@ class TestChainCredentialProvider:
             assert chain.get_password(host) == "added"
         finally:
             del os.environ["TEST_ADD_VAR"]
+
+
+class TestKeyringCredentialProviderErrorClassification:
+    """v2.7（P2.2）：keyring 后端异常吞掉；编程错误向上传播。"""
+
+    def _provider(self) -> KeyringCredentialProvider:
+        return KeyringCredentialProvider(service_name="remote-cmd-test")
+
+    def _host(self) -> Host:
+        return Host(name="srv", hostname="1", username="u")
+
+    def test_backend_error_returns_none(self, monkeypatch):
+        import keyring
+
+        def boom(*_args, **_kwargs):
+            raise keyring.errors.KeyringError("backend unavailable")
+
+        monkeypatch.setattr(keyring, "get_password", boom)
+        assert self._provider().get_password(self._host()) is None
+
+    def test_oserror_returns_none(self, monkeypatch):
+        import keyring
+
+        def boom(*_args, **_kwargs):
+            raise OSError("dbus down")
+
+        monkeypatch.setattr(keyring, "get_password", boom)
+        assert self._provider().get_password(self._host()) is None
+
+    def test_programming_error_propagates(self, monkeypatch):
+        import keyring
+
+        def boom(*_args, **_kwargs):
+            raise TypeError("bug in provider code")
+
+        monkeypatch.setattr(keyring, "get_password", boom)
+        with pytest.raises(TypeError, match="bug in provider code"):
+            self._provider().get_password(self._host())
+
+    def test_set_password_backend_error_returns_false(self, monkeypatch):
+        import keyring
+
+        def boom(*_args, **_kwargs):
+            raise keyring.errors.KeyringError("locked")
+
+        monkeypatch.setattr(keyring, "set_password", boom)
+        assert self._provider().set_password(self._host(), "pw") is False
+
+    def test_set_password_programming_error_propagates(self, monkeypatch):
+        import keyring
+
+        def boom(*_args, **_kwargs):
+            raise AttributeError("bug")
+
+        monkeypatch.setattr(keyring, "set_password", boom)
+        with pytest.raises(AttributeError, match="bug"):
+            self._provider().set_password(self._host(), "pw")
+
+    def test_delete_password_backend_error_returns_false(self, monkeypatch):
+        import keyring
+
+        def boom(*_args, **_kwargs):
+            raise OSError("backend gone")
+
+        monkeypatch.setattr(keyring, "delete_password", boom)
+        assert self._provider().delete_password(self._host()) is False

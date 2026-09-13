@@ -41,30 +41,33 @@ pip install remote_cmd_manager && remote-cmd host add web-01 192.168.1.10 ubuntu
 
 ---
 
-## v2.6.0 发布亮点
+## v2.7.0 发布亮点
 
-v2.6.0 是架构与运行时可扩展性版本：兼容 facade 迁出 `core`（消除 `core → service` 依赖），并新增进程级存活连接预算用于 fleet 规模资源控制。
+v2.7.0 是运行时效率与错误语义版本：凭据层异常收窄让真实缺陷不再被吞掉，SQLite 不再每次写入都截断 WAL，全局连接预算改用真异步等待队列（非轮询）。
 公共 API 保持向后兼容。升级自动化调用方前请查看[完整迁移说明](./CHANGELOG.md)。
 
-### 架构
+### 错误语义
 
-- `HostManager` 现位于 `remote_cmd.api.host_manager`；`remote_cmd.core.host_manager` 保留 re-export shim，既有导入不受影响。
-- 连接池策略助手迁至 `remote_cmd.core.pool_policy`（旧路径保留 shim）；`core` 不再 import `service`。
-- 异步内核 worker 队列将单主机意外异常转换为失败结果，单个内部错误不再可能拖垮整个批次。
+- Keyring、加密、HostService 解密路径只捕获预期失败类型；编程错误向上传播而非被静默吞掉。
+- 连接池后台 monitor 保留兜底捕获，但记录完整堆栈。
+- 可选 `asyncssh` 改用 `find_spec` 探测：异步模块自身的缺陷不再被伪装成"依赖未安装"。
 
-### 全局连接预算
+### SQLite WAL 效率
 
-- 新增 `ConnectionBudget`（从 `remote_cmd` 导出）：跨池/跨执行器封顶进程内**存活** SSH 连接数（空闲池连接计数，关闭/清理/`close_all` 时释放槽位）。
-- 同一实例可被同步与异步内核共享：`BatchExecutor`、`AsyncBatchExecutor`、`SyncConnectionPool`、`AsyncConnectionPool` 均接受 `connection_budget=`。
-- 可选 `acquire_timeout` 超时抛出瞬态 `BudgetTimeoutError`；默认 `None` 保持无上限行为。
+- `flush()` 改为 **PASSIVE** checkpoint，不再每次主机增删改都 TRUNCATE——消除写等待与 WAL 重写。
+- 新增显式 `repo.checkpoint("TRUNCATE")`（亦支持 `PASSIVE`/`FULL`/`RESTART`）用于按需压缩 WAL。
 
-### 兼容性
+### 连接预算
 
-- 既有导入与构造签名全部可用；新增参数均为可选且默认为既有行为。
+- `ConnectionBudget.acquire_async()` 改用真等待队列（`asyncio.Future` 经 `call_soon_threadsafe` 唤醒），移除 v2.6 轮询；取消安全，异步等待者 FIFO。
+
+### 基准数据（P2.4）
+
+- 同步 Paramiko 路径每命令线程创建/join 约 100 µs，满载峰值线程≈并发数的 3 倍。是否重写为集中式 channel reader 将于 v2.7.x 依据该数据决策。
 
 ## 目录
 
-- [v2.6.0 发布亮点](#v260-发布亮点)
+- [v2.7.0 发布亮点](#v270-发布亮点)
 - [为什么选择 Remote CMD？](#为什么选择-remote-cmd)
 - [快速开始](#快速开始)
 - [使用场景](#使用场景)

@@ -864,3 +864,66 @@ class TestSSHClientFileTransferTimeout:
         with client:
             assert client.remote_file_exists("/remote/x") is False
             assert client._sftp is None
+
+
+# ============================================================================
+# v2.7（P2.4）：每命令线程模型回归锁定
+# ============================================================================
+
+
+class TestReadOutputThreadModel:
+    """锁定每命令线程模型：1 个 stderr 排空线程 + 可选 1 个超时 Timer。
+
+    该模型是 P2.4 基准的量化对象；若未来改为集中式 channel polling，
+    本测试需随实现一并更新（届时断言将反映 0 线程/命令）。
+    """
+
+    @staticmethod
+    def _spy(monkeypatch):
+        """以代理对象替换 remote_cmd.core.ssh_client 的 threading 引用。
+
+        不污染全局 threading 模块：threading.Timer 内部对 Thread 的引用
+        仍指向真实类（否则示例化 Timer 会因元类不匹配而失败）。
+        """
+        created_threads: list[str] = []
+        created_timers: list[threading.Timer] = []
+
+        class CountingThread(threading.Thread):
+            def __init__(self, *args, **kwargs):
+                created_threads.append(kwargs.get("name", "unnamed"))
+                super().__init__(*args, **kwargs)
+
+        class CountingTimer(threading.Timer):
+            def __init__(self, *args, **kwargs):
+                created_timers.append(self)
+                super().__init__(*args, **kwargs)
+
+        class ThreadingSpy:
+            Thread = CountingThread
+            Timer = CountingTimer
+
+            def __getattr__(self, name):
+                return getattr(threading, name)
+
+        monkeypatch.setattr("remote_cmd.core.ssh_client.threading", ThreadingSpy())
+        return created_threads, created_timers
+
+    def test_no_timeout_creates_only_stderr_thread(self, mock_paramiko, monkeypatch):
+        threads, timers = self._spy(monkeypatch)
+
+        client = SSHClient(ConnectionConfig(hostname="h", username="u"))
+        client.connect()
+        client.execute("ls")  # timeout=None
+
+        assert threads.count("ssh-stderr-drain") == 1
+        assert timers == []
+
+    def test_timeout_adds_one_timer_thread(self, mock_paramiko, monkeypatch):
+        threads, timers = self._spy(monkeypatch)
+
+        client = SSHClient(ConnectionConfig(hostname="h", username="u"))
+        client.connect()
+        client.execute("ls", timeout=30)
+
+        assert threads.count("ssh-stderr-drain") == 1
+        assert len(timers) == 1

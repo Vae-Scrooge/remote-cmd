@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.0] - 2026-09-13
+
+v2.7 is a runtime-efficiency and error-semantics release (P2.2 + P2.3 + budget
+wait queue; P2.4 quantified). All public APIs remain backward compatible.
+
+### Changed
+
+- **Exception semantics (P2.2, targeted narrowing)**: the credential layer no
+  longer swallows arbitrary exceptions:
+  - `KeyringCredentialProvider` catches only backend-class failures
+    (`keyring.errors.KeyringError`, `OSError`, `RuntimeError`); programming
+    errors propagate. A missing `keyring` package still degrades to
+    `None`/`False`.
+  - `CredentialEncryption.encrypt`/`decrypt` wrap only format/signature errors
+    (`InvalidToken`, `ValueError`, `TypeError`); unexpected cryptography or
+    key-loading errors propagate instead of masquerading as "decryption failed".
+  - `HostService` decrypt fallbacks catch `CredentialEncryptionError` only.
+  - Connection-pool monitor loops keep their catch-all guard (daemon loops must
+    survive a failed cycle) but now log with `exc_info=True`.
+  - `remote_cmd` detects the optional `asyncssh` dependency via
+    `importlib.util.find_spec`: a defect inside our own async modules now
+    propagates instead of being silently treated as "asyncssh not installed".
+- `SqliteHostRepository.flush()` now performs a **PASSIVE** WAL checkpoint
+  instead of `TRUNCATE` (P2.3), removing per-CRUD writer-wait/truncation cost;
+  SQLite's automatic checkpoint (1000 pages) bounds WAL growth.
+- `ConnectionBudget.acquire_async` (P2.5 follow-up) uses a true queue-based
+  wait — `threading.Condition` + `asyncio.Future` woken via
+  `call_soon_threadsafe` — instead of the v2.6 10→50 ms polling loop.
+  Cancellation-safe (waiters are removed from the queue); FIFO among async
+  waiters; cross-type ordering is unspecified.
+
+### Added
+
+- `SqliteHostRepository.checkpoint(mode="TRUNCATE")` for explicit WAL
+  compaction. Modes `PASSIVE` / `FULL` / `RESTART` / `TRUNCATE` are
+  allowlist-validated (`ValidationError` otherwise).
+
+### Benchmarks (P2.4, measurement only)
+
+- New `tests/performance/test_paramiko_threads.py` quantifies the sync
+  Paramiko thread model: 1 stderr drain thread per command (+1 timeout timer),
+  ~100 µs zero-latency per-command overhead, and peak threads ≈ 3× sustained
+  concurrency (worker + 2 transient threads per in-flight command). The
+  go/no-go decision on a centralized channel-polling rewrite is deferred to
+  v2.7.x based on these numbers; the per-command model is also pinned by a
+  deterministic regression test.
+
+### Migration Guide (v2.6 → v2.7)
+
+- Callers that relied on *any* exception from the credential layer being
+  swallowed will now see programming/environment errors propagate; expected
+  credential failures keep prior behavior (`None` / fallback token).
+- SQLite users who want WAL compaction after bulk operations should call
+  `repo.checkpoint("TRUNCATE")`; `flush()` no longer truncates.
+
 ## [2.6.0] - 2026-09-13
 
 v2.6 is an architecture and runtime-scalability release (P2.1 + P2.5): the

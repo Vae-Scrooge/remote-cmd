@@ -2,6 +2,8 @@
 
 from unittest.mock import patch
 
+import keyring
+
 from remote_cmd.core.host import Host
 from remote_cmd.service.credential_provider import KeyringCredentialProvider
 
@@ -64,7 +66,7 @@ class TestKeyringCredentialProvider:
 
     def test_set_password_failure(self):
         provider = KeyringCredentialProvider()
-        with patch("keyring.set_password", side_effect=Exception("denied")):
+        with patch("keyring.set_password", side_effect=keyring.errors.KeyringError("denied")):
             result = provider.set_password(self.make_host("srv1"), "newpass")
             assert result is False
 
@@ -77,7 +79,7 @@ class TestKeyringCredentialProvider:
 
     def test_delete_password_failure(self):
         provider = KeyringCredentialProvider()
-        with patch("keyring.delete_password", side_effect=Exception("not found")):
+        with patch("keyring.delete_password", side_effect=keyring.errors.KeyringError("not found")):
             result = provider.delete_password(self.make_host("srv1"))
             assert result is False
 
@@ -89,7 +91,7 @@ class TestKeyringCredentialProvider:
 
     def test_get_password_keyring_exception(self):
         provider = KeyringCredentialProvider()
-        with patch("keyring.get_password", side_effect=Exception("keyring locked")):
+        with patch("keyring.get_password", side_effect=keyring.errors.KeyringError("keyring locked")):
             result = provider.get_password(self.make_host("srv1"))
             assert result is None
 

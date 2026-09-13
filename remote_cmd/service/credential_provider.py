@@ -32,6 +32,23 @@ from remote_cmd.utils.crypto import CredentialEncryption
 logger = logging.getLogger(__name__)
 
 
+def _keyring_backend_errors() -> tuple[type[BaseException], ...]:
+    """keyring 后端不可用/存取失败的异常集合（v2.7 P2.2）。
+
+    惰性导入（keyring 为可选依赖），仅覆盖**后端类**失败：
+
+    - ``keyring.errors.KeyringError`` 及其子类（NoKeyringError / KeyringLocked 等）
+    - ``OSError``：后端 I/O 失败（文件后端 / D-Bus 等）
+    - ``RuntimeError``：部分后端无可用实现时抛出的运行态错误
+
+    编程错误（TypeError / AttributeError 等）不再被吞掉，会向上传播，
+    避免把代码缺陷伪装成"keyring 不可用"。
+    """
+    from keyring import errors as keyring_errors
+
+    return (keyring_errors.KeyringError, OSError, RuntimeError)
+
+
 class CredentialProvider(ABC):
     """凭据提供者抽象基类"""
 
@@ -177,7 +194,7 @@ class KeyringCredentialProvider(CredentialProvider):
         except ImportError:
             logger.debug("keyring not installed, skipping KeyringCredentialProvider")
             return None
-        except Exception as e:  # noqa: BLE001
+        except _keyring_backend_errors() as e:
             logger.debug(f"keyring access failed: {e}")
             return None
 
@@ -197,7 +214,10 @@ class KeyringCredentialProvider(CredentialProvider):
 
             keyring.set_password(self._service_name, host.name, password)
             return True
-        except Exception as e:  # noqa: BLE001
+        except ImportError:
+            logger.debug("keyring not installed, cannot store password")
+            return False
+        except _keyring_backend_errors() as e:
             logger.debug(f"keyring store failed: {e}")
             return False
 
@@ -216,6 +236,9 @@ class KeyringCredentialProvider(CredentialProvider):
 
             keyring.delete_password(self._service_name, host.name)
             return True
-        except Exception as e:  # noqa: BLE001
+        except ImportError:
+            logger.debug("keyring not installed, cannot delete password")
+            return False
+        except _keyring_backend_errors() as e:
             logger.debug(f"keyring delete failed: {e}")
             return False

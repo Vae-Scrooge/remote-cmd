@@ -7,6 +7,7 @@
 - 重试分类：BudgetTimeoutError 为瞬态（可重试）
 """
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -158,6 +159,85 @@ class TestConnectionBudgetCore:
 
     def test_budget_timeout_is_retryable(self):
         assert is_retryable(BudgetTimeoutError("busy")) is True
+
+
+class TestConnectionBudgetAsyncQueue:
+    """v2.7：真异步等待队列（非轮询）的唤醒与取消语义。"""
+
+    @pytest.mark.asyncio
+    async def test_async_waiter_woken_by_release_from_other_thread(self):
+        """释放发生在工作线程时，事件循环中的等待者被精准唤醒。"""
+        import threading
+
+        budget = ConnectionBudget(1, acquire_timeout=2.0)
+        budget.acquire()  # 占满
+        acquired = asyncio.Event()
+
+        async def waiter():
+            await budget.acquire_async()
+            acquired.set()
+
+        task = asyncio.create_task(waiter())
+        await asyncio.sleep(0.05)
+        assert not task.done()
+
+        t = threading.Thread(target=budget.release)
+        t.start()
+        try:
+            await asyncio.wait_for(acquired.wait(), timeout=1.5)
+        finally:
+            t.join(timeout=1.0)
+
+        assert task.done() and not task.cancelled()
+        assert budget.get_metrics()["in_use"] == 1  # waiter 持有槽位
+        budget.release()
+        assert budget.get_metrics()["in_use"] == 0
+
+    @pytest.mark.asyncio
+    async def test_sync_waiter_woken_by_release(self):
+        """同步等待者（独立线程）被释放唤醒，不依赖轮询。"""
+        import threading
+
+        budget = ConnectionBudget(1, acquire_timeout=2.0)
+        budget.acquire()
+        result: dict[str, bool] = {}
+
+        def sync_waiter():
+            try:
+                budget.acquire()
+                result["ok"] = True
+                budget.release()
+            except BudgetTimeoutError:
+                result["ok"] = False
+
+        t = threading.Thread(target=sync_waiter)
+        t.start()
+        await asyncio.sleep(0.05)
+        assert t.is_alive()
+        budget.release()  # 唤醒同步等待者
+        t.join(timeout=1.5)
+        assert result.get("ok") is True
+        assert budget.get_metrics()["in_use"] == 0
+
+    @pytest.mark.asyncio
+    async def test_cancelled_waiter_is_removed_without_side_effects(self):
+        """取消的异步等待者从队列移除，且不消费容量。"""
+        budget = ConnectionBudget(1, acquire_timeout=5.0)
+        budget.acquire()
+        task = asyncio.create_task(budget.acquire_async())
+        await asyncio.sleep(0.05)  # 确保已注册等待
+        assert len(budget._async_waiters) == 1
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert len(budget._async_waiters) == 0  # 无残留等待者
+
+        budget.release()
+        await asyncio.wait_for(budget.acquire_async(), timeout=1.0)
+        assert budget.get_metrics()["in_use"] == 1
+        await budget.release_async()
+        assert budget.get_metrics()["in_use"] == 0
 
 
 # ============================================================================

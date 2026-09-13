@@ -189,11 +189,13 @@ class TestHostService:
         """测试：密码解密失败时安静返回原始主机"""
         from unittest.mock import patch
 
+        from remote_cmd.utils.crypto import CredentialEncryptionError
+
         # patch 需在 add_host 之前生效，否则真实的 is_encrypted 会将
         # 伪装的 "$encrypted$bad" 视为明文并二次加密
         patch_enc = patch.object(service._encryption, "is_encrypted", return_value=True)
         patch_dec = patch.object(
-            service._encryption, "decrypt", side_effect=Exception("decrypt fail")
+            service._encryption, "decrypt", side_effect=CredentialEncryptionError("decrypt fail")
         )
         patch_enc.start()
         patch_dec.start()
@@ -202,6 +204,23 @@ class TestHostService:
             service.add_host(host)
             result = service.get_host("srv")
             assert result.password == "$encrypted$bad"
+        finally:
+            patch_enc.stop()
+            patch_dec.stop()
+
+    def test_decrypt_host_unexpected_error_propagates(self, service):
+        """v2.7（P2.2）：非凭据类异常（编程/环境缺陷）不再被吞掉。"""
+        from unittest.mock import patch
+
+        patch_enc = patch.object(service._encryption, "is_encrypted", return_value=True)
+        patch_dec = patch.object(service._encryption, "decrypt", side_effect=RuntimeError("bug"))
+        patch_enc.start()
+        patch_dec.start()
+        try:
+            host = Host(name="srv", hostname="1", username="u", password="$encrypted$bad")
+            service.add_host(host)
+            with pytest.raises(RuntimeError, match="bug"):
+                service.get_host("srv")
         finally:
             patch_enc.stop()
             patch_dec.stop()

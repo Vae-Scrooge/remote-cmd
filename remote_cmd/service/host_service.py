@@ -37,7 +37,7 @@ from remote_cmd.service.credential_provider import (
     EnvCredentialProvider,
 )
 from remote_cmd.service.ssh_service import SSHService
-from remote_cmd.utils.crypto import CredentialEncryption
+from remote_cmd.utils.crypto import CredentialEncryption, CredentialEncryptionError
 
 logger = logging.getLogger(__name__)
 
@@ -245,7 +245,7 @@ class HostService:
             try:
                 decrypted = self._encryption.decrypt(host.password)
                 return self._build_resolved_host(host, decrypted, host.key_filename)
-            except Exception as e:  # noqa: BLE001
+            except CredentialEncryptionError as e:
                 # 解密失败不应阻塞整批主机返回：保留加密 token，
                 # 让 SSH 层在真正连接时报告认证失败
                 logger.warning(f"failed to decrypt password for {host.name}: {e}")
@@ -281,7 +281,7 @@ class HostService:
                 # 凭据链未命中，回退到本地加密器解密
                 try:
                     resolved_password = self._encryption.decrypt(host.password)
-                except Exception as e:  # noqa: BLE001
+                except CredentialEncryptionError as e:
                     logger.warning(f"failed to decrypt password for {host.name}: {e}")
                     # 保留加密 token，留给 SSH 层报认证失败
 

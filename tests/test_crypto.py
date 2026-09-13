@@ -113,3 +113,31 @@ class TestCredentialEncryption:
         # token 部分单独也能通过校验链
         token_part = encrypted[len("$encrypted$") :]
         assert crypto.is_encrypted("$encrypted$" + token_part) is True
+
+    def test_unexpected_encrypt_error_propagates(self, tmp_path):
+        """v2.7（P2.2）：非格式类异常不再被包装为 CredentialEncryptionError。"""
+        from unittest.mock import patch
+
+        from cryptography.fernet import Fernet
+
+        crypto = CredentialEncryption(key_path=tmp_path / ".key")
+        crypto.encrypt("warmup")  # 初始化 Fernet 实例
+        with (
+            patch.object(Fernet, "encrypt", side_effect=RuntimeError("internal bug")),
+            pytest.raises(RuntimeError, match="internal bug"),
+        ):
+            crypto.encrypt("pw")
+
+    def test_unexpected_decrypt_error_propagates(self, tmp_path):
+        """v2.7（P2.2）：非签名/格式类异常不再被伪装为解密失败。"""
+        from unittest.mock import patch
+
+        from cryptography.fernet import Fernet
+
+        crypto = CredentialEncryption(key_path=tmp_path / ".key")
+        encrypted = crypto.encrypt("pw")
+        with (
+            patch.object(Fernet, "decrypt", side_effect=RuntimeError("internal bug")),
+            pytest.raises(RuntimeError, match="internal bug"),
+        ):
+            crypto.decrypt(encrypted)

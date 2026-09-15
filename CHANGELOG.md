@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.10.0] - 2026-09-13
+
+v2.10 is a maintenance & quality release: CI signal hardening, package-wide
+mypy strict, dependency auditing, and secret scanning. No new user features;
+public APIs are unchanged.
+
+### Added
+
+- CI **dependency audit** (`dependency-audit` job): runtime dependencies are
+  audited with `pip-audit` in an isolated venv and fail the job on known
+  vulnerabilities; dev tooling is audited separately as advisory
+  (`continue-on-error: true`).
+- CI **secret scanning** (`secret-scan` job) with gitleaks and a minimal
+  `.gitleaks.toml` (default rule set; excludes only generated `docs/api`,
+  build artifacts, and the local `hosts.json` store).
+
+### Changed
+
+- **mypy strict now covers the whole `remote_cmd` package** (previously
+  `strict = false` while the README claimed strict). Baseline was 63 errors
+  in 19 files; all fixed with real annotations — no blanket
+  `# type: ignore` — and the README now states the exact scope. Enforced via
+  `[[tool.mypy.overrides]]` for `remote_cmd.*`.
+- CI Codecov step uses the current `files:` input of
+  `codecov/codecov-action@v6`, removing the workflow warning.
+- `tests/test_task_runner.py::test_pending_count` no longer relies on fixed
+  sleeps: the PENDING state is observed with a bounded wait, plus a 20x
+  repeat regression test — removing the macOS timing flake.
+
+### Fixed
+
+- **`AsyncSSHClient.execute_sudo(password=...)` wrote a `str` to a binary
+  stdin**: asyncssh streams are bytes unless an encoding is set, so real
+  connections would raise `TypeError`. It now writes UTF-8 bytes, with a
+  regression test enforcing the bytes contract (found while enabling strict
+  typing).
+- `retry_policy.compute_backoff_delay` uses a float base for `2**attempt` to
+  avoid mypy 2.3.x's typeshed `int.__pow__ -> Any` regression (powers of two
+  are exact in binary floats; overflow semantics match the previous code).
+
+### Migration Guide (v2.9 → v2.10)
+
+- **No action required**: no public API or runtime semantic changes; the
+  async sudo fix only converts a latent crash into working behavior.
+
 ## [2.9.0] - 2026-09-13
 
 v2.9 adds a secure Recipe engine (P3) and closes the profile-deletion race

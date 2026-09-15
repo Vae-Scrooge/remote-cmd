@@ -184,7 +184,7 @@ def host_add(
     username: Optional[str],
     port: int,
     key: Optional[str],
-    tag: tuple,
+    tag: tuple[str, ...],
     description: str,
     profile_name: Optional[str],
 ) -> None:
@@ -405,7 +405,7 @@ def profile_add(
     username: Optional[str],
     port: Optional[int],
     key: Optional[str],
-    tag: tuple,
+    tag: tuple[str, ...],
     description: str,
 ) -> None:
     """Create a connection profile (never stores credentials)."""
@@ -535,10 +535,10 @@ def recipe_add(
     ctx: click.Context,
     name: str,
     command_template: str,
-    shell_vars: tuple,
-    env_vars: tuple,
+    shell_vars: tuple[str, ...],
+    env_vars: tuple[str, ...],
     description: str,
-    tag: tuple,
+    tag: tuple[str, ...],
 ) -> None:
     """Create a recipe (typed variables; no raw interpolation)."""
     recipes: RecipeService = ctx.obj["recipe_service"]
@@ -655,8 +655,8 @@ def recipe_remove(ctx: click.Context, name: str) -> None:
 def recipe_run(
     ctx: click.Context,
     name: str,
-    host_names: tuple,
-    var_values: tuple,
+    host_names: tuple[str, ...],
+    var_values: tuple[str, ...],
     concurrency: int,
     timeout: int,
     retry: int,
@@ -852,9 +852,9 @@ def _echo_batch_rich(result: Any, show_failures: bool) -> None:
             click.echo(click.style(f"  ✓ {host}", fg="green"))
 
 
-def _parse_var_declarations(items: tuple, var_type: str) -> dict:
+def _parse_var_declarations(items: tuple[str, ...], var_type: str) -> dict[str, RecipeVariable]:
     """解析 CLI 变量声明（NAME 或 NAME=DEFAULT）。"""
-    variables: dict = {}
+    variables: dict[str, RecipeVariable] = {}
     for item in items:
         name, sep, default = item.partition("=")
         if not name:
@@ -865,9 +865,9 @@ def _parse_var_declarations(items: tuple, var_type: str) -> dict:
     return variables
 
 
-def _parse_var_values(items: tuple) -> dict:
+def _parse_var_values(items: tuple[str, ...]) -> dict[str, str]:
     """解析 CLI 变量取值（必须 NAME=VALUE）。"""
-    values: dict = {}
+    values: dict[str, str] = {}
     for item in items:
         name, sep, value = item.partition("=")
         if not sep or not name:

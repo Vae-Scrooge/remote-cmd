@@ -151,6 +151,12 @@ warn_return_any = false
 no_implicit_optional = true
 check_untyped_defs = false
 
+# mypy strict 迁移（v2.10 完成）：整个 remote_cmd 包按 strict 检查；
+# 基线 [tool.mypy] 的宽松设置仅作用于包外文件（如临时脚本）。
+[[tool.mypy.overrides]]
+module = ["remote_cmd.*"]
+strict = true
+
 [[tool.mypy.overrides]]
 module = [
     "paramiko.*",

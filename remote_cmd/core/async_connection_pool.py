@@ -16,6 +16,7 @@ import contextlib
 import logging
 import time
 import uuid
+from types import TracebackType
 from typing import Any, Optional
 
 from remote_cmd.core.async_ssh_client import AsyncSSHClient
@@ -315,7 +316,12 @@ class AsyncConnectionPool:
             self._conn = await self._pool.acquire()
             return self._conn
 
-        async def __aexit__(self, exc_type, exc, tb) -> None:
+        async def __aexit__(
+            self,
+            exc_type: Optional[type[BaseException]],
+            exc: Optional[BaseException],
+            tb: Optional[TracebackType],
+        ) -> None:
             await self._pool.release(self._conn)
             self._conn = None
 
@@ -337,7 +343,12 @@ class AsyncConnectionPool:
         self._start_monitor()
         return self
 
-    async def __aexit__(self, exc_type, exc, tb) -> None:
+    async def __aexit__(
+        self,
+        exc_type: Optional[type[BaseException]],
+        exc: Optional[BaseException],
+        tb: Optional[TracebackType],
+    ) -> None:
         await self.close_all()
 
 

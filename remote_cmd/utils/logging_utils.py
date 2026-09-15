@@ -39,7 +39,7 @@ def redact_sensitive_data(message: str) -> str:
     替换密码等字段的值为 [REDACTED]。
     """
 
-    def _redact(m: re.Match) -> str:
+    def _redact(m: re.Match[str]) -> str:
         text = m.group(0)
         if "=" in text:
             return f"{text.split('=')[0]}=[REDACTED]"
@@ -165,7 +165,10 @@ def setup_logging(
     logging.getLogger("remote_cmd").debug("日志系统已初始化")
 
 
-class LoggerAdapter(logging.LoggerAdapter):
+# Python 3.10 的 logging.LoggerAdapter 不支持运行时下标（3.11+ 才暴露
+# Generic）；基类不能写 subscript。返回注解用字符串形式（运行时不求值），
+# mypy 仍按泛型检查。此处为唯一必要的定向 ignore。
+class LoggerAdapter(logging.LoggerAdapter):  # type: ignore[type-arg]
     """
     带上下文的日志适配器
 
@@ -177,7 +180,9 @@ class LoggerAdapter(logging.LoggerAdapter):
         # 输出: [host=web-server] 连接成功
     """
 
-    def process(self, msg: str, kwargs: MutableMapping[str, Any]) -> tuple:
+    def process(
+        self, msg: str, kwargs: MutableMapping[str, Any]
+    ) -> tuple[str, MutableMapping[str, Any]]:
         extra = self.extra or {}
         ctx = " ".join(f"[{k}={v}]" for k, v in extra.items())
         return f"{ctx} {msg}" if ctx else msg, kwargs
@@ -188,7 +193,9 @@ class LoggerAdapter(logging.LoggerAdapter):
 # ============================================================================
 
 
-def get_logger(name: str, **context) -> "logging.Logger | logging.LoggerAdapter":
+def get_logger(
+    name: str, **context: Any
+) -> "logging.Logger | logging.LoggerAdapter[logging.Logger]":
     """
     获取带可选上下文的日志器
 

@@ -207,9 +207,26 @@ class TestAsyncSSHClientExecute:
             r = await client.execute_sudo("ls /root", password="secret")
         assert r.success
         conn_mock.create_process.assert_awaited_once()
-        # 确认密码被写入 stdin
+        # 确认密码以 UTF-8 bytes 写入 stdin（asyncssh 二进制流契约：
+        # 未指定 encoding 时写入 str 会在真实连接上抛 TypeError）
         proc = conn_mock.create_process.return_value
-        proc.stdin.write.assert_called_with("secret\n")
+        proc.stdin.write.assert_called_with(b"secret\n")
+
+    @pytest.mark.asyncio
+    async def test_execute_sudo_rejects_str_stdin_write(self, config, patched_asyncssh, conn_mock):
+        """回归：stdin 必须收到 bytes；若回退为 str，模拟真实 asyncssh 报错。"""
+
+        def _require_bytes(data):
+            if not isinstance(data, bytes):
+                raise TypeError("string argument without an encoding")
+
+        proc = conn_mock.create_process.return_value
+        proc.stdin.write.side_effect = _require_bytes
+
+        async with AsyncSSHClient(config) as client:
+            r = await client.execute_sudo("ls /root", password="secret")
+        assert r.success
+        assert proc.stdin.write.call_args.args[0] == b"secret\n"
 
     @pytest.mark.asyncio
     async def test_execute_not_connected_raises(self, config):

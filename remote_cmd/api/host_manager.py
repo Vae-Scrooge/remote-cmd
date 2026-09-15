@@ -17,7 +17,8 @@ v2.6 架构说明：
 
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Optional
+from types import TracebackType
+from typing import Any, Optional
 
 # 向后兼容: Host 从新的 host.py 导出
 from remote_cmd.core.host import Host
@@ -59,7 +60,7 @@ class HostManager:
         self.hosts: dict[str, Host] = {}
         self._sync_hosts()
 
-    def _sync_hosts(self):
+    def _sync_hosts(self) -> None:
         """同步 self.hosts 字典以保持向后兼容"""
         self.hosts = {h.name: h for h in self._repo.list()}
 
@@ -71,7 +72,7 @@ class HostManager:
         self._service.add_host(host)
         self._sync_hosts()
 
-    def update_host(self, name: str, **kwargs) -> Host:
+    def update_host(self, name: str, **kwargs: Any) -> Host:
         host = self._service.update_host(name, **kwargs)
         self._sync_hosts()
         return host
@@ -161,7 +162,12 @@ class HostManager:
     def __enter__(self) -> "HostManager":
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+    def __exit__(
+        self,
+        exc_type: Optional[type[BaseException]],
+        exc_val: Optional[BaseException],
+        exc_tb: Optional[TracebackType],
+    ) -> None:
         pass
 
     def __len__(self) -> int:

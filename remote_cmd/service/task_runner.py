@@ -376,9 +376,9 @@ class TaskRunner:
     def _execute_wrapper(
         self,
         task_id: str,
-        fn: Callable,
-        args: tuple,
-        kwargs: dict,
+        fn: Callable[..., Any],
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
     ) -> None:
         """
         任务执行包装器
@@ -425,7 +425,9 @@ class TaskRunner:
                 task.status = TaskStatus.RUNNING
                 task.started_at = datetime.now()
 
-    def _run_task_function(self, task_id: str, fn: Callable, args: tuple, kwargs: dict) -> Any:
+    def _run_task_function(
+        self, task_id: str, fn: Callable[..., Any], args: tuple[Any, ...], kwargs: dict[str, Any]
+    ) -> Any:
         """执行任务函数，返回结果"""
         logger.debug(f"task started: [{task_id[:8]}] running...")
         return fn(*args, **kwargs)

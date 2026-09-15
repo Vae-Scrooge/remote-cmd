@@ -81,5 +81,45 @@ jobs:
       - name: Upload coverage
         uses: codecov/codecov-action@v6
         with:
-          file: ./coverage.xml
+          files: ./coverage.xml
           fail_ci_if_error: false
+
+  dependency-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Audit runtime dependencies (blocking)
+        run: |
+          echo "Audit scope: installed runtime dependencies (the local project itself is not on PyPI and is skipped by pip-audit)"
+          uv venv /tmp/audit-runtime
+          uv pip install --python /tmp/audit-runtime/bin/python .
+          uv pip install --python /tmp/audit-runtime/bin/python pip-audit
+          /tmp/audit-runtime/bin/python -m pip_audit
+
+      - name: Audit dev tooling (advisory)
+        continue-on-error: true
+        run: |
+          echo "Audit scope: dev tooling only (advisory; runtime audit above is the blocking gate)"
+          uv venv /tmp/audit-dev
+          uv pip install --python /tmp/audit-dev/bin/python -e ".[dev]"
+          uv pip install --python /tmp/audit-dev/bin/python pip-audit
+          /tmp/audit-dev/bin/python -m pip_audit
+
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

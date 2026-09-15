@@ -122,6 +122,26 @@ class TestComputeBackoffDelay:
         assert compute_backoff_delay(10, base_delay=1.0, max_delay=5.0, jitter=False) == 5.0
         assert compute_backoff_delay(100, base_delay=1.0, jitter=False) == DEFAULT_MAX_BACKOFF
 
+    def test_integer_exponent_equivalence(self):
+        """v2.10：``2.0**attempt`` 与整数 ``2**attempt`` 在实用范围内数值一致。
+
+        背景：strict 迁移为规避 mypy 2.3 typeshed 把 int 幂判为 Any，
+        改用浮点底数；此回归锁定数值等价（jitter=False 时逐值比较）。
+        """
+        for attempt in (0, 1, 10, 20):
+            for base in (0.5, 1.0, 3.0):
+                expected = min(DEFAULT_MAX_BACKOFF, base * float(2**attempt))
+                got = compute_backoff_delay(attempt, base_delay=base, jitter=False)
+                assert got == expected, (attempt, base, got, expected)
+
+    def test_cap_boundary_equivalence(self):
+        """跨过 cap 边界（2**attempt * base 低于/超过 max_delay）结果一致。"""
+        for attempt, expected in ((1, 2.0), (2, 4.0), (3, 5.0), (4, 5.0)):
+            got = compute_backoff_delay(
+                attempt, base_delay=1.0, max_delay=5.0, jitter=False
+            )
+            assert got == expected, (attempt, got, expected)
+
     def test_zero_base_delay_is_zero(self):
         assert compute_backoff_delay(3, base_delay=0.0, jitter=False) == 0.0
         rng = random.Random(42)

@@ -287,7 +287,7 @@ class AsyncBatchExecutor:
 
     async def _cancel_and_mark_interrupted(
         self,
-        tasks: list[asyncio.Task],
+        tasks: list[asyncio.Task[None]],
         host_names: list[str],
         results: dict[str, BatchHostResult],
         command: str,

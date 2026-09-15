@@ -55,7 +55,7 @@ class Host:
     description: str = ""
     profile: Optional[str] = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """初始化后处理：归一化外部传入的 None 标签（兼容旧数据）"""
         if self.tags is None:
             self.tags = []
@@ -75,7 +75,7 @@ class Host:
             key_filename=self.key_filename,
         )
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         """
         将主机配置转换为字典
 
@@ -85,7 +85,7 @@ class Host:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: dict) -> "Host":
+    def from_dict(cls, data: dict[str, Any]) -> "Host":
         """
         从字典创建主机配置对象
 

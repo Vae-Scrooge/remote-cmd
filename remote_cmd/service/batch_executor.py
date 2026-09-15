@@ -31,8 +31,8 @@ import contextlib
 import logging
 import time
 from collections.abc import Callable, Coroutine
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any, Optional
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from typing import Any, Optional, cast
 
 from remote_cmd.core.budget import ConnectionBudget
 from remote_cmd.core.host import Host
@@ -291,7 +291,7 @@ class BatchExecutor:
         retry_delay: float,
         total: int,
         environment: Optional[dict[str, str]] = None,
-    ) -> dict:
+    ) -> dict[Future[BatchHostResult], str]:
         """提交任务到线程池，返回 future_map
 
         - 外部 ``pool_factory``：在提交前统一准备（工厂调用保持在主线程），
@@ -341,11 +341,13 @@ class BatchExecutor:
             return None
         config = build_connection_config(host, self._command_timeout)
         assert self._pool_factory is not None  # 仅外部工厂路径调用
-        return self._pool_factory(config)
+        # 工厂签名有意为 Any（同步/异步内核共用同一注入点）；此处
+        # 处于同步路径，返回类型由调用方契约保证为 SyncConnectionPool
+        return cast(SyncConnectionPool, self._pool_factory(config))
 
     def _collect_results(
         self,
-        future_map: dict,
+        future_map: dict[Future[BatchHostResult], str],
         host_names: list[str],
         command: str,
         progress_callback: Optional[ProgressCallback],
@@ -370,7 +372,9 @@ class BatchExecutor:
 
         return completed
 
-    def _process_future_result(self, future, host_name: str, command: str) -> BatchHostResult:
+    def _process_future_result(
+        self, future: Future[BatchHostResult], host_name: str, command: str
+    ) -> BatchHostResult:
         """处理单个 future 结果，捕获调度异常"""
         try:
             return future.result()
@@ -406,7 +410,7 @@ class BatchExecutor:
 
     def _handle_interrupt(
         self,
-        future_map: dict,
+        future_map: dict[Future[BatchHostResult], str],
         host_names: list[str],
         command: str,
         results: dict[str, BatchHostResult],

@@ -21,6 +21,7 @@ import stat
 import threading
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from types import TracebackType
 from typing import Any, Optional
 
 import paramiko
@@ -120,7 +121,7 @@ class ConnectionConfig:
     host_key_policy: Optional[Any] = None
     known_hosts_file: Optional[str] = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """初始化后验证：校验端口、主机名等"""
         # 验证端口号
         if not (1 <= self.port <= 65535):
@@ -526,7 +527,12 @@ class SSHClient:
         """
         return self.connect()
 
-    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+    def __exit__(
+        self,
+        exc_type: Optional[type[BaseException]],
+        exc_val: Optional[BaseException],
+        exc_tb: Optional[TracebackType],
+    ) -> None:
         """
         上下文管理器出口：自动断开连接
 

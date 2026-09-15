@@ -122,7 +122,7 @@ class HostService:
         host = self._repo.get(name)
         return self._decrypt_host(self._apply_profile(host))
 
-    def update_host(self, name: str, **kwargs) -> Host:
+    def update_host(self, name: str, **kwargs: Any) -> Host:
         """
         更新主机配置
 

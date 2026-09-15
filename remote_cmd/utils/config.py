@@ -14,7 +14,7 @@ Author: Vae-Scrooge
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import yaml
 
@@ -87,9 +87,9 @@ def load_config(config_path: str) -> dict[str, Any]:
     # 根据文件扩展名选择解析方式
     with open(path, encoding="utf-8") as f:
         if path.suffix in [".yaml", ".yml"]:
-            return yaml.safe_load(f) or {}
+            return cast(dict[str, Any], yaml.safe_load(f) or {})
         elif path.suffix == ".json":
-            return json.load(f)
+            return cast(dict[str, Any], json.load(f))
         else:
             raise ValueError(f"unsupported config file format: {path.suffix}")
 

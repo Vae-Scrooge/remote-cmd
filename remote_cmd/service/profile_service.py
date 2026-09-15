@@ -18,7 +18,7 @@ Profile 业务服务（v2.8）
 """
 
 import logging
-from typing import Optional
+from typing import Any, Optional
 
 from remote_cmd.core.profile import HostProfile
 from remote_cmd.repository.host_repository import HostRepository
@@ -59,7 +59,7 @@ class ProfileService:
         logger.info(f"profile added: {profile.name}")
         return profile
 
-    def update_profile(self, profile_name: str, **kwargs) -> HostProfile:
+    def update_profile(self, profile_name: str, **kwargs: Any) -> HostProfile:
         """更新 profile 字段（不存在时 KeyError）。
 
         仅更新 HostProfile 已有的字段；``name`` 本身不可改名

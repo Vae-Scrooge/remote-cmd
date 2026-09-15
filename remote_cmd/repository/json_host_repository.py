@@ -22,7 +22,7 @@ import os
 import tempfile
 import warnings
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from remote_cmd.core.host import Host
 from remote_cmd.core.profile import HostProfile
@@ -114,7 +114,7 @@ class JsonHostRepository(HostRepository):
         return hosts
 
     def list_tags(self) -> builtins.list[str]:
-        tags: set = set()
+        tags: set[str] = set()
         for host in self._hosts.values():
             if host.tags:
                 tags.update(host.tags)
@@ -190,7 +190,7 @@ class JsonHostRepository(HostRepository):
         data = self._serialize()
         self._atomic_write(data)
 
-    def _serialize(self) -> dict:
+    def _serialize(self) -> dict[str, Any]:
         """序列化主机 + Profile 到字典，包含版本信息"""
         hosts_dict = {name: host.to_dict() for name, host in self._hosts.items()}
 
@@ -208,7 +208,7 @@ class JsonHostRepository(HostRepository):
             "recipes": {name: recipe.to_dict() for name, recipe in self._recipes.items()},
         }
 
-    def _enforce_plaintext_policy(self, hosts_dict: dict) -> None:
+    def _enforce_plaintext_policy(self, hosts_dict: dict[str, Any]) -> None:
         """执行明文密码持久化策略（未配置加密器时）。
 
         集合所有违规主机，一次 flush 最多发出一次警告或抛出一次异常。
@@ -292,7 +292,7 @@ class JsonHostRepository(HostRepository):
                 except (ValueError, TypeError, KeyError, ValidationError) as e:
                     logger.warning(f"skipping invalid recipe '{name}': {e}")
 
-    def _atomic_write(self, data: dict) -> None:
+    def _atomic_write(self, data: dict[str, Any]) -> None:
         """原子写入：写临时文件 → rename 覆盖原文件"""
         self._filepath.parent.mkdir(parents=True, exist_ok=True)
 

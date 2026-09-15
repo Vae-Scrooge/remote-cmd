@@ -21,6 +21,7 @@ import shlex
 import stat
 from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
+from types import TracebackType
 from typing import Any, Optional
 
 import asyncssh
@@ -254,7 +255,7 @@ class AsyncSSHClient:
             return await self.execute(f"sudo {command}", timeout=timeout)
 
         try:
-            proc: asyncssh.SSHClientProcess = await conn.create_process(
+            proc: asyncssh.SSHClientProcess[bytes] = await conn.create_process(
                 f"sudo -S {command}",
                 timeout=timeout,
             )
@@ -262,7 +263,7 @@ class AsyncSSHClient:
             raise SSHCommandError(f"sudo command execution failed: {e}") from e
 
         try:
-            proc.stdin.write(password + "\n")
+            proc.stdin.write((password + "\n").encode("utf-8"))
             proc.stdin.write_eof()
             # 与 execute 的 conn.run(timeout=...) 语义对齐：timeout 覆盖整个命令执行
             # wall-clock，避免挂起的 sudo（如等待密码）无限等待
@@ -480,7 +481,12 @@ class AsyncSSHClient:
         await self.connect()
         return self
 
-    async def __aexit__(self, exc_type, exc, tb) -> None:
+    async def __aexit__(
+        self,
+        exc_type: Optional[type[BaseException]],
+        exc: Optional[BaseException],
+        tb: Optional[TracebackType],
+    ) -> None:
         await self.disconnect()
 
 

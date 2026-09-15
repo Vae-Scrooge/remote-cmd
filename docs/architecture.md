@@ -584,7 +584,6 @@ class SecureConfig:
 | pytest | Unit testing |
 | ruff | Code formatting and linting |
 | mypy | Type checking |
-| mypy | Type checking |
 
 ---
 

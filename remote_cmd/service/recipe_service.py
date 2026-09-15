@@ -19,6 +19,7 @@ Recipe 业务服务（v2.9）
 """
 
 import logging
+from typing import Any
 
 from remote_cmd.core.recipe import Recipe, RenderedRecipe, render_recipe
 from remote_cmd.repository.recipe_store import RecipeStore
@@ -52,7 +53,7 @@ class RecipeService:
         logger.info(f"recipe added: {recipe.name}")
         return recipe
 
-    def update_recipe(self, recipe_name: str, **kwargs) -> Recipe:
+    def update_recipe(self, recipe_name: str, **kwargs: Any) -> Recipe:
         """更新 Recipe 字段（不存在时 KeyError）。
 
         仅更新 Recipe 已有字段；``name`` 不可改名（传入会抛 ValueError）。

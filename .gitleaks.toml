@@ -1,0 +1,23 @@
+# gitleaks 配置（v2.10 secret scanning）
+#
+# 策略：
+# - 继承 gitleaks 默认规则集（SSH private key / token / API key / cloud
+#   credentials / Fernet key 等），不使用弱化规则。
+# - 仅排除"非源码生成物"与"本地运行时数据"路径，避免误报：
+#   docs/api 为 pdoc 生成 HTML；build/dist 为构建产物；hosts.json 为
+#   用户本地的加密主机库（含密码密文，非仓库内容）。
+# - 测试中的假凭据（如 $encrypted$gAAAAABfake-token）当前不触发默认规则；
+#   如未来出现误报，请在此添加**精确** regex 允许项，禁止整类放行。
+title = "remote-cmd gitleaks configuration"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Generated artifacts and local runtime stores (not source code)"
+paths = [
+  '''docs/api/''',
+  '''build/''',
+  '''dist/''',
+  '''hosts\.json$''',
+]

@@ -23,6 +23,7 @@ import sqlite3
 import threading
 import time
 import warnings
+from collections.abc import Iterator
 from typing import Optional
 
 from remote_cmd.core.host import Host
@@ -278,7 +279,7 @@ class SqliteHostRepository(HostRepository):
                 time.sleep(0.05)
 
     @contextlib.contextmanager
-    def _txn(self, write: bool = False):
+    def _txn(self, write: bool = False) -> Iterator[sqlite3.Connection]:
         """
         事务 + 连接生命周期上下文
 
@@ -470,7 +471,7 @@ class SqliteHostRepository(HostRepository):
         with self._lock, self._txn() as conn:
             rows = conn.execute("SELECT DISTINCT tags FROM hosts WHERE tags IS NOT NULL").fetchall()
 
-        tags_set: set = set()
+        tags_set: set[str] = set()
         for row in rows:
             try:
                 tags = json.loads(row["tags"] or "[]")

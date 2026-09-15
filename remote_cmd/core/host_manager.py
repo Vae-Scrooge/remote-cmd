@@ -11,6 +11,7 @@ v2.6 起 ``HostManager`` 的 canonical 位置是 ``remote_cmd.api.host_manager``
 ``from remote_cmd.core.host_manager import Host, HostManager``。
 """
 
-from remote_cmd.api.host_manager import Host, HostManager
+from remote_cmd.api.host_manager import HostManager
+from remote_cmd.core.host import Host
 
 __all__ = ["Host", "HostManager"]

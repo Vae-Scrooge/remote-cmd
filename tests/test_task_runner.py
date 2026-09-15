@@ -4,8 +4,22 @@ import contextlib
 import threading
 import time
 from datetime import datetime
+from typing import Callable
 
 from remote_cmd.service.task_runner import Task, TaskRunner, TaskStatus
+
+
+def _wait_until(predicate: Callable[[], bool], timeout: float = 2.0) -> bool:
+    """有界状态等待：谓词为真立即返回 True，超时返回最终判定。
+
+    用于替代固定 sleep：只为等待"可观测状态出现"设上限，不做时间掩盖。
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.005)
+    return predicate()
 
 
 class TestTaskStatus:
@@ -274,15 +288,41 @@ class TestTaskRunner:
         runner.wait_for(tid, timeout=5)
         assert runner.active_count == 0
 
-    def test_pending_count(self):
+    @staticmethod
+    def _assert_second_task_observable_as_pending() -> None:
+        """场景：max_workers=1，首任务阻塞；第二任务必须可观测为 PENDING。
+
+        回归（v2.10）：旧测试依赖固定 ``time.sleep`` 等待后台线程完成
+        ``submit`` 注册，慢调度 runner 上会出现 ``pending_count == 0`` 竞态。
+        生产语义本身无竞态（``submit`` 在锁内先注册 PENDING，再阻塞于
+        semaphore）；此处用**有界状态等待**同步观测点，不改变生产代码。
+        """
         runner = TaskRunner(max_workers=1)
-        runner.submit("slow", time.sleep, 0.3)
-        time.sleep(0.05)
+        release = threading.Event()
 
-        # 后台提交第二个任务，不阻塞
-        def submit_another():
-            runner.submit("pending", time.sleep, 0.1)
+        def blocking() -> None:
+            release.wait(timeout=5)
 
-        threading.Thread(target=submit_another, daemon=True).start()
-        time.sleep(0.1)
-        assert runner.pending_count >= 1
+        runner.submit("blocking", blocking)
+        assert _wait_until(lambda: runner.active_count == 1), "first task should be RUNNING"
+
+        submitter = threading.Thread(
+            target=lambda: runner.submit("pending", lambda: None), daemon=True
+        )
+        submitter.start()
+        try:
+            assert _wait_until(lambda: runner.pending_count == 1), (
+                "second task should be observable as PENDING"
+            )
+        finally:
+            release.set()  # 保证失败路径也不留下阻塞任务
+        submitter.join(timeout=5)
+        assert not submitter.is_alive()
+
+    def test_pending_count(self):
+        self._assert_second_task_observable_as_pending()
+
+    def test_pending_count_stable_across_repeats(self):
+        """重复执行 20 次均能稳定观测 PENDING（竞态回归证明）。"""
+        for _ in range(20):
+            self._assert_second_task_observable_as_pending()

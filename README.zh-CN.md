@@ -41,29 +41,30 @@ pip install remote_cmd_manager && remote-cmd host add web-01 192.168.1.10 ubuntu
 
 ---
 
-## v2.9.0 发布亮点
+## v2.10.0 发布亮点
 
-v2.9.0 新增**安全 Recipe 引擎**，并让 **SQLite profile 删除具备原子性**。
-公共 API 保持向后兼容；既有存储自动升级。升级前请查看[完整迁移说明](./CHANGELOG.md)。
+v2.10.0 是维护与质量版本：CI 信号加固、全包 mypy strict、依赖审计与密钥扫描。
+无新用户功能，公共 API 不变。升级前请查看[完整迁移说明](./CHANGELOG.md)。
 
-### 安全 Recipe
+### CI 可靠性
 
-- 新增 `Recipe` / `RecipeVariable`（从 `remote_cmd` 导出）：带**类型化变量**的参数化命令模板——`shell_arg` 值自动 `shlex.quote`，`env` 值作为远端环境变量导出；有意不支持裸字符串插值。
-- 占位符必须声明：未声明占位符在创建时报错，缺失/未知变量在建立任何连接前即失败；渲染为单遍，变量值中的 `{{ ... }}` 不会被二次解析。
-- Recipe 通过可选的 `RecipeStore` 能力协议持久化（JSON `recipes` 段 / SQLite `recipes` 表），可用 `remote-cmd recipe run ...` 或 `RecipeService` + 批量执行器运行。
+- Codecov 步骤改用 `codecov/codecov-action@v6` 当前的 `files:` 输入，workflow 警告消失。
+- `test_pending_count` 不再依赖固定 sleep：用有界等待观察 PENDING 状态并重复 20 次，macOS 时间竞态消除。
 
-### 原子化 Profile 删除
+### 类型质量
 
-- SQLite `hosts.profile` 现带 `FOREIGN KEY ... ON DELETE RESTRICT`（`DB_VERSION` 2 → 3）；既有数据库打开时自动重建迁移且数据保留。服务层引用检查保留为友好的快速路径。
+- **mypy strict 覆盖整个 `remote_cmd` 包**（此前 `strict = false` 却与 README 声明不符）；51 项基线错误全部用真实注解修复，无批量 ignore。
+- strict 揭示并修复一个潜在缺陷：异步 `execute_sudo(password=...)` 向 bytes 流写入 `str`，真实连接会崩溃；现写入 UTF-8 bytes 并有回归测试。
 
-### 试用
+### 供应链检查
 
-```bash
-remote-cmd recipe add deploy --command 'deploy {{ package }}' -V package=app
-remote-cmd recipe run deploy web-01 web-02 -V package=api-2026.09 --format json | jq .
-```
+- 新增 CI `dependency-audit` job：隔离 runtime 依赖后用 `pip-audit` **阻断**；dev 工具链审计为 advisory。
+- 新增 CI `secret-scan` job：gitleaks + 最小允许列表（仅生成物 docs/build 与本地 `hosts.json`）。
 
 ## 目录
+
+- [v2.10.0 发布亮点](#v2100-发布亮点)
+
 
 - [v2.9.0 发布亮点](#v290-发布亮点)
 - [为什么选择 Remote CMD？](#为什么选择-remote-cmd)
@@ -222,7 +223,7 @@ with SSHClient(config) as client:
 | **任务执行器** | 跟踪并调度长时间运行的远程任务并显示状态（`TaskRunner`） |
 | **连通性测试** | 测试所有主机的 SSH 连接并报告状态 |
 | **安全日志** | 结构化日志自动过滤敏感数据（`SensitiveDataFilter`） |
-| **类型安全** | 完整类型注解 + mypy 严格模式 |
+| **类型安全** | 完整类型注解；`remote_cmd` 包全量 mypy strict |
 
 ---
 

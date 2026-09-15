@@ -36,30 +36,31 @@ pip install remote_cmd_manager && remote-cmd host add web-01 192.168.1.10 ubuntu
 
 ---
 
-## v2.9.0 Release Highlights
+## v2.10.0 Release Highlights
 
-v2.9.0 adds the **secure Recipe engine** and makes **SQLite profile deletion
-atomic**. Public APIs remain backward compatible; existing stores upgrade in
-place. See the [full migration notes](./CHANGELOG.md).
+v2.10.0 is a maintenance & quality release: CI signal hardening, package-wide
+mypy strict, dependency auditing, and secret scanning. No new user features;
+public APIs are unchanged. See the [full migration notes](./CHANGELOG.md).
 
-### Secure Recipes
+### CI Reliability
 
-- New `Recipe` / `RecipeVariable` (exported from `remote_cmd`): parameterized command templates with **typed variables** — `shell_arg` values are `shlex.quote`d, `env` values are exported as remote environment variables. Raw string interpolation is intentionally unsupported.
-- Placeholders must be declared; undeclared placeholders fail at creation, and missing/unknown values fail before any connection is made. Rendering is single-pass, so `{{ ... }}` inside values stays literal.
-- Recipes persist through the optional `RecipeStore` capability (JSON `recipes` section / SQLite `recipes` table) and run via `remote-cmd recipe run ...` or `RecipeService` + the batch executors.
+- Codecov step migrated to the current `files:` input (`codecov/codecov-action@v6`) — the workflow warning is gone.
+- `test_pending_count` no longer depends on fixed sleeps: it observes the PENDING state with a bounded wait and repeats 20× — the macOS timing flake is removed.
 
-### Atomic Profile Deletion
+### Type Quality
 
-- SQLite `hosts.profile` now carries `FOREIGN KEY ... ON DELETE RESTRICT` (`DB_VERSION` 2 → 3); existing databases are rebuilt automatically on open with data preserved. The service-level reference check stays as a friendly fast path.
+- **mypy strict now covers the entire `remote_cmd` package** (previously `strict = false` despite the README claim); all baseline errors fixed with real annotations, no blanket ignores.
+- Strict typing surfaced and fixed a latent bug: async `execute_sudo(password=...)` wrote `str` into a bytes stream and would crash on real connections — it now writes UTF-8 bytes with a regression test.
 
-### Try It
+### Supply-Chain Checks
 
-```bash
-remote-cmd recipe add deploy --command 'deploy {{ package }}' -V package=app
-remote-cmd recipe run deploy web-01 web-02 -V package=api-2026.09 --format json | jq .
-```
+- New CI `dependency-audit` job: `pip-audit` on an isolated runtime-deps venv is **blocking**; dev tooling audit is advisory.
+- New CI `secret-scan` job: gitleaks with a minimal allowlist (generated docs/build artifacts and the local `hosts.json` only).
 
 ## Table of Contents
+
+- [v2.10.0 Release Highlights](#v2100-release-highlights)
+
 
 - [v2.9.0 Release Highlights](#v290-release-highlights)
 - [Why Remote CMD?](#why-remote-cmd)
@@ -218,7 +219,7 @@ with SSHClient(config) as client:
 | **Task Runner** | Track and schedule long-running remote tasks with statuses (`TaskRunner`) |
 | **Connection Test** | Test all host SSH connections and report status |
 | **Secure Logging** | Structured logging that filters sensitive data (`SensitiveDataFilter`) |
-| **Type Safety** | Full type annotations + mypy strict |
+| **Type Safety** | Full type annotations; mypy strict across the `remote_cmd` package |
 
 ---
 

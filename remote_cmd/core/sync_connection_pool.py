@@ -17,6 +17,7 @@ import queue
 import threading
 import time
 import uuid
+from types import TracebackType
 from typing import Any, Optional
 
 from remote_cmd.core.budget import ConnectionBudget
@@ -320,7 +321,12 @@ class SyncConnectionPool:
             self._conn = self._pool.acquire()
             return self._conn
 
-        def __exit__(self, exc_type, exc, tb) -> None:
+        def __exit__(
+            self,
+            exc_type: Optional[type[BaseException]],
+            exc: Optional[BaseException],
+            tb: Optional[TracebackType],
+        ) -> None:
             self._pool.release(self._conn)
             self._conn = None
 
@@ -340,7 +346,12 @@ class SyncConnectionPool:
         self.start_monitor()
         return self
 
-    def __exit__(self, exc_type, exc, tb) -> None:
+    def __exit__(
+        self,
+        exc_type: Optional[type[BaseException]],
+        exc: Optional[BaseException],
+        tb: Optional[TracebackType],
+    ) -> None:
         self.close_all()
 
 

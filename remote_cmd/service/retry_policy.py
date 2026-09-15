@@ -143,11 +143,15 @@ def compute_backoff_delay(
     if max_delay < 0:
         raise ValueError(f"max_delay must be >= 0, got: {max_delay}")
 
-    capped = min(max_delay, base_delay * (2**attempt))
+    # 注：mypy 2.3.x 的 typeshed 把 int 的 ``2**attempt`` 推断为 Any
+    # （上游回归）；改用 float 底数保持类型可判定。2 的幂在二进制浮点中
+    # 是精确值，attempt 达到溢出阈值时的 OverflowError 语义与原实现一致。
+    capped = min(max_delay, base_delay * (2.0**attempt))
     if not jitter:
         return capped
-    source = rng if rng is not None else random
-    return source.uniform(0.0, capped)
+    if rng is not None:
+        return rng.uniform(0.0, capped)
+    return random.uniform(0.0, capped)
 
 
 __all__ = [

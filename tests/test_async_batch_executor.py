@@ -9,6 +9,7 @@ import pytest
 
 from remote_cmd.core.async_connection_pool import AsyncConnectionPool
 from remote_cmd.core.async_ssh_client import AsyncSSHClient
+from remote_cmd.core.budget import ConnectionBudget
 from remote_cmd.core.host import Host
 from remote_cmd.core.ssh_client import CommandResult, ConnectionConfig
 from remote_cmd.service._host_runner import OUTPUT_TRUNCATION_MARKER
@@ -87,6 +88,169 @@ class TestAsyncConnectionPool:
         assert pool._free.qsize() == 0
         assert pool.get_metrics()["total_connections"] == 0
         assert pool._total_released == 1
+
+    @pytest.mark.asyncio
+    async def test_close_while_connection_creation_is_in_flight(self, config):
+        """建连跨越 close_all 时，连接和 budget 必须在完成后被回收。"""
+        connect_started = asyncio.Event()
+        finish_connect = asyncio.Event()
+        client = _client_mock()
+
+        async def blocking_connect():
+            connect_started.set()
+            await finish_connect.wait()
+            return client
+
+        client.connect.side_effect = blocking_connect
+        budget = ConnectionBudget(1)
+        pool = AsyncConnectionPool(
+            config,
+            max_connections=1,
+            client_factory=lambda _config: client,
+            connection_budget=budget,
+        )
+        acquire_task = asyncio.create_task(pool.acquire())
+        await asyncio.wait_for(connect_started.wait(), timeout=2)
+
+        await pool.close_all()
+        assert budget.get_metrics()["in_use"] == 1
+        finish_connect.set()
+        with pytest.raises(PoolClosedError, match="connection pool is closed"):
+            await asyncio.wait_for(acquire_task, timeout=2)
+
+        client.disconnect.assert_awaited_once()
+        assert pool.get_metrics()["total_connections"] == 0
+        assert pool._free.qsize() == 0
+        assert budget.get_metrics()["in_use"] == 0
+
+    @pytest.mark.asyncio
+    async def test_cancel_during_connection_creation_releases_budget(self, config):
+        started = asyncio.Event()
+        client = _client_mock()
+
+        async def blocking_connect():
+            started.set()
+            await asyncio.Event().wait()
+
+        client.connect.side_effect = blocking_connect
+        budget = ConnectionBudget(1)
+        pool = AsyncConnectionPool(
+            config,
+            max_connections=1,
+            client_factory=lambda _config: client,
+            connection_budget=budget,
+        )
+        task = asyncio.create_task(pool.acquire())
+        await asyncio.wait_for(started.wait(), timeout=2)
+        task.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=2)
+        client.disconnect.assert_awaited_once()
+        assert budget.get_metrics()["in_use"] == 0
+        assert pool.get_metrics()["total_connections"] == 0
+        await pool.close_all()
+
+    @pytest.mark.asyncio
+    async def test_close_cancels_wait_on_shared_connection_budget(self, config):
+        budget = ConnectionBudget(1)
+        budget.acquire()  # sync owner saturates the shared budget
+        pool = AsyncConnectionPool(
+            config,
+            max_connections=1,
+            client_factory=lambda _config: _client_mock(),
+            connection_budget=budget,
+        )
+        entered_budget = asyncio.Event()
+        original_acquire = budget.acquire_async
+
+        async def traced_budget_acquire(cancel_event=None):
+            entered_budget.set()
+            return await original_acquire(cancel_event=cancel_event)
+
+        budget.acquire_async = traced_budget_acquire
+        task = asyncio.create_task(pool.acquire())
+        await asyncio.wait_for(entered_budget.wait(), timeout=2)
+        await pool.close_all()
+        with pytest.raises(PoolClosedError, match="connection pool is closed"):
+            await asyncio.wait_for(task, timeout=2)
+
+        assert budget.get_metrics()["in_use"] == 1
+        budget.release()
+        assert budget.get_metrics()["in_use"] == 0
+
+    @pytest.mark.asyncio
+    async def test_cancelling_close_all_finishes_cleanup_before_propagating(self, config):
+        started = asyncio.Event()
+        finish = asyncio.Event()
+        client = _client_mock()
+
+        async def blocked_disconnect():
+            started.set()
+            await finish.wait()
+            client.connected = False
+
+        client.disconnect = AsyncMock(side_effect=blocked_disconnect)
+        budget = ConnectionBudget(1)
+        pool = AsyncConnectionPool(
+            config,
+            max_connections=1,
+            client_factory=lambda _config: client,
+            connection_budget=budget,
+        )
+        await pool.acquire()
+        close_task = asyncio.create_task(pool.close_all())
+        await asyncio.wait_for(started.wait(), timeout=2)
+        close_task.cancel()
+        finish.set()
+
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(close_task, timeout=2)
+        assert budget.get_metrics()["in_use"] == 0
+        assert pool.get_metrics()["total_connections"] == 0
+
+    @pytest.mark.asyncio
+    async def test_close_wakes_semaphore_waiter_without_active_release(self, config):
+        pool = AsyncConnectionPool(config=config, max_connections=1, client_factory=lambda _c: _client_mock())
+        await pool.acquire()
+        entered = asyncio.Event()
+        original_acquire = pool._semaphore.acquire
+
+        async def traced_acquire():
+            entered.set()
+            return await original_acquire()
+
+        pool._semaphore.acquire = traced_acquire
+        task = asyncio.create_task(pool.acquire())
+        await asyncio.wait_for(entered.wait(), timeout=2)
+        await pool.close_all()
+        with pytest.raises(PoolClosedError, match="connection pool is closed"):
+            await asyncio.wait_for(task, timeout=2)
+        assert pool.get_metrics()["total_connections"] == 0
+
+    @pytest.mark.asyncio
+    async def test_duplicate_release_does_not_inflate_capacity(self, config):
+        pool = AsyncConnectionPool(config=config, max_connections=1, client_factory=lambda _c: _client_mock())
+        first = await pool.acquire()
+        await pool.release(first)
+        await pool.release(first)
+
+        leased = await pool.acquire()
+        entered = asyncio.Event()
+        original_acquire = pool._semaphore.acquire
+
+        async def traced_acquire():
+            entered.set()
+            return await original_acquire()
+
+        pool._semaphore.acquire = traced_acquire
+        task = asyncio.create_task(pool.acquire())
+        await asyncio.wait_for(entered.wait(), timeout=2)
+        assert not task.done(), "duplicate release must not create an extra semaphore permit"
+        await pool.release(leased)
+        second = await asyncio.wait_for(task, timeout=2)
+        await pool.release(second)
+        await pool.close_all()
 
     @pytest.mark.asyncio
     async def test_max_connections_enforced(self, config, patched_client):
@@ -598,6 +762,87 @@ class TestAsyncBatchExecutor:
 
         assert result.success == 2
         assert len(created) == 2
+
+    @pytest.mark.asyncio
+    async def test_partial_worker_start_failure_cancels_created_tasks(self, monkeypatch):
+        hosts = [Host(name=f"srv{i}", hostname=f"10.0.0.{i}", username="u") for i in range(5)]
+        executor = AsyncBatchExecutor(host_service=make_mock_service(hosts), max_concurrency=4)
+        real_create_task = asyncio.create_task
+        created: list[asyncio.Task] = []
+
+        def fail_second_create(coro, **kwargs):
+            if created:
+                coro.close()
+                raise RuntimeError("simulated task allocation failure")
+            task = real_create_task(coro, **kwargs)
+            created.append(task)
+            return task
+
+        monkeypatch.setattr(asyncio, "create_task", fail_second_create)
+        with pytest.raises(RuntimeError, match="simulated task allocation failure"):
+            await executor.execute([host.name for host in hosts], "uptime")
+
+        assert len(created) == 1
+        assert created[0].done()
+        assert created[0].cancelled()
+
+    @pytest.mark.asyncio
+    async def test_outer_cancellation_joins_workers_and_releases_internal_pools(self):
+        hosts = [
+            Host(name=f"srv{i}", hostname=f"10.0.0.{i}", username="admin") for i in range(2)
+        ]
+        started = asyncio.Event()
+        finish = asyncio.Event()
+        clients = []
+        started_count = 0
+
+        class BlockingClient:
+            def __init__(self, cfg):  # noqa: ARG002
+                self.connected = False
+                clients.append(self)
+
+            async def connect(self):
+                self.connected = True
+                return self
+
+            async def disconnect(self):
+                self.connected = False
+
+            def is_connected(self):
+                return self.connected
+
+            async def execute(self, command, timeout=None, environment=None):  # noqa: ARG002
+                nonlocal started_count
+                started_count += 1
+                if started_count == 2:
+                    started.set()
+                await finish.wait()
+                return CommandResult(command, "", "", 0)
+
+        budget = ConnectionBudget(2)
+        executor = AsyncBatchExecutor(
+            host_service=make_mock_service(hosts),
+            max_concurrency=2,
+            connection_budget=budget,
+        )
+        current = asyncio.current_task()
+        baseline = {task for task in asyncio.all_tasks() if task is not current}
+        with patch("remote_cmd.service.async_batch_executor.AsyncSSHClient", BlockingClient):
+            task = asyncio.create_task(executor.execute([host.name for host in hosts], "uptime"))
+            await asyncio.wait_for(started.wait(), timeout=2)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, timeout=2)
+
+        assert len(clients) == 2
+        assert all(not client.connected for client in clients)
+        assert budget.get_metrics()["in_use"] == 0
+        leaked = [
+            candidate
+            for candidate in asyncio.all_tasks() - baseline
+            if candidate is not current and not candidate.done()
+        ]
+        assert leaked == []
 
 
 # ============================================================================

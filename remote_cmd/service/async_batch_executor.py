@@ -31,6 +31,7 @@ Paramiko）相比，本执行器在事件循环上真正并发地执行 SSH 命�
 
 import asyncio
 import contextlib
+import inspect
 import logging
 import time
 from typing import Callable, Optional
@@ -187,85 +188,73 @@ class AsyncBatchExecutor:
         completed_lock = asyncio.Lock()
         results: dict[str, BatchHostResult] = {}
 
-        # 以前 task-per-host 调度的问题：信号量只限制并发 SSH 操作，
-        # task 创建数等于主机数，1k+ 主机的批次会创建 1k+ 个
-        # 高权重 Task 对象。改为固定 worker 数的有界队列：
-        # 只创建 min(max_concurrency, 主机数) 个 worker，从共享 queue
-        # 拉取主机执行；调度内存与主机数解耦。（评审 P1）
-
-        queue: asyncio.Queue[Optional[str]] = asyncio.Queue()
-        for name in host_names:
-            queue.put_nowait(name)
+        # 固定数量的 worker 直接消费迭代器，不再为每个 host 创建 Task，
+        # 也不在 queue 中复制 N 个待执行项。BatchResult 仍按兼容契约保留 N 项。
+        host_iter = iter(host_names)
         worker_count = min(self._max_concurrency, total)
-        # 每个 worker 消费一个 sentinel 后退出
-        for _ in range(worker_count):
-            queue.put_nowait(None)
 
         async def _worker() -> None:
             nonlocal completed_counter
             while True:
-                name = await queue.get()
+                name = next(host_iter, None)
+                if name is None:
+                    return
+                use_pool = self._pool_factory is not None or retry_count > 0 or total > 1
                 try:
-                    if name is None:
-                        return
-                    use_pool = self._pool_factory is not None or retry_count > 0 or total > 1
-                    try:
-                        result = await self._execute_on_host(
-                            name,
-                            command,
-                            retry_count,
-                            retry_delay,
-                            pool=pools.get(name),
-                            use_pool=use_pool,
-                            environment=environment,
-                        )
-                    except Exception as e:  # noqa: BLE001
-                        # 兜底：单主机执行意外异常（如内部池构造失败）不得
-                        # 让 worker 退出——worker 退出会使剩余队列项永不
-                        # task_done，queue.join() 永久阻塞导致整批挂起。
-                        # 转换为错误结果，保持 execute 的"错误结果而非异常"契约。
-                        logger.exception("unexpected error executing host %s", name)
-                        result = BatchHostResult(
-                            host=name,
-                            success=False,
-                            command=command,
-                            error=f"internal error: {e}",
-                        )
-                    async with completed_lock:
-                        results[name] = result
-                        completed = completed_counter + 1
-                        completed_counter = completed
+                    result = await self._execute_on_host(
+                        name,
+                        command,
+                        retry_count,
+                        retry_delay,
+                        pool=pools.get(name),
+                        use_pool=use_pool,
+                        environment=environment,
+                    )
+                except Exception as e:  # noqa: BLE001
+                    # 单主机意外异常不能杀死 worker 并遗留未消费主机。
+                    logger.exception("unexpected error executing host %s", name)
+                    result = BatchHostResult(
+                        host=name,
+                        success=False,
+                        command=command,
+                        error=f"internal error: {e}",
+                    )
+                async with completed_lock:
+                    results[name] = result
+                    completed = completed_counter + 1
+                    completed_counter = completed
 
-                        if progress_callback is not None:
-                            # 包裹回调：用户提供的 progress_callback 抛异常时不应中断整个批次，
-                            # 否则 gather 会向上抛出首异常、BatchResult 永不构建、
-                            # 已完成结果丢失且其余 task 沦为孤儿。
-                            try:
-                                rv = progress_callback(completed, total, name)
-                                if asyncio.iscoroutine(rv):
-                                    await rv
-                            except Exception as e:  # noqa: BLE001
-                                logger.warning("progress_callback for %s raised: %s", name, e)
+                    if progress_callback is not None:
+                        # 用户回调错误不应中断整个批次并遗留孤儿 worker。
+                        try:
+                            rv = progress_callback(completed, total, name)
+                            if inspect.isawaitable(rv):
+                                await rv
+                        except Exception as e:  # noqa: BLE001
+                            logger.warning("progress_callback for %s raised: %s", name, e)
 
-                        logger.debug(
-                            "[%s/%s] %s: %s (%.1fs)",
-                            completed,
-                            total,
-                            name,
-                            "✓" if result.success else "✗",
-                            result.duration,
-                        )
-                finally:
-                    queue.task_done()
+                    logger.debug(
+                        "[%s/%s] %s: %s (%.1fs)",
+                        completed,
+                        total,
+                        name,
+                        "✓" if result.success else "✗",
+                        result.duration,
+                    )
 
-        tasks = [asyncio.create_task(_worker()) for _ in range(worker_count)]
+        tasks: list[asyncio.Task[None]] = []
         try:
-            await queue.join()
+            for _ in range(worker_count):
+                tasks.append(asyncio.create_task(_worker()))
+            await asyncio.gather(*tasks)
         except KeyboardInterrupt:
             logger.warning("batch execution interrupted by user")
             await self._cancel_and_mark_interrupted(tasks, host_names, results, command)
-        # worker 消费完 sentinel 后已全部退出，gather 立即返回
-        await asyncio.gather(*tasks, return_exceptions=True)
+        except BaseException:
+            # 外层取消（或 worker 的 BaseException）不能让 execute 返回后仍有
+            # 连接操作在后台运行；先取消并 join 所有 worker，再保留原始异常。
+            await self._cancel_workers(tasks)
+            raise
 
         duration = time.time() - start
         success_count = sum(1 for r in results.values() if r.success)
@@ -293,11 +282,9 @@ class AsyncBatchExecutor:
         command: str,
     ) -> None:
         """用户中断时取消所有任务，并为未完成主机创建失败记录。"""
-        for t in tasks:
-            t.cancel()
-        # 等待取消完成，避免 pending task 告警
-        await asyncio.gather(*tasks, return_exceptions=True)
-        # 为尚未有结果的主机创建失败记录
+        await self._cancel_workers(tasks)
+
+        # 为尚未有结果的主机创建失败记录。
         for name in host_names:
             if name not in results:
                 results[name] = BatchHostResult(
@@ -306,6 +293,21 @@ class AsyncBatchExecutor:
                     command=command,
                     error="user interrupted",
                 )
+
+    async def _cancel_workers(self, tasks: list[asyncio.Task[None]]) -> None:
+        """取消并等待 worker 收尾；重复取消不应遗留孤儿任务。"""
+        for t in tasks:
+            if not t.done():
+                t.cancel()
+        cleanup = asyncio.gather(*tasks, return_exceptions=True)
+        while not cleanup.done():
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                # 清理过程中再次收到取消也不能遗留 worker；完成清理后由
+                # execute 的异常路径继续传播调用方的取消。
+                continue
+        await cleanup
 
     def _prepare_pool(
         self,

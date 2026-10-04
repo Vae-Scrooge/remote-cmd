@@ -28,11 +28,14 @@
 """
 
 import contextlib
+import inspect
 import logging
+import queue
+import threading
 import time
-from collections.abc import Callable, Coroutine
-from concurrent.futures import Future, ThreadPoolExecutor, as_completed
-from typing import Any, Optional, cast
+from collections.abc import Callable
+from concurrent.futures import Future, ThreadPoolExecutor
+from typing import TYPE_CHECKING, Any, Optional, cast
 
 from remote_cmd.core.budget import ConnectionBudget
 from remote_cmd.core.host import Host
@@ -52,6 +55,13 @@ from remote_cmd.service._types import (
 )
 from remote_cmd.service.host_service import HostService
 from remote_cmd.service.retry_policy import compute_backoff_delay, is_retryable
+
+if TYPE_CHECKING:
+    from remote_cmd.service.async_batch_executor import AsyncBatchExecutor as _AsyncBatchExecutor
+else:
+    # Runtime import would create a service-module cycle; pdoc can still
+    # resolve the private annotation without importing the optional kernel.
+    _AsyncBatchExecutor = Any
 
 logger = logging.getLogger(__name__)
 
@@ -143,7 +153,7 @@ class BatchExecutor:
         self._connection_budget = connection_budget
         # 延迟导入以避免在未安装 asyncssh 的环境下的导入失败
         # 使用前向引用避免在模块加载期引入 asyncssh 硬依赖（开启 use_async 时才惰性导入）
-        self._async_executor: Optional["AsyncBatchExecutor"] = None  # noqa: UP037
+        self._async_executor: Optional["_AsyncBatchExecutor"] = None  # noqa: UP037
         if use_async:
             from remote_cmd.service.async_batch_executor import AsyncBatchExecutor
 
@@ -258,7 +268,7 @@ class BatchExecutor:
         progress_callback: Optional[ProgressCallback],
         environment: Optional[dict[str, str]] = None,
     ) -> BatchResult:
-        """同步路径：ThreadPoolExecutor + 按主机惰性创建/关闭连接池"""
+        """同步路径：固定 worker 集合消费 host iterator，调度内存为 O(C)。"""
         total = len(host_names)
         results: dict[str, BatchHostResult] = {}
         start_time = time.time()
@@ -266,63 +276,108 @@ class BatchExecutor:
         logger.info(f"batch execution started: {total} hosts, concurrency={self._max_concurrency}")
 
         with ThreadPoolExecutor(max_workers=self._max_concurrency) as executor:
-            future_map = self._submit_tasks(
-                executor,
-                host_names,
-                command,
-                retry_count,
-                retry_delay,
-                total,
-                environment,
+            # 外部池工厂历史上在 worker 提交前由调用线程运行；保留该所有权
+            # 和调用线程语义。默认内部池仍由每个 worker 按主机惰性创建。
+            external_pools: dict[str, SyncConnectionPool] = {}
+            if self._pool_factory is not None:
+                for host_name in host_names:
+                    pool = self._prepare_pool(host_name)
+                    if pool is not None:
+                        external_pools[host_name] = pool
+
+            host_iter = iter(host_names)
+            iterator_lock = threading.Lock()
+            completed_queue: queue.Queue[tuple[str, BatchHostResult | BaseException]] = queue.Queue(
+                maxsize=max(1, self._max_concurrency)
             )
-            self._collect_results(
-                future_map, host_names, command, progress_callback, results, total
-            )
+            stop_workers = threading.Event()
+            use_pool = self._pool_factory is not None or retry_count > 0 or total > 1
+
+            def next_host() -> Optional[str]:
+                with iterator_lock:
+                    return next(host_iter, None)
+
+            def publish_completion(
+                host_name: str, result: BatchHostResult | BaseException
+            ) -> bool:
+                # Bound completed-but-not-collected outputs too. Timed puts let
+                # interruption stop a producer even if the consumer has exited.
+                while not stop_workers.is_set():
+                    try:
+                        completed_queue.put((host_name, result), timeout=0.05)
+                        return True
+                    except queue.Full:
+                        continue
+                return False
+
+            def worker() -> None:
+                while not stop_workers.is_set():
+                    host_name = next_host()
+                    if host_name is None:
+                        return
+                    try:
+                        result = self._execute_on_host(
+                            host_name,
+                            command,
+                            retry_count,
+                            retry_delay,
+                            external_pools.get(host_name),
+                            use_pool,
+                            environment,
+                        )
+                    except Exception as exc:  # noqa: BLE001 - preserve per-host failure contract
+                        result = BatchHostResult(
+                            host=host_name,
+                            success=False,
+                            command=command,
+                            error=f"scheduling error: {exc}",
+                        )
+                    except BaseException as exc:  # noqa: BLE001 - report worker interrupts to caller
+                        if not publish_completion(host_name, exc):
+                            return
+                        return
+                    if not publish_completion(host_name, result):
+                        return
+
+            worker_count = min(self._max_concurrency, total)
+            worker_futures: dict[Future[None], str] = {}
+            try:
+                for index in range(worker_count):
+                    worker_futures[executor.submit(worker)] = f"worker-{index}"
+            except BaseException:
+                # If thread creation fails after some workers started, stop
+                # their producers before leaving the executor context; otherwise
+                # they could fill the bounded completion queue and block shutdown.
+                stop_workers.set()
+                for future in worker_futures:
+                    future.cancel()
+                raise
+
+            completed = 0
+            try:
+                while completed < total:
+                    host_name, outcome = completed_queue.get()
+                    if isinstance(outcome, BaseException):
+                        raise outcome
+                    results[host_name] = outcome
+                    completed += 1
+                    self._invoke_progress_callback(
+                        progress_callback, completed, total, host_name, outcome
+                    )
+                for future in worker_futures:
+                    future.result()
+            except KeyboardInterrupt:
+                logger.warning("batch execution interrupted by user")
+                stop_workers.set()
+                self._handle_interrupt(worker_futures, host_names, command, results)
+            except BaseException:
+                stop_workers.set()
+                for future in worker_futures:
+                    future.cancel()
+                raise
 
         duration = time.time() - start_time
         return self._build_result(total, results, duration)
-
-    def _submit_tasks(
-        self,
-        executor: ThreadPoolExecutor,
-        host_names: list[str],
-        command: str,
-        retry_count: int,
-        retry_delay: float,
-        total: int,
-        environment: Optional[dict[str, str]] = None,
-    ) -> dict[Future[BatchHostResult], str]:
-        """提交任务到线程池，返回 future_map
-
-        - 外部 ``pool_factory``：在提交前统一准备（工厂调用保持在主线程），
-          池所有权归调用方，executor 绝不关闭。
-        - 内部池：不在提交前创建；worker 解析主机成功后惰性创建并在该
-          主机（含重试）结束后关闭，整批并发存活连接数受
-          ``max_concurrency`` 约束。
-        """
-        future_map = {}
-        external_pools: dict[str, SyncConnectionPool] = {}
-        if self._pool_factory is not None:
-            for host_name in host_names:
-                pool = self._prepare_pool(host_name)
-                if pool is not None:
-                    external_pools[host_name] = pool
-
-        for host_name in host_names:
-            # 连接池：外部注入时始终启用；否则多主机或需重试时启用内部池
-            use_pool = self._pool_factory is not None or retry_count > 0 or total > 1
-            future = executor.submit(
-                self._execute_on_host,
-                host_name,
-                command,
-                retry_count,
-                retry_delay,
-                external_pools.get(host_name),
-                use_pool,
-                environment,
-            )
-            future_map[future] = host_name
-        return future_map
 
     def _prepare_pool(self, host_name: str) -> Optional[SyncConnectionPool]:
         """通过外部 ``pool_factory`` 为指定主机准备连接池
@@ -344,33 +399,6 @@ class BatchExecutor:
         # 工厂签名有意为 Any（同步/异步内核共用同一注入点）；此处
         # 处于同步路径，返回类型由调用方契约保证为 SyncConnectionPool
         return cast(SyncConnectionPool, self._pool_factory(config))
-
-    def _collect_results(
-        self,
-        future_map: dict[Future[BatchHostResult], str],
-        host_names: list[str],
-        command: str,
-        progress_callback: Optional[ProgressCallback],
-        results: dict[str, BatchHostResult],
-        total: int,
-    ) -> int:
-        """收集结果并处理进度回调与中断"""
-        completed = 0
-        try:
-            for future in as_completed(future_map):
-                host_name = future_map[future]
-                result = self._process_future_result(future, host_name, command)
-                results[host_name] = result
-                completed += 1
-                self._invoke_progress_callback(
-                    progress_callback, completed, total, host_name, result
-                )
-        except KeyboardInterrupt:
-            logger.warning("batch execution interrupted by user")
-            self._handle_interrupt(future_map, host_names, command, results)
-            completed = len(results)
-
-        return completed
 
     def _process_future_result(
         self, future: Future[BatchHostResult], host_name: str, command: str
@@ -396,11 +424,15 @@ class BatchExecutor:
     ) -> None:
         """调用进度回调并记录日志"""
         if progress_callback:
-            rv = progress_callback(completed, total, host_name)
-            if isinstance(rv, Coroutine):
-                logger.warning("同步内核不支持异步进度回调，请使用 use_async=True")
-                # 显式关闭未 await 的协程，避免 RuntimeWarning 与资源泄漏
-                rv.close()
+            try:
+                rv = progress_callback(completed, total, host_name)
+                if inspect.isawaitable(rv):
+                    logger.warning("同步内核不支持异步进度回调，请使用 use_async=True")
+                    # 显式关闭未 await 的协程，避免 RuntimeWarning 与资源泄漏
+                    if inspect.iscoroutine(rv):
+                        rv.close()
+            except Exception as e:  # noqa: BLE001 - callback errors must not abort the batch
+                logger.warning("progress_callback for %s raised: %s", host_name, e)
 
         logger.debug(
             f"[{completed}/{total}] {host_name}: "
@@ -410,7 +442,7 @@ class BatchExecutor:
 
     def _handle_interrupt(
         self,
-        future_map: dict[Future[BatchHostResult], str],
+        future_map: dict[Future[Any], str],
         host_names: list[str],
         command: str,
         results: dict[str, BatchHostResult],

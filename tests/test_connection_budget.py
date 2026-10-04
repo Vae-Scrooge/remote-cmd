@@ -193,6 +193,138 @@ class TestConnectionBudgetAsyncQueue:
         budget.release()
         assert budget.get_metrics()["in_use"] == 0
 
+
+class TestConnectionBudgetFifo:
+    """Sync/async waiters use the same FIFO reservation path."""
+
+    @pytest.mark.asyncio
+    async def test_sync_waiter_precedes_later_async_waiter(self):
+        import threading
+
+        budget = ConnectionBudget(1)
+        budget.acquire()
+        first_queued = threading.Event()
+        second_queued = threading.Event()
+        original_dispatch = budget._dispatch_waiters_locked
+
+        def observe_dispatch():
+            original_dispatch()
+            count = len(budget._waiters)
+            if count >= 1:
+                first_queued.set()
+            if count >= 2:
+                second_queued.set()
+
+        budget._dispatch_waiters_locked = observe_dispatch
+        sync_acquired = threading.Event()
+        release_sync = threading.Event()
+
+        def sync_waiter():
+            budget.acquire()
+            sync_acquired.set()
+            try:
+                assert release_sync.wait(timeout=2)
+            finally:
+                budget.release()
+
+        sync_thread = threading.Thread(target=sync_waiter, daemon=True)
+        sync_thread.start()
+        assert await asyncio.to_thread(first_queued.wait, 2)
+
+        async_acquired = asyncio.Event()
+
+        async def async_waiter():
+            await budget.acquire_async()
+            async_acquired.set()
+            await budget.release_async()
+
+        async_task = asyncio.create_task(async_waiter())
+        assert await asyncio.to_thread(second_queued.wait, 2)
+
+        budget.release()
+        assert await asyncio.to_thread(sync_acquired.wait, 2)
+        assert not async_task.done(), "later async waiter must not steal the reserved slot"
+        release_sync.set()
+        await asyncio.wait_for(async_acquired.wait(), timeout=2)
+        await asyncio.wait_for(async_task, timeout=2)
+        sync_thread.join(timeout=2)
+
+        assert not sync_thread.is_alive()
+        assert budget.get_metrics()["in_use"] == 0
+        assert budget.get_metrics()["waiters"] == 0
+
+    @pytest.mark.asyncio
+    async def test_cancel_after_slot_reserved_wakes_next_waiter(self):
+        budget = ConnectionBudget(1)
+        await budget.acquire_async()
+        registered = asyncio.Event()
+        original_dispatch = budget._dispatch_waiters_locked
+
+        def observe_dispatch():
+            original_dispatch()
+            if len(budget._waiters) >= 2:
+                registered.set()
+
+        budget._dispatch_waiters_locked = observe_dispatch
+        first_acquired = asyncio.Event()
+        second_acquired = asyncio.Event()
+
+        async def waiter(acquired: asyncio.Event):
+            await budget.acquire_async()
+            acquired.set()
+            await budget.release_async()
+
+        first = asyncio.create_task(waiter(first_acquired))
+        second = asyncio.create_task(waiter(second_acquired))
+        await asyncio.wait_for(registered.wait(), timeout=2)
+
+        await budget.release_async()  # slot is reserved for FIFO head before wake
+        first.cancel()  # cancellation before its coroutine consumes the reservation
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        await asyncio.wait_for(second_acquired.wait(), timeout=2)
+        await asyncio.wait_for(second, timeout=2)
+
+        assert not first_acquired.is_set()
+        assert budget.get_metrics()["in_use"] == 0
+        assert budget.get_metrics()["waiters"] == 0
+
+    @pytest.mark.asyncio
+    async def test_async_waiter_on_another_event_loop_is_woken_thread_safely(self):
+        import threading
+
+        budget = ConnectionBudget(1)
+        budget.acquire()
+        registered = threading.Event()
+        original_dispatch = budget._dispatch_waiters_locked
+
+        def observe_dispatch():
+            original_dispatch()
+            if budget._waiters:
+                registered.set()
+
+        budget._dispatch_waiters_locked = observe_dispatch
+        result = {}
+
+        def other_loop_thread():
+            async def wait_for_budget():
+                await budget.acquire_async()
+                result["acquired"] = True
+                await budget.release_async()
+
+            asyncio.run(wait_for_budget())
+
+        worker = threading.Thread(target=other_loop_thread, daemon=True)
+        worker.start()
+        assert await asyncio.to_thread(registered.wait, 2)
+        budget.release()  # release from this loop/thread wakes the other loop
+        worker.join(timeout=2)
+
+        assert not worker.is_alive()
+        assert result["acquired"] is True
+        assert budget.get_metrics()["in_use"] == 0
+        assert budget.get_metrics()["waiters"] == 0
+
     @pytest.mark.asyncio
     async def test_sync_waiter_woken_by_release(self):
         """同步等待者（独立线程）被释放唤醒，不依赖轮询。"""
@@ -226,12 +358,12 @@ class TestConnectionBudgetAsyncQueue:
         budget.acquire()
         task = asyncio.create_task(budget.acquire_async())
         await asyncio.sleep(0.05)  # 确保已注册等待
-        assert len(budget._async_waiters) == 1
+        assert len(budget._waiters) == 1
 
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
-        assert len(budget._async_waiters) == 0  # 无残留等待者
+        assert len(budget._waiters) == 0  # 无残留等待者
 
         budget.release()
         await asyncio.wait_for(budget.acquire_async(), timeout=1.0)

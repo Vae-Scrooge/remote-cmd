@@ -14,6 +14,7 @@
 import asyncio
 import contextlib
 import logging
+import threading
 import time
 import uuid
 from types import TracebackType
@@ -68,6 +69,10 @@ class AsyncConnectionPool:
                 mock（与 SyncConnectionPool 对齐）
             connection_budget: 可选的全局连接预算（ConnectionBudget）
         """
+        if isinstance(max_connections, bool) or not isinstance(max_connections, int):
+            raise ValueError("max_connections must be a positive integer")
+        if max_connections <= 0:
+            raise ValueError("max_connections must be a positive integer")
         self.config = config
         self._max = max_connections
         self._max_lifetime = max_lifetime
@@ -81,10 +86,17 @@ class AsyncConnectionPool:
         self._connections: list[AsyncSSHClient] = []
         self._free: asyncio.Queue[AsyncSSHClient] = asyncio.Queue()
         self._semaphore = asyncio.Semaphore(max_connections)
-        self._lock = asyncio.Lock()
+        # Bookkeeping only; all mutations happen between await points on the
+        # owning event loop. A regular lock keeps release/close accounting
+        # non-cancellable and also protects synchronous metrics snapshots.
+        self._lock = threading.Lock()
+        self._acquire_waiters = 0
+        self._leased: set[int] = set()
+        self._closed_leases: set[int] = set()
 
         # 生命周期状态：close_all() 后置 True，禁止再借用/归还
         self._closed = False
+        self._closed_event = threading.Event()
 
         # 指标
         self._total_created = 0
@@ -94,6 +106,9 @@ class AsyncConnectionPool:
 
         # 后台清理任务
         self._monitor_task: Optional[asyncio.Task[None]] = None
+        self._close_task: Optional[asyncio.Task[None]] = None
+        self._close_in_progress = False
+        self._close_finished: Optional[asyncio.Event] = None
 
         # 连接元数据（副表，避免侵入 AsyncSSHClient 私有属性）
         self._meta: dict[int, ConnectionMeta] = {}
@@ -103,20 +118,23 @@ class AsyncConnectionPool:
     # ------------------------------------------------------------------
     def get_metrics(self) -> dict[str, Any]:
         """获取连接池指标快照。"""
-        return {
-            # 当前在用的连接数 = 存活连接总数 - 空闲连接数。
-            # 不能用 total_created - total_released：复用连接时
-            # total_released 会超过 total_created，导致 active 为负。
-            "active": len(self._connections) - self._free.qsize(),
-            "idle": self._free.qsize(),
-            "total_connections": len(self._connections),
-            "total_created": self._total_created,
-            "reconnects": self._total_reconnects,
-            "failed": self._total_failed,
-            "max_connections": self._max,
-            "max_lifetime": self._max_lifetime,
-            "idle_timeout": self._idle_timeout,
-        }
+        with self._lock:
+            idle = self._free.qsize()
+            total = len(self._connections)
+            return {
+                # 当前在用的连接数 = 存活连接总数 - 空闲连接数。
+                # 不能用 total_created - total_released：复用连接时
+                # total_released 会超过 total_created，导致 active 为负。
+                "active": total - idle,
+                "idle": idle,
+                "total_connections": total,
+                "total_created": self._total_created,
+                "reconnects": self._total_reconnects,
+                "failed": self._total_failed,
+                "max_connections": self._max,
+                "max_lifetime": self._max_lifetime,
+                "idle_timeout": self._idle_timeout,
+            }
 
     # ------------------------------------------------------------------
     # 获取 / 释放
@@ -134,90 +152,156 @@ class AsyncConnectionPool:
         """
         if self._closed:
             raise PoolClosedError("connection pool is closed")
-        await self._semaphore.acquire()
-        # 竞态守卫：等待信号量期间 close_all() 可能已完成——
-        # 取得槽位后必须复查，已关闭则归还槽位并抛出既有错误，
-        # 否则会向调用方发放来自已关闭池的连接
+        self._acquire_waiters += 1
+        try:
+            await self._semaphore.acquire()
+        finally:
+            self._acquire_waiters -= 1
+
+        # close_all() 为已登记 waiter 发放关闭唤醒许可；已关闭池不再
+        # 归还该许可，避免在生命周期结束后制造虚假容量。
         if self._closed:
-            self._semaphore.release()
             raise PoolClosedError("connection pool is closed")
         try:
             # 优先复用空闲连接
-            while not self._free.empty():
-                conn = self._free.get_nowait()
-                if await self._check_connection(conn):
-                    self._touch(conn)
-                    return conn
+            while True:
+                if self._closed:
+                    raise PoolClosedError("connection pool is closed")
+                try:
+                    conn = self._free.get_nowait()
+                except asyncio.QueueEmpty:
+                    conn = None
+                if conn is None:
+                    break
+
+                try:
+                    healthy = await self._check_connection(conn)
+                except BaseException:
+                    await self._close_connection(conn)
+                    raise
+                if healthy:
+                    if not self._closed:
+                        self._touch(conn)
+                        self._leased.add(id(conn))
+                        return conn
+                    await self._close_connection(conn)
+                    raise PoolClosedError("connection pool is closed")
                 await self._close_connection(conn)
 
             # 创建新连接（信号量已保证未超额）
-            return await self._create_connection()
+            conn = await self._create_connection()
+            if self._closed or id(conn) not in self._meta:
+                raise PoolClosedError("connection pool is closed")
+            self._leased.add(id(conn))
+            return conn
         except BaseException:
-            self._semaphore.release()
+            if not self._closed:
+                self._semaphore.release()
             raise
 
     async def release(self, conn: Optional[AsyncSSHClient]) -> None:
         """归还连接到池中（如已断开/超时则关闭）。"""
         if conn is None:
             return
-        # 池已关闭：不把连接放回空闲队列（避免游离连接），直接关闭并释放槽位
-        if self._closed:
+        conn_id = id(conn)
+        with self._lock:
+            if conn_id in self._leased:
+                self._leased.remove(conn_id)
+                self._total_released += 1
+            elif conn_id in self._closed_leases:
+                self._closed_leases.remove(conn_id)
+                self._total_released += 1
+            else:
+                return
+            pool_closed = self._closed
+            meta = self._meta.get(conn_id)
+        if pool_closed:
             await self._close_connection(conn)
-            self._semaphore.release()
-            self._total_released += 1
             return
-        meta = self._meta.get(id(conn))
+
         if meta is not None:
             meta.last_used = time.time()
 
-        if not conn.is_connected():
+        try:
+            connected = conn.is_connected()
+        except BaseException:
             await self._close_connection(conn)
-            self._semaphore.release()
-            return
+            if not self._closed:
+                self._semaphore.release()
+            raise
 
-        # 生命周期 / 空闲超时则关闭
-        if meta and should_close(meta, self._max_lifetime, self._idle_timeout, True):
-            await self._close_connection(conn)
-            self._semaphore.release()
+        close_conn = not connected or (
+            meta is not None and should_close(meta, self._max_lifetime, self._idle_timeout, True)
+        )
+        if close_conn:
+            try:
+                await self._close_connection(conn)
+            finally:
+                if not self._closed:
+                    self._semaphore.release()
             return
 
         try:
-            async with self._lock:
-                self._free.put_nowait(conn)
-            # 放回 free 后释放许可：free 中的连接不再占用并发槽位，
-            # 后续 acquire 会从 free 直接复用（无需再次获取许可）
-            self._semaphore.release()
+            with self._lock:
+                if self._closed:
+                    close_conn = True
+                else:
+                    self._free.put_nowait(conn)
+                    # 放回 free 后释放许可：free 中的连接不再占用并发槽位，
+                    # 后续 acquire 会从 free 直接复用（无需再次获取许可）
+                    self._semaphore.release()
         except asyncio.QueueFull:
+            close_conn = True
+            if not self._closed:
+                self._semaphore.release()
+        if close_conn:
             await self._close_connection(conn)
-            self._semaphore.release()
-        finally:
-            self._total_released += 1
 
     # ------------------------------------------------------------------
     # 内部
     # ------------------------------------------------------------------
     async def _create_connection(self) -> AsyncSSHClient:
         client = self._client_factory(self.config)
-        if self._connection_budget is not None:
-            await self._connection_budget.acquire_async()
+        budget_held = False
         try:
-            await client.connect()
-        except Exception:  # noqa: BLE001
-            # 信号量由 acquire() 的 except 统一释放，此处不再释放。
-            # 连接预算仅在成功建连后由 _close_connection 释放；
-            # 建连失败立即归还预算，避免预算泄漏
             if self._connection_budget is not None:
-                await self._connection_budget.release_async()
-            self._total_failed += 1
+                await self._connection_budget.acquire_async(cancel_event=self._closed_event)
+                budget_held = True
+            if self._closed:
+                raise PoolClosedError("connection pool is closed")
+            await client.connect()
+            now = time.time()
+            with self._lock:
+                if self._closed:
+                    raise PoolClosedError("connection pool is closed")
+                self._connections.append(client)
+                self._meta[id(client)] = ConnectionMeta(
+                    created_at=now,
+                    last_used=now,
+                    conn_id=uuid.uuid4().hex,
+                )
+                self._total_created += 1
+                # Budget 所有权转移至由 pool 跟踪的 live connection。
+                budget_held = False
+        except BaseException as exc:
+            # connect() 可能在取消或 close race 时已创建底层资源；即使
+            # connect 失败也显式 disconnect，并只归还尚未转移的预算槽位。
+            cleanup = asyncio.create_task(client.disconnect())
+            while not cleanup.done():
+                try:
+                    await asyncio.shield(cleanup)
+                except asyncio.CancelledError:
+                    # 保证清理结束后再传播原始取消/异常。
+                    continue
+                except Exception:  # noqa: BLE001 - best-effort close of an untracked client
+                    break
+            with contextlib.suppress(Exception, asyncio.CancelledError):
+                cleanup.result()
+            if budget_held and self._connection_budget is not None:
+                self._connection_budget.release()
+            if isinstance(exc, Exception):
+                self._total_failed += 1
             raise
-        self._connections.append(client)
-        now = time.time()
-        self._meta[id(client)] = ConnectionMeta(
-            created_at=now,
-            last_used=now,
-            conn_id=uuid.uuid4().hex,
-        )
-        self._total_created += 1
         return client
 
     def _touch(self, conn: AsyncSSHClient) -> None:
@@ -248,22 +332,36 @@ class AsyncConnectionPool:
             return False
 
     async def _close_connection(self, conn: AsyncSSHClient) -> None:
-        with contextlib.suppress(Exception):
+        # 在首个 await 前摘除状态，确保 close_all / release / monitor 并发
+        # 关闭同一连接时，budget 只释放一次。
+        with self._lock:
+            self._meta.pop(id(conn), None)
+            tracked = any(existing is conn for existing in self._connections)
+            if tracked:
+                self._connections = [
+                    existing for existing in self._connections if existing is not conn
+                ]
+            self._leased.discard(id(conn))
+        try:
             await conn.disconnect()
-        self._meta.pop(id(conn), None)
-        tracked = conn in self._connections
-        if tracked:
-            self._connections.remove(conn)
+        except asyncio.CancelledError:
+            if tracked and self._connection_budget is not None:
+                self._connection_budget.release()
+            raise
+        except Exception:  # noqa: BLE001 - cleanup must continue
+            logger.debug("error closing pooled SSH connection", exc_info=True)
         # exactly-once：仅对仍被池追踪的连接释放预算。
         # close_all 与 release 可能对同一连接重复调用 _close_connection，
         # 用 tracked 守卫避免预算被超额释放（BoundedSemaphore 会抛 ValueError）
         if tracked and self._connection_budget is not None:
-            await self._connection_budget.release_async()
+            self._connection_budget.release()
 
     # ------------------------------------------------------------------
     # 后台监控
     # ------------------------------------------------------------------
     def _start_monitor(self) -> None:
+        if self._closed:
+            raise PoolClosedError("connection pool is closed")
         if self._monitor_task is None or self._monitor_task.done():
             self._monitor_task = asyncio.create_task(self._monitor_loop())
 
@@ -288,10 +386,13 @@ class AsyncConnectionPool:
         # 在锁保护下排空 _free 快照，绝不替换队列对象。
         # 旧实现 self._free = kept 会替换队列对象，在 await 让出点 release()
         # 可能 put 到旧队列导致连接泄漏（asyncio 协程交错使竞态比同步版更易触发）。
-        async with self._lock:
+        with self._lock:
             snapshot: list[AsyncSSHClient] = []
-            while not self._free.empty():
-                snapshot.append(self._free.get_nowait())
+            while True:
+                try:
+                    snapshot.append(self._free.get_nowait())
+                except asyncio.QueueEmpty:
+                    break
         keep: list[AsyncSSHClient] = []
         for conn in snapshot:
             meta = self._meta.get(id(conn))
@@ -300,9 +401,15 @@ class AsyncConnectionPool:
                 continue
             keep.append(conn)
         # 将存活连接放回同一队列对象
-        async with self._lock:
-            for conn in keep:
-                self._free.put_nowait(conn)
+        close_after_snapshot: list[AsyncSSHClient] = []
+        with self._lock:
+            if self._closed:
+                close_after_snapshot = keep
+            else:
+                for conn in keep:
+                    self._free.put_nowait(conn)
+        for conn in close_after_snapshot:
+            await self._close_connection(conn)
 
     # ------------------------------------------------------------------
     # 上下文管理
@@ -331,13 +438,73 @@ class AsyncConnectionPool:
 
     async def close_all(self) -> None:
         """关闭池中所有连接并停止监控。"""
-        self._closed = True
-        self.stop_monitor()
-        for conn in list(self._connections):
+        if self._close_finished is None:
+            self._close_finished = asyncio.Event()
+        if self._close_task is not None:
+            await asyncio.shield(self._close_task)
+            return
+        if self._close_in_progress:
+            await self._close_finished.wait()
+            if self._close_task is not None:
+                await asyncio.shield(self._close_task)
+            return
+        if self._closed and self._close_finished.is_set():
+            return
+
+        self._close_in_progress = True
+        if self._close_task is None:
+            self._closed = True
+            self._closed_event.set()
+            # 唤醒 per-pool semaphore waiter；它们醒来后检查 _closed 并退出。
+            for _ in range(self._acquire_waiters):
+                self._semaphore.release()
+            self._closed_leases.update(self._leased)
+            self._leased.clear()
+            with self._lock:
+                while True:
+                    try:
+                        self._free.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
+                conns = list(self._connections)
+            if self._connection_budget is not None:
+                self._connection_budget._notify_waiters()
+            self.stop_monitor()
+        monitor = self._monitor_task
+        try:
+            if monitor is not None:
+                await asyncio.gather(monitor, return_exceptions=True)
+            for conn in conns:
+                await self._close_connection(conn)
+        except asyncio.CancelledError:
+            # Normal close uses no auxiliary Task. If caller cancellation
+            # interrupts cleanup, shield a recovery Task so resources are not
+            # orphaned, then propagate cancellation.
+            self._close_task = asyncio.create_task(self._finish_close_all(conns, monitor))
+            cleanup = self._close_task
+            while not cleanup.done():
+                try:
+                    await asyncio.shield(cleanup)
+                except asyncio.CancelledError:
+                    continue
+            with contextlib.suppress(Exception):
+                cleanup.result()
+            self._close_in_progress = False
+            self._close_finished.set()
+            raise
+        else:
+            self._close_in_progress = False
+            self._close_finished.set()
+
+    async def _finish_close_all(
+        self,
+        connections: list[AsyncSSHClient],
+        monitor: Optional[asyncio.Task[None]],
+    ) -> None:
+        if monitor is not None:
+            await asyncio.gather(monitor, return_exceptions=True)
+        for conn in connections:
             await self._close_connection(conn)
-        # 释放所有信号量
-        while self._free.empty() is False:
-            self._free.get_nowait()
 
     async def __aenter__(self) -> "AsyncConnectionPool":
         self._start_monitor()

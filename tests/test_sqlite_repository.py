@@ -4,6 +4,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 import warnings
 from concurrent.futures import ThreadPoolExecutor
@@ -251,6 +252,46 @@ class TestSqliteHostRepository:
         result = repo.list(tag="nonexistent")
         assert result == []
 
+    def test_tag_filter_matches_exact_labels_with_sql_wildcards(self, temp_db_path):
+        repo = SqliteHostRepository(temp_db_path)
+        repo.save(
+            Host(
+                name="exact",
+                hostname="1",
+                username="u",
+                tags=["prod", "a%b", "a_b", 'quote"tag'],
+            )
+        )
+        repo.save(Host(name="near", hostname="2", username="u", tags=["production", "axb"]))
+
+        assert [host.name for host in repo.list(tag="prod")] == ["exact"]
+        assert [host.name for host in repo.list(tag="a%b")] == ["exact"]
+        assert [host.name for host in repo.list(tag="a_b")] == ["exact"]
+        assert [host.name for host in repo.list(tag='quote"tag')] == ["exact"]
+
+    def test_non_string_tags_are_normalized_for_backend_parity(self, temp_db_path):
+        repo = SqliteHostRepository(temp_db_path)
+        repo.save(Host(name="mixed", hostname="1", username="u", tags=["web", 7]))
+
+        assert repo.get("mixed").tags == ["web"]
+        assert repo.list_tags() == ["web"]
+
+    def test_tag_filter_uses_tag_index(self, temp_db_path):
+        repo = SqliteHostRepository(temp_db_path)
+        repo.save(Host(name="srv", hostname="1", username="u", tags=["indexed"]))
+        with repo._lock, repo._txn() as conn:
+            plan = conn.execute(
+                """
+                EXPLAIN QUERY PLAN
+                SELECT hosts.* FROM hosts
+                JOIN host_tags ON host_tags.host_name = hosts.name
+                WHERE host_tags.tag = ?
+                ORDER BY hosts.name
+                """,
+                ("indexed",),
+            ).fetchall()
+        assert any("idx_host_tags_tag" in row["detail"] for row in plan)
+
     # --- Search ---
 
     def test_search_by_name(self, temp_db_path):
@@ -345,6 +386,76 @@ class TestSqliteHostRepository:
         repo = SqliteHostRepository(temp_db_path, migrate_from=str(json_path))
         assert repo.count() == 2
         assert repo.get("srv1").hostname == "10.0.0.1"
+
+    def test_migrate_json_hosts_profiles_recipes_and_encrypted_credentials(
+        self, tmp_path, temp_db_path
+    ):
+        """JSON → SQLite round-trip must migrate every supported store section atomically."""
+        from remote_cmd.core.profile import HostProfile
+        from remote_cmd.core.recipe import Recipe, RecipeVariable
+        from remote_cmd.repository.json_host_repository import JsonHostRepository
+
+        json_path = tmp_path / "complete.json"
+        encryption = CredentialEncryption(key_path=tmp_path / "migration.key")
+        source = JsonHostRepository(str(json_path), encryption=encryption)
+        source.save_profile(
+            HostProfile(
+                name="prod",
+                username="deploy",
+                port=2222,
+                key_filename="/keys/prod",
+                tags=["production", "web"],
+                description="Production profile",
+            )
+        )
+        source.save_recipe(
+            Recipe(
+                name="deploy",
+                command="deploy {{ package }}",
+                variables={
+                    "package": RecipeVariable(
+                        name="package", default="api", description="Package name"
+                    )
+                },
+                description="Deploy service",
+                tags=["release"],
+            )
+        )
+        source.save(
+            Host(
+                name="web-1",
+                hostname="10.0.0.1",
+                username="",
+                password="secret-password",
+                tags=["web", "blue"],
+                description="Primary node",
+                profile="prod",
+            )
+        )
+        source.flush()
+
+        migrated = SqliteHostRepository(
+            temp_db_path,
+            migrate_from=str(json_path),
+            encryption=encryption,
+        )
+        host = migrated.get("web-1")
+        assert host.password == "secret-password"
+        assert host.profile == "prod"
+        assert host.tags == ["web", "blue"]
+        assert host.description == "Primary node"
+        assert migrated.get_profile("prod") == source.get_profile("prod")
+        assert migrated.get_recipe("deploy").to_dict() == source.get_recipe("deploy").to_dict()
+
+        # 重复打开/迁移不会丢失附属数据，也不会重新执行迁移。
+        reopened = SqliteHostRepository(
+            temp_db_path,
+            migrate_from=str(json_path),
+            encryption=encryption,
+        )
+        assert reopened.count() == 1
+        assert reopened.list_profiles() == [source.get_profile("prod")]
+        assert [recipe.name for recipe in reopened.list_recipes()] == ["deploy"]
 
     def test_migrate_from_json_nonempty_skips(self, tmp_path, temp_db_path):
         """测试：数据库非空时跳过迁移"""
@@ -555,12 +666,159 @@ class TestSqliteConcurrentWriters:
     def test_configured_busy_timeout_and_wal(self, temp_db_path):
         """连接级 PRAGMA：busy_timeout 生效且 journal_mode 为 WAL"""
         repo = SqliteHostRepository(temp_db_path, busy_timeout_ms=1234)
-        conn = repo._get_conn()
-        try:
+        with repo._lock, repo._txn() as conn:
             assert conn.execute("PRAGMA busy_timeout;").fetchone()[0] == 1234
             assert str(conn.execute("PRAGMA journal_mode;").fetchone()[0]).lower() == "wal"
+        repo.close()
+
+
+class TestSqliteThreadLocalConnections:
+    @staticmethod
+    def _spawn_env() -> dict:
+        repo_root = Path(__file__).resolve().parents[1]
+        env = dict(os.environ)
+        env["PYTHONPATH"] = str(repo_root) + os.pathsep + env.get("PYTHONPATH", "")
+        return env
+
+    def test_reuses_one_connection_per_thread_and_close_closes_all(self, tmp_path, monkeypatch):
+        import remote_cmd.repository.sqlite_host_repository as sqlite_repository_module
+
+        connections: list[tuple[int, sqlite3.Connection]] = []
+        connections_lock = threading.Lock()
+        original_connect = sqlite3.connect
+
+        def counted_connect(*args, **kwargs):
+            connection = original_connect(*args, **kwargs)
+            with connections_lock:
+                connections.append((threading.get_ident(), connection))
+            return connection
+
+        monkeypatch.setattr(sqlite_repository_module.sqlite3, "connect", counted_connect)
+        repo = SqliteHostRepository(str(tmp_path / "thread-local.db"))
+        main_conn = repo._get_conn()
+        for index in range(5):
+            repo.save(Host(name=f"main-{index}", hostname="h", username="u"))
+            assert repo._get_conn() is main_conn
+        assert len(connections) == 1
+
+        barrier = threading.Barrier(3)
+        ready = threading.Event()
+        release = threading.Event()
+        worker_connections: dict[int, sqlite3.Connection] = {}
+        worker_lock = threading.Lock()
+
+        def use_repository(index: int) -> bool:
+            barrier.wait(timeout=5)
+            repo.save(Host(name=f"worker-{index}", hostname="h", username="u"))
+            first = repo._get_conn()
+            repo.count()
+            assert repo._get_conn() is first
+            with worker_lock:
+                worker_connections[threading.get_ident()] = first
+                if len(worker_connections) == 3:
+                    ready.set()
+            assert release.wait(timeout=5)
+            with pytest.raises(RuntimeError, match="closed"):
+                repo.count()
+            return True
+
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            futures = [executor.submit(use_repository, index) for index in range(3)]
+            assert ready.wait(timeout=5)
+            assert len(worker_connections) == 3
+            assert len(connections) == 4  # main thread + one per worker
+            repo.close()  # safely closes worker-owned handles under the repo lock
+            release.set()
+            assert all(future.result(timeout=5) for future in futures)
+
+        assert repo._closed
+        assert repo._connections == {}
+        for _, connection in connections:
+            with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+                connection.execute("SELECT 1")
+        repo.close()  # idempotent
+
+    def test_context_manager_closes_connection(self, tmp_path):
+        repo = SqliteHostRepository(str(tmp_path / "context.db"))
+        connection = repo._get_conn()
+        with repo as entered:
+            assert entered is repo
+            repo.save(Host(name="one", hostname="h", username="u"))
+        with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+            connection.execute("SELECT 1")
+        with pytest.raises(RuntimeError, match="closed"):
+            repo.count()
+
+    def test_repository_instances_do_not_share_connections(self, tmp_path):
+        db_path = str(tmp_path / "multi-instance.db")
+        first = SqliteHostRepository(db_path)
+        second = SqliteHostRepository(db_path)
+        assert first._get_conn() is not second._get_conn()
+        first.save(Host(name="visible", hostname="h", username="u"))
+        assert second.get("visible").hostname == "h"
+        first.close()
+        second.close()
+
+    def test_inherited_repository_pid_guard_fails_fast(self, temp_db_path, monkeypatch):
+        import remote_cmd.repository.sqlite_host_repository as sqlite_repository_module
+
+        repo = SqliteHostRepository(temp_db_path)
+        parent_pid = os.getpid()
+        monkeypatch.setattr(sqlite_repository_module.os, "getpid", lambda: parent_pid + 1)
+        with pytest.raises(RuntimeError, match="after fork"):
+            repo.count()
+        monkeypatch.undo()
+        repo.close()
+
+    def test_close_while_worker_active_then_worker_finishes_cleanly(self, tmp_path):
+        """跨线程 close 证明：worker 持有操作时 close 阻塞，完成后无泄漏/损坏。"""
+        import contextlib
+
+        db_path = str(tmp_path / "cross-thread-close.db")
+        repo = SqliteHostRepository(db_path)
+        repo.save(Host(name="seed", hostname="h", username="u"))
+
+        worker_entered = threading.Event()
+        release_worker = threading.Event()
+        worker_done: dict[str, object] = {}
+        original_txn = repo._txn
+
+        @contextlib.contextmanager
+        def gated_txn(*args: object, **kwargs: object):
+            with original_txn(*args, **kwargs) as conn:  # type: ignore[arg-type]
+                worker_entered.set()
+                assert release_worker.wait(timeout=10)
+                yield conn
+
+        def worker_save() -> bool:
+            repo._txn = gated_txn  # type: ignore[method-assign]
+            try:
+                repo.save(Host(name="cross-thread", hostname="h", username="u"))
+                return True
+            finally:
+                repo._txn = original_txn  # type: ignore[method-assign]
+
+        worker = threading.Thread(target=lambda: worker_done.setdefault("ok", worker_save()))
+        worker.start()
+        assert worker_entered.wait(timeout=10)
+        # Worker holds the repo lock inside _txn; close() must wait, not corrupt.
+        closer_done = threading.Event()
+        closer = threading.Thread(target=lambda: (repo.close(), closer_done.set()))
+        closer.start()
+        assert not closer_done.wait(timeout=1)
+        release_worker.set()
+        worker.join(timeout=10)
+        closer.join(timeout=10)
+        assert not worker.is_alive()
+        assert worker_done.get("ok") is True
+        with pytest.raises(RuntimeError, match="closed"):
+            repo.count()
+        check = SqliteHostRepository(db_path)
+        try:
+            assert check.contains("seed")
+            assert check.contains("cross-thread")
         finally:
-            conn.close()
+            check.close()
 
 
     def test_multiprocess_concurrent_writers_no_lost_updates(self, tmp_path):
@@ -624,6 +882,7 @@ class TestSqliteConcurrentWriters:
         expected = {f"p{r}-h{i}" for r in range(n_procs) for i in range(n_writes)}
         # 无丢失更新：每个进程写入的每条记录都能读到
         assert names == expected
+        repo.close()
 
     def test_concurrent_threads_separate_instances(self, tmp_path):
         """同一进程内多实例（各自连接）并发写：全部成功且无丢失更新"""
@@ -646,14 +905,14 @@ class TestSqliteConcurrentWriters:
         assert names == expected
 
     def test_schema_version_and_columns_preserved(self, temp_db_path):
-        """schema 兼容性：v2.8.1 起 db_version=2，hosts 表含 profile 列且旧列不变"""
+        """schema v4 保留旧 host 字段并维护规范化标签索引。"""
         repo = SqliteHostRepository(temp_db_path)
         repo.save(Host(name="srv", hostname="10.0.0.1", username="u"))
 
         conn = sqlite3.connect(temp_db_path)
         try:
             version = conn.execute("SELECT value FROM meta WHERE key = 'db_version'").fetchone()[0]
-            assert version == "3"
+            assert version == "4"
             cols = {row[1] for row in conn.execute("PRAGMA table_info(hosts)")}
             assert {
                 "name",
@@ -678,7 +937,8 @@ class TestSqliteConcurrentWriters:
     def test_profile_foreign_key_present_on_new_db(self, temp_db_path):
         """v2.9：新库 hosts.profile 带 ON DELETE RESTRICT 外键。"""
         repo = SqliteHostRepository(temp_db_path)
-        fks = repo._get_conn().execute("PRAGMA foreign_key_list(hosts);").fetchall()
+        with repo._lock, repo._txn() as conn:
+            fks = conn.execute("PRAGMA foreign_key_list(hosts);").fetchall()
         assert any(
             row["table"] == "profiles" and row["from"] == "profile"
             and row["on_delete"].upper() == "RESTRICT"
@@ -742,18 +1002,91 @@ class TestSqliteConcurrentWriters:
         repo = SqliteHostRepository(db_path)  # 触发重建迁移
         assert repo.get("web1").profile == "aws"
         assert repo.get_profile("aws").username == "ec2-user"
-        fks = repo._get_conn().execute("PRAGMA foreign_key_list(hosts);").fetchall()
+        with repo._lock, repo._txn() as migrated:
+            fks = migrated.execute("PRAGMA foreign_key_list(hosts);").fetchall()
         assert any(row["table"] == "profiles" for row in fks)
 
         # 迁移后 FK 立即生效
         with pytest.raises(ValueError, match="still referenced"):
             repo.delete_profile("aws")
 
+    def test_v3_database_adds_and_backfills_indexed_host_tags(self, tmp_path):
+        """v3 库升级时回填标签索引，标签过滤保持精确且可走索引。"""
+        db_path = str(tmp_path / "v3.db")
+        conn = sqlite3.connect(db_path)
+        try:
+            conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+            conn.execute(
+                """
+                CREATE TABLE profiles (
+                    name TEXT PRIMARY KEY, username TEXT, port INTEGER, key_filename TEXT,
+                    tags TEXT DEFAULT '[]', description TEXT DEFAULT '',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE recipes (
+                    name TEXT PRIMARY KEY, command TEXT NOT NULL, variables TEXT DEFAULT '{}',
+                    description TEXT DEFAULT '', tags TEXT DEFAULT '[]',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE hosts (
+                    name TEXT PRIMARY KEY, hostname TEXT NOT NULL, username TEXT NOT NULL,
+                    port INTEGER DEFAULT 22, password TEXT, key_filename TEXT,
+                    tags TEXT DEFAULT '[]', description TEXT DEFAULT '', profile TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            conn.execute(
+                "INSERT INTO hosts (name, hostname, username, tags) VALUES (?, ?, ?, ?)",
+                ("exact", "1", "u", '["prod", "a%b"]'),
+            )
+            conn.execute(
+                "INSERT INTO hosts (name, hostname, username, tags) VALUES (?, ?, ?, ?)",
+                ("near", "2", "u", '["production", "axb"]'),
+            )
+            conn.execute("INSERT INTO meta (key, value) VALUES ('db_version', '3')")
+            conn.commit()
+        finally:
+            conn.close()
+
+        repo = SqliteHostRepository(db_path)
+        assert [host.name for host in repo.list(tag="prod")] == ["exact"]
+        assert [host.name for host in repo.list(tag="a%b")] == ["exact"]
+        assert repo.list_tags() == ["a%b", "axb", "prod", "production"]
+        with repo._lock, repo._txn() as migrated:
+            version = migrated.execute(
+                "SELECT value FROM meta WHERE key='db_version'"
+            ).fetchone()["value"]
+            plan = migrated.execute(
+                """
+                EXPLAIN QUERY PLAN
+                SELECT hosts.* FROM hosts
+                JOIN host_tags ON host_tags.host_name = hosts.name
+                WHERE host_tags.tag = ?
+                ORDER BY hosts.name
+                """,
+                ("prod",),
+            ).fetchall()
+        assert version == "4"
+        assert any("idx_host_tags_tag" in row["detail"] for row in plan)
+
     def test_fk_migration_idempotent(self, temp_db_path):
         repo = SqliteHostRepository(temp_db_path)
         repo._ensure_hosts_profile_fk()
         repo._ensure_hosts_profile_fk()
-        fks = repo._get_conn().execute("PRAGMA foreign_key_list(hosts);").fetchall()
+        with repo._lock, repo._txn() as conn:
+            fks = conn.execute("PRAGMA foreign_key_list(hosts);").fetchall()
         assert len([r for r in fks if r["table"] == "profiles"]) == 1
 
 
@@ -873,9 +1206,8 @@ class TestSqliteHostProfilePersistence:
         assert repo.get("legacy1").description == "old row"
         assert repo.get("legacy1").profile is None
 
-        columns = {
-            row[1] for row in repo._get_conn().execute("PRAGMA table_info(hosts);").fetchall()
-        }
+        with repo._lock, repo._txn() as conn:
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(hosts);").fetchall()}
         assert "profile" in columns
 
         # 迁移后可正常写入并读取 profile 引用（先建 profile，FK 要求存在）
@@ -889,7 +1221,43 @@ class TestSqliteHostProfilePersistence:
         repo = SqliteHostRepository(temp_db_path)
         repo._init_db()
         repo._init_db()  # 重复初始化不得报错
-        columns = [
-            row[1] for row in repo._get_conn().execute("PRAGMA table_info(hosts);").fetchall()
-        ]
+        with repo._lock, repo._txn() as conn:
+            columns = [row[1] for row in conn.execute("PRAGMA table_info(hosts);").fetchall()]
         assert columns.count("profile") == 1
+
+
+class TestSqliteWALRetry:
+    def test_locked_journal_mode_retries_within_budget(self, tmp_path):
+        repo = SqliteHostRepository(
+            str(tmp_path / "retry.db"),
+            auto_create=False,
+            busy_timeout_ms=100,
+        )
+
+        class BusyOnce:
+            calls = 0
+
+            def execute(self, _statement):
+                self.calls += 1
+                if self.calls == 1:
+                    raise sqlite3.OperationalError("database is locked")
+
+        connection = BusyOnce()
+        repo._enable_wal(connection)  # type: ignore[arg-type]
+        assert connection.calls == 2
+        repo.close()
+
+    def test_non_busy_journal_mode_error_propagates(self, tmp_path):
+        repo = SqliteHostRepository(
+            str(tmp_path / "non-busy.db"),
+            auto_create=False,
+            busy_timeout_ms=0,
+        )
+
+        class Broken:
+            def execute(self, _statement):
+                raise sqlite3.OperationalError("disk I/O error")
+
+        with pytest.raises(sqlite3.OperationalError, match="disk I/O error"):
+            repo._enable_wal(Broken())  # type: ignore[arg-type]
+        repo.close()

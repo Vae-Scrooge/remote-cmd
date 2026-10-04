@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.11.0] - 2026-10-04
+
+### Added
+
+- Added scale benchmarks for 10/100/1,000/10,000-host batch scheduling, 100/1,000/10,000-row SQLite stores, 1 KiB/64 KiB/1 MiB/10 MiB output retention, pool/budget connection counts, and 100/1,000/10,000 TaskRunner tasks. Benchmarks report elapsed time, Python allocation peak, future/thread counts, and connection counts; they remain opt-in.
+- SQLite schema v4 adds an indexed `host_tags` relation, backfilled automatically from v3 databases while retaining the existing `hosts.tags` JSON column. Exact label filtering (including `%`, `_`, and quoted tags) now uses the derived index.
+- `ConnectionBudget.get_metrics()` now exposes the current FIFO waiter count alongside capacity and cumulative acquire/release/timeout counters.
+
+### Changed
+
+- Both batch kernels now create at most `min(max_concurrency, host_count)` worker futures/tasks. Workers pull from a host iterator and publish into a bounded completion queue, rather than creating one Future/queue item per host. `BatchResult` remains unchanged and still retains one result per host.
+- Shared `ConnectionBudget` waiters now share a FIFO queue with capacity reserved before wakeup. Timeout/cancellation returns a reserved slot to the next waiter; pool closure wakes both semaphore and budget waiters.
+- JSON repository CRUD now snapshots mutable Host/Profile/Recipe objects, matching SQLite's detached-object behavior. A malformed or unsupported JSON store is not overwritten by a subsequent `flush()`.
+- Paramiko command timeout now covers command-channel setup, stdin writes, output draining, and exit-status retrieval. The watchdog closes the channel (or transport while the channel is still being opened); channel I/O timeout is a fallback if close fails.
+- Paramiko now alternates bounded stdout/stderr readiness reads on the existing command worker, removing the extra stderr-reader thread per command while preserving the wall-clock Timer needed to interrupt Paramiko's blocking exec-request wait. Channel-close failure falls back to transport close.
+- AsyncSSH command timeouts now map to `SSHCommandTimeoutError`; sudo uses one deadline across process creation and wait instead of applying the full timeout twice.
+- SFTP downloads now stage into a same-directory temporary file and atomically replace the local destination only after successful transfer. Failed transfer sessions are discarded before a later operation can reuse them.
+- Atomic downloads preserve an existing destination's permission bits; a newly created download uses the staging file's private `0600` mode on POSIX (Windows ACL behavior is unchanged).
+- SFTP uploads now write inside a unique `0700` sibling staging directory before replacing the destination; existing mode bits and final-symlink behavior are preserved. Paramiko attempts a backup/rollback fallback when POSIX rename is unavailable; AsyncSSH fails safely if the server cannot atomically replace an existing target. An interrupted transfer may leave a uniquely named private remote staging directory, but not a partial destination.
+- SQLite enables WAL once per repository instance instead of running the journal-mode PRAGMA on every operation.
+- SQLite repositories now cache one connection per calling thread, with explicit `close()` / context-manager cleanup; separate instances remain isolated and inherited pre-fork instances fail fast in the child. Per-operation transaction boundaries, WAL, busy timeout, and repository-level serialization are retained.
+- The build backend floor is now `setuptools>=77` and the project uses an SPDX `MIT` license expression, eliminating current setuptools license-metadata deprecation warnings.
+- TaskRunner validates `max_workers`, tracks active slots explicitly, serializes cancellation/state transitions, returns snapshots from `get_task()` / `list_tasks()`, and reuses bounded workers which retire after an idle timeout. `close()` / context-manager support provides deterministic worker retirement.
+- CLI now closes its repository deterministically via `click.Context.call_on_close` instead of relying on GC/`__del__`, eliminating `ResourceWarning: unclosed database` on SQLite-backed invocations.
+- AsyncSSH `execute_sudo` now closes the remote process on outer cancellation during `proc.wait()`, matching the timeout path; previously the channel could leak on cancel.
+
+### Fixed
+
+- **Pool close/create race:** a connection completing after `close_all()` is disconnected and its budget is returned; waiters are woken when the pool closes; release after close cannot reinsert a connection; duplicate release cannot inflate capacity.
+- **Async batch cancellation:** cancelling `AsyncBatchExecutor.execute()` now cancels and joins its fixed worker set, allowing per-host pools and connections to close before cancellation propagates.
+- **JSON → SQLite data loss:** migration now imports hosts, profiles, recipes, tags, descriptions, profile references, and encrypted credentials in one transaction. It rechecks emptiness under the SQLite write lock so concurrent migrators cannot partially import.
+- **TaskRunner races:** `PENDING → RUNNING` and cancellation/completion are atomic; active-count reporting no longer reads `Semaphore._value`; `wait_for()` pins tasks against concurrent cleanup.
+- **CLI machine output/security:** verbose diagnostics go to stderr; JSON run/batch/recipe error paths emit parseable result JSON; rich batch and recipe progress no longer echo command/variable values.
+- **SSH host-key defaults:** Paramiko now loads standard system/user `known_hosts` when no explicit file is configured while retaining `RejectPolicy`; the troubleshooting guide no longer suggests AutoAddPolicy as a default.
+
+### Security
+
+- Failed SFTP downloads no longer replace a valid local file with a partial transfer. SFTP failures also discard the potentially desynchronized session.
+- Failed SFTP uploads no longer expose a partial transfer at the destination; existing files remain intact until the staged upload is committed.
+- In-progress SFTP uploads are isolated inside private remote staging directories, preventing other remote users from reading partial files before commit.
+- Rich CLI progress output no longer prints raw commands or rendered recipe variables, which could contain tokens or passwords.
+
+### Compatibility
+
+- No import paths, public class/method names, function parameters, result fields, or CLI command names were removed. SQLite v3 databases upgrade in place to schema v4; existing JSON formats remain readable.
+- Repository snapshot semantics (observable behavior change, hence minor release): previously `get()` / `list()` on the JSON backend could return repository-owned mutable objects, so in-place mutation sometimes affected stored state. Now both backends return detached snapshots — `get()` / `list()` give you a copy; mutations only persist after an explicit `save()` / `save_profile()` / `save_recipe()` call (SQLite already behaved this way; JSON now matches it). Migration: replace `repo.get(n).port = 2222` with `h = repo.get(n); h.port = 2222; repo.save(h)`. Rationale: shared-mutable store objects caused action-at-a-distance bugs across threads and callers; snapshots make persistence points explicit and give JSON/SQLite identical semantics.
+- `ConnectionBudget.acquire()` / `acquire_async()` add an optional `cancel_event` keyword for pool lifecycle cancellation; existing no-argument calls are unchanged.
+
 ## [2.10.0] - 2026-09-13
 
 v2.10 is a maintenance & quality release: CI signal hardening, package-wide

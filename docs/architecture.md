@@ -487,29 +487,45 @@ await pool.release(client)
 
 ### Batch Operation Optimization
 
-- The async kernel uses a **bounded worker queue** (v2.5): only
-  `min(max_concurrency, host_count)` asyncio worker tasks are created and pull
-  hosts from a shared queue, so scheduling memory is decoupled from host count
-  (previously one task per host).
+- Both batch kernels keep scheduler state proportional to concurrency. Each
+  creates only `min(max_concurrency, host_count)` worker futures/tasks. Workers
+  claim the next host from an iterator and publish to a bounded completion
+  queue; neither kernel creates a Future or task per host.
+- `BatchResult` intentionally retains one result per deduplicated host to
+  preserve the public contract. Use `OutputPolicy(max_output_bytes=...)` to cap
+  retained stdout/stderr; this does not cap transient output held by the SSH
+  client while a command is running.
 - `OutputPolicy` / `max_output_bytes` bound the retained per-host output in
   batch results; `None` (the v2.5 default) retains everything and can consume
   substantial memory at scale.
 
-Parallel execution example:
+Use the batch executor instead of submitting an unbounded future per host:
 
 ```python
-from concurrent.futures import ThreadPoolExecutor
+from remote_cmd import BatchExecutor, OutputPolicy
 
-def parallel_execute(hosts, command):
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        futures = []
-        for host in hosts:
-            future = executor.submit(execute_on_host, host, command)
-            futures.append(future)
-
-        results = [f.result() for f in futures]
-    return results
+executor = BatchExecutor(
+    host_service,
+    max_concurrency=32,
+    output_policy=OutputPolicy(max_output_bytes=64 * 1024),
+)
+result = executor.execute([host.name for host in hosts], "uptime")
 ```
+
+### SQLite scale and migrations
+
+SQLite opens a short-lived, thread-safe connection per operation. WAL mode is
+initialized once per repository instance; `busy_timeout` and write transactions
+continue to provide multi-process writer coordination. Schema v4 adds an
+indexed `host_tags` relation derived from the existing `hosts.tags` JSON field,
+and backfills it automatically when a v3 database is opened. Exact tag lookups
+use this index while the JSON column remains the persisted host model.
+JSON-to-SQLite migration imports hosts, profiles, and recipes in one transaction
+so an invalid profile reference cannot leave a partially migrated fleet.
+
+SFTP downloads stage into a temporary file in the destination directory and use
+`os.replace` only after successful transfer. A failed/cancelled download leaves
+an existing local file untouched.
 
 ### File Transfer Optimization
 
@@ -605,4 +621,4 @@ class SecureConfig:
 
 ---
 
-**Last updated:** 2026-08-23 (v2.1.0 release audit)
+**Last updated:** 2026-09-26 (v2.10.0 reliability audit)

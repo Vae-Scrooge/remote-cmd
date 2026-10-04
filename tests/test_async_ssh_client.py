@@ -7,7 +7,9 @@ SFTP 等行为，验证 AsyncSSHClient 在不真实连接 SSH 的情况下功能
 from __future__ import annotations
 
 import asyncio
+import stat
 import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -16,6 +18,7 @@ from remote_cmd.core.async_ssh_client import AsyncSSHClient
 from remote_cmd.core.ssh_client import CommandResult, ConnectionConfig
 from remote_cmd.utils.exceptions import (
     SSHAuthenticationError,
+    SSHCommandTimeoutError,
     SSHConnectionError,
     SSHFileTransferError,
     SSHTimeoutError,
@@ -46,6 +49,15 @@ def _make_conn_mock(stdout="OK\n", stderr="", exit_status=0):
     sftp.put = AsyncMock()
     sftp.get = AsyncMock()
     sftp.readdir = AsyncMock(return_value=[])
+    sftp.mkdir = AsyncMock()
+    sftp.rmdir = AsyncMock()
+    sftp.lstat = AsyncMock(return_value=MagicMock(permissions=None))
+    sftp.stat = AsyncMock(return_value=MagicMock(permissions=None))
+    sftp.realpath = AsyncMock()
+    sftp.chmod = AsyncMock()
+    sftp.posix_rename = AsyncMock()
+    sftp.rename = AsyncMock()
+    sftp.remove = AsyncMock()
     # asyncssh SFTPClient.exit() 是同步方法
     sftp.exit = MagicMock()
     conn.start_sftp_client = AsyncMock(return_value=sftp)
@@ -76,6 +88,10 @@ def patched_asyncssh(conn_mock):
         mock_ssh.PermissionDenied = type("PermissionDenied", (mock_ssh.Error,), {})
         mock_ssh.TimeoutError = type("TimeoutError", (mock_ssh.Error,), {})
         mock_ssh.ChannelOpenError = type("ChannelOpenError", (mock_ssh.Error,), {})
+        mock_ssh.SFTPNoSuchFile = type("SFTPNoSuchFile", (mock_ssh.Error,), {})
+        mock_ssh.SFTPNoSuchPath = type("SFTPNoSuchPath", (mock_ssh.Error,), {})
+        mock_ssh.FXR_OVERWRITE = 1
+        mock_ssh.SFTPAttrs = lambda **kwargs: SimpleNamespace(**kwargs)
         yield mock_ssh
 
 
@@ -192,6 +208,15 @@ class TestAsyncSSHClientExecute:
         assert r.stderr == "boom"
 
     @pytest.mark.asyncio
+    async def test_execute_timeout_is_classified_as_command_timeout(
+        self, config, patched_asyncssh, conn_mock
+    ):
+        conn_mock.run = AsyncMock(side_effect=patched_asyncssh.TimeoutError("command timed out"))
+        async with AsyncSSHClient(config) as client:
+            with pytest.raises(SSHCommandTimeoutError, match="command timed out"):
+                await client.execute("sleep 10", timeout=1)
+
+    @pytest.mark.asyncio
     async def test_execute_sudo_without_password(self, config, patched_asyncssh, conn_mock):
         conn_mock.run = AsyncMock(return_value=MagicMock(stdout="ok", stderr="", exit_status=0))
         async with AsyncSSHClient(config) as client:
@@ -229,6 +254,45 @@ class TestAsyncSSHClientExecute:
         assert proc.stdin.write.call_args.args[0] == b"secret\n"
 
     @pytest.mark.asyncio
+    async def test_execute_sudo_timeout_is_classified_and_closes_process(
+        self, config, patched_asyncssh, conn_mock
+    ):
+        proc = conn_mock.create_process.return_value
+        proc.wait = AsyncMock(side_effect=patched_asyncssh.TimeoutError("timed out"))
+        async with AsyncSSHClient(config) as client:
+            with pytest.raises(SSHCommandTimeoutError, match="sudo command timed out"):
+                await client.execute_sudo("sleep 10", password="secret", timeout=1)
+        proc.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_execute_sudo_cancel_closes_process(
+        self, config, patched_asyncssh, conn_mock
+    ):
+        """外层取消等待 sudo 时必须关闭远端进程，不泄漏 channel。"""
+        import asyncio
+
+        proc = conn_mock.create_process.return_value
+        wait_started = asyncio.Event()
+        release_wait = asyncio.Event()
+
+        async def gated_wait(*_args: object, **_kwargs: object):
+            wait_started.set()
+            await release_wait.wait()
+            raise asyncio.CancelledError()
+
+        proc.wait = AsyncMock(side_effect=gated_wait)
+        async with AsyncSSHClient(config) as client:
+            task = asyncio.create_task(
+                client.execute_sudo("sleep 10", password="secret", timeout=30)
+            )
+            assert await asyncio.wait_for(wait_started.wait(), timeout=5)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        proc.close.assert_called()
+        release_wait.set()
+
+    @pytest.mark.asyncio
     async def test_execute_not_connected_raises(self, config):
         client = AsyncSSHClient(config)
         with pytest.raises(SSHConnectionError, match="not connected"):
@@ -251,6 +315,126 @@ class TestAsyncSSHClientFileTransfer:
         # sftp 为 mock，put 被 await 调用
         sftp = conn_mock.start_sftp_client.return_value
         sftp.put.assert_awaited_once()
+        staged_path = sftp.put.await_args.args[1]
+        assert staged_path.startswith("/remote/.remote-cmd-")
+        sftp.posix_rename.assert_awaited_once_with(staged_path, "/remote/a.txt")
+        staging_dir, attrs = sftp.mkdir.await_args.args
+        assert staged_path.startswith(f"{staging_dir}/")
+        assert attrs.permissions == 0o700
+        sftp.rmdir.assert_awaited_once_with(staging_dir)
+
+    @pytest.mark.asyncio
+    async def test_failed_upload_discards_sftp_session(self, config, patched_asyncssh, conn_mock, tmp_path):
+        local = tmp_path / "a.txt"
+        local.write_text("data")
+        sftp = conn_mock.start_sftp_client.return_value
+        sftp.put = AsyncMock(side_effect=OSError("connection reset"))
+        client = AsyncSSHClient(config)
+        await client.connect()
+
+        with pytest.raises(SSHFileTransferError, match="file upload failed"):
+            await client.upload_file(str(local), "/remote/a.txt")
+
+        assert client._sftp is None
+        sftp.exit.assert_called_once()
+        staged_path = sftp.put.await_args.args[1]
+        sftp.remove.assert_awaited_once_with(staged_path)
+        sftp.rmdir.assert_awaited_once_with(staged_path.rsplit("/", 1)[0])
+        sftp.readdir = AsyncMock(return_value=[])
+        assert await client.list_remote_directory("/tmp") == []
+        assert conn_mock.start_sftp_client.await_count == 2
+        await client.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_existing_upload_fallback_uses_overwrite_flag_and_preserves_mode(
+        self, config, patched_asyncssh, conn_mock, tmp_path
+    ):
+        local = tmp_path / "replacement.txt"
+        local.write_text("replacement")
+        sftp = conn_mock.start_sftp_client.return_value
+        sftp.lstat = AsyncMock(return_value=MagicMock(permissions=stat.S_IFREG | 0o640))
+        sftp.posix_rename.side_effect = patched_asyncssh.Error("extension unsupported")
+
+        async with AsyncSSHClient(config) as client:
+            await client.upload_file(str(local), "/remote/existing.txt")
+
+        staged_path = sftp.put.await_args.args[1]
+        sftp.chmod.assert_awaited_once_with(staged_path, 0o640)
+        sftp.rename.assert_awaited_once_with(
+            staged_path,
+            "/remote/existing.txt",
+            flags=patched_asyncssh.FXR_OVERWRITE,
+        )
+
+    @pytest.mark.asyncio
+    async def test_missing_upload_destination_falls_back_to_standard_rename(
+        self, config, patched_asyncssh, conn_mock, tmp_path
+    ):
+        local = tmp_path / "new.txt"
+        local.write_text("new")
+        sftp = conn_mock.start_sftp_client.return_value
+        sftp.lstat.side_effect = patched_asyncssh.SFTPNoSuchFile("not found")
+        sftp.posix_rename.side_effect = patched_asyncssh.Error("extension unsupported")
+
+        async with AsyncSSHClient(config) as client:
+            await client.upload_file(str(local), "/remote/new.txt")
+
+        staged_path = sftp.put.await_args.args[1]
+        sftp.rename.assert_awaited_once_with(staged_path, "/remote/new.txt")
+
+    @pytest.mark.asyncio
+    async def test_upload_follows_destination_symlink(
+        self, config, patched_asyncssh, conn_mock, tmp_path
+    ):
+        local = tmp_path / "link-target.txt"
+        local.write_text("replacement")
+        sftp = conn_mock.start_sftp_client.return_value
+        sftp.lstat = AsyncMock(return_value=MagicMock(permissions=stat.S_IFLNK | 0o777))
+        sftp.realpath.return_value = "/remote/actual.txt"
+        sftp.stat.return_value = MagicMock(permissions=stat.S_IFREG | 0o600)
+
+        async with AsyncSSHClient(config) as client:
+            await client.upload_file(str(local), "/remote/link.txt")
+
+        staged_path = sftp.put.await_args.args[1]
+        assert staged_path.startswith("/remote/.remote-cmd-")
+        sftp.posix_rename.assert_awaited_once_with(staged_path, "/remote/actual.txt")
+        sftp.chmod.assert_awaited_once_with(staged_path, 0o600)
+
+    @pytest.mark.asyncio
+    async def test_upload_rejects_directory_destination(
+        self, config, patched_asyncssh, conn_mock, tmp_path
+    ):
+        local = tmp_path / "source.txt"
+        local.write_text("data")
+        sftp = conn_mock.start_sftp_client.return_value
+        sftp.lstat = AsyncMock(return_value=MagicMock(permissions=stat.S_IFDIR | 0o755))
+
+        async with AsyncSSHClient(config) as client:
+            with pytest.raises(SSHFileTransferError, match="remote destination is a directory"):
+                await client.upload_file(str(local), "/remote/directory")
+
+        sftp.put.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_unsupported_overwrite_keeps_existing_destination(
+        self, config, patched_asyncssh, conn_mock, tmp_path
+    ):
+        local = tmp_path / "replacement.txt"
+        local.write_text("replacement")
+        sftp = conn_mock.start_sftp_client.return_value
+        sftp.lstat = AsyncMock(return_value=MagicMock(permissions=stat.S_IFREG | 0o600))
+        sftp.posix_rename.side_effect = patched_asyncssh.Error("not supported")
+        sftp.rename.side_effect = patched_asyncssh.Error("overwrite not supported")
+
+        async with AsyncSSHClient(config) as client:
+            with pytest.raises(SSHFileTransferError, match="file upload failed"):
+                await client.upload_file(str(local), "/remote/existing.txt")
+
+        staged_path = sftp.put.await_args.args[1]
+        assert staged_path != "/remote/existing.txt"
+        sftp.remove.assert_awaited_once_with(staged_path)
+        sftp.exit.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_upload_missing_local(self, config, patched_asyncssh, conn_mock):
@@ -267,7 +451,32 @@ class TestAsyncSSHClientFileTransfer:
             await client.download_file("/remote/b.txt", str(local))
         sftp = conn_mock.start_sftp_client.return_value
         sftp.get.assert_awaited_once()
+        remote, staged_path = sftp.get.await_args.args
+        assert remote == "/remote/b.txt"
+        assert staged_path != str(local)
+        assert local.exists()
+        assert list(local.parent.glob(".*.part")) == []
         assert local.parent.exists()
+
+    @pytest.mark.asyncio
+    async def test_failed_download_preserves_existing_file_and_discards_session(
+        self, config, patched_asyncssh, conn_mock, tmp_path
+    ):
+        local = tmp_path / "existing.txt"
+        local.write_text("last-good-copy")
+        sftp = conn_mock.start_sftp_client.return_value
+        sftp.get = AsyncMock(side_effect=OSError("connection reset"))
+        client = AsyncSSHClient(config)
+        await client.connect()
+
+        with pytest.raises(SSHFileTransferError, match="file download failed"):
+            await client.download_file("/remote/new", str(local))
+
+        assert local.read_text() == "last-good-copy"
+        assert list(tmp_path.glob(".*.part")) == []
+        assert client._sftp is None
+        sftp.exit.assert_called_once()
+        await client.disconnect()
 
     @pytest.mark.asyncio
     async def test_list_remote_directory(self, config, patched_asyncssh, conn_mock):
@@ -346,6 +555,12 @@ class TestAsyncSSHClientFileTransferTimeout:
         assert 0.15 <= elapsed < 5.0
         assert client._sftp is None
         sftp.exit.assert_called_once()
+        staged_path = sftp.put.await_args.args[1]
+        assert staged_path.startswith("/remote/.remote-cmd-")
+        sftp.posix_rename.assert_not_awaited()
+        sftp.rename.assert_not_awaited()
+        assert sftp.mkdir.await_args.args[1].permissions == 0o700
+        sftp.rmdir.assert_not_awaited()
         await client.disconnect()
 
     @pytest.mark.asyncio
@@ -357,14 +572,18 @@ class TestAsyncSSHClientFileTransferTimeout:
 
         client = AsyncSSHClient(config)
         await client.connect()
+        local = tmp_path / "x.txt"
+        local.write_text("last-good-copy")
         with pytest.raises(
             SSHFileTransferError,
             match="file download timed out after 0.2 seconds of inactivity",
         ):
-            await client.download_file("/remote/x", str(tmp_path / "x.txt"), timeout=0.2)
+            await client.download_file("/remote/x", str(local), timeout=0.2)
 
         assert client._sftp is None
         sftp.exit.assert_called_once()
+        assert local.read_text() == "last-good-copy"
+        assert list(tmp_path.glob(".*.part")) == []
         await client.disconnect()
 
     @pytest.mark.asyncio

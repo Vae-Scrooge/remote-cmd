@@ -6,7 +6,20 @@ import time
 from datetime import datetime
 from typing import Callable
 
+import pytest
+
+import remote_cmd.service.task_runner as task_runner_module
 from remote_cmd.service.task_runner import Task, TaskRunner, TaskStatus
+
+
+def test_max_workers_must_be_positive():
+    for invalid in (0, -1, True, 1.5):
+        try:
+            TaskRunner(max_workers=invalid)
+        except ValueError as exc:
+            assert "max_workers" in str(exc)
+        else:
+            raise AssertionError(f"invalid max_workers accepted: {invalid!r}")
 
 
 def _wait_until(predicate: Callable[[], bool], timeout: float = 2.0) -> bool:
@@ -222,6 +235,208 @@ class TestTaskRunner:
     def test_get_task_nonexistent(self):
         runner = TaskRunner()
         assert runner.get_task("nonexistent") is None
+
+    def test_list_and_get_return_task_snapshots(self):
+        runner = TaskRunner()
+        task_id = runner.submit("snapshot", lambda: "done", metadata={"region": "west"})
+        runner.wait_for(task_id, timeout=5)
+
+        listed = runner.list_tasks()[0]
+        fetched = runner.get_task(task_id)
+        assert fetched is not None
+        listed.status = TaskStatus.FAILED
+        listed.metadata["region"] = "mutated"
+        fetched.status = TaskStatus.CANCELLED
+
+        assert runner.get_status(task_id) == TaskStatus.SUCCESS
+        stored = runner.get_task(task_id)
+        assert stored is not None
+        assert stored.status == TaskStatus.SUCCESS
+        assert stored.metadata == {"region": "west"}
+
+    def test_pending_cancellation_is_atomic_with_running_transition(self):
+        runner = TaskRunner(max_workers=1)
+        at_transition = threading.Event()
+        continue_transition = threading.Event()
+        executed = threading.Event()
+        original_transition = runner._try_mark_running
+
+        def gated_transition(task_id: str) -> bool:
+            at_transition.set()
+            assert continue_transition.wait(timeout=5)
+            return original_transition(task_id)
+
+        runner._try_mark_running = gated_transition
+        task_id = runner.submit("cancel-race", executed.set)
+        assert at_transition.wait(timeout=5)
+        assert runner.get_status(task_id) == TaskStatus.PENDING
+        assert runner.cancel(task_id)
+        continue_transition.set()
+
+        task = runner.wait_for(task_id, timeout=5)
+        assert task.status == TaskStatus.CANCELLED
+        assert not executed.is_set()
+        assert _wait_until(lambda: runner.active_count == 0)
+
+    def test_cancel_immediately_after_running_is_cooperative(self):
+        runner = TaskRunner(max_workers=1)
+        started = threading.Event()
+        release = threading.Event()
+
+        def blocking_task():
+            started.set()
+            assert release.wait(timeout=5)
+            return "finished"
+
+        task_id = runner.submit("running-cancel", blocking_task)
+        assert started.wait(timeout=5)
+        assert runner.get_status(task_id) == TaskStatus.RUNNING
+        assert runner.cancel(task_id) is True
+        assert runner.get_status(task_id) == TaskStatus.RUNNING
+        with pytest.raises(TimeoutError):
+            runner.wait_for(task_id, timeout=0.01)
+
+        release.set()
+        task = runner.wait_for(task_id, timeout=5)
+        assert task.status == TaskStatus.CANCELLED
+        assert task.result is None
+        assert runner.active_count == 0
+        runner.close()
+
+    def test_cancel_concurrent_with_completion_wins_only_if_first(self):
+        runner = TaskRunner(max_workers=1)
+        completion_entered = threading.Event()
+        release_completion = threading.Event()
+        original_completion = runner._handle_completion
+
+        def gated_completion(task_id, result):
+            completion_entered.set()
+            assert release_completion.wait(timeout=5)
+            original_completion(task_id, result)
+
+        runner._handle_completion = gated_completion
+        task_id = runner.submit("completion-cancel-race", lambda: "done")
+        assert completion_entered.wait(timeout=5)
+        assert runner.get_status(task_id) == TaskStatus.RUNNING
+        assert runner.cancel(task_id) is True
+        release_completion.set()
+        assert runner.wait_for(task_id, timeout=5).status == TaskStatus.CANCELLED
+        assert runner.active_count == 0
+
+        success_id = runner.submit("completion-wins", lambda: "done")
+        runner._handle_completion = original_completion
+        assert runner.wait_for(success_id, timeout=5).status == TaskStatus.SUCCESS
+        assert runner.cancel(success_id) is False
+        runner.close()
+
+    def test_worker_start_failure_marks_task_failed_and_releases_slot(self, monkeypatch):
+        real_thread = threading.Thread
+
+        class FailingWorker(real_thread):
+            def start(self):
+                if self.name.startswith("taskrunner-worker-"):
+                    raise RuntimeError("simulated worker start failure")
+                super().start()
+
+        monkeypatch.setattr(task_runner_module.threading, "Thread", FailingWorker)
+        runner = TaskRunner(max_workers=1)
+        with pytest.raises(RuntimeError, match="simulated worker start failure"):
+            runner.submit("start-failure", lambda: None)
+
+        task = runner.list_tasks()[0]
+        assert task.status == TaskStatus.FAILED
+        assert "simulated worker start failure" in (task.error or "")
+        assert runner.wait_for(task.id, timeout=1).status == TaskStatus.FAILED
+        assert runner.active_count == 0
+        runner.close()
+
+    def test_close_cancels_pending_and_retires_persistent_workers(self):
+        runner = TaskRunner(max_workers=1)
+        release = threading.Event()
+        started = threading.Event()
+        first_ids = []
+        pending_ids = []
+
+        def blocking():
+            started.set()
+            assert release.wait(timeout=5)
+
+        first_ids.append(runner.submit("running", blocking))
+        assert started.wait(timeout=5)
+        submitter = threading.Thread(
+            target=lambda: pending_ids.append(runner.submit("pending", lambda: None)),
+            daemon=True,
+        )
+        submitter.start()
+        assert _wait_until(lambda: runner.pending_count == 1)
+        pending_id = next(task.id for task in runner.list_tasks() if task.name == "pending")
+
+        runner.close(wait=False)
+        assert runner.get_status(pending_id) == TaskStatus.CANCELLED
+        release.set()
+        submitter.join(timeout=5)
+        assert not submitter.is_alive()
+        assert runner.wait_for(first_ids[0], timeout=5).status == TaskStatus.SUCCESS
+        assert runner.wait_for(pending_ids[0], timeout=5).status == TaskStatus.CANCELLED
+        runner.close(wait=True)
+        assert runner._worker_count == 0
+        with pytest.raises(RuntimeError, match="closed"):
+            runner.submit("after-close", lambda: None)
+
+    def test_idle_worker_exit_does_not_strand_later_submit(self, monkeypatch):
+        """Worker 空闲退出与新 submit 竞态：任务不得丢失，worker 按需重建。"""
+        import remote_cmd.service.task_runner as task_runner_module
+
+        monkeypatch.setattr(task_runner_module, "_WORKER_IDLE_TIMEOUT", 0.01)
+        runner = TaskRunner(max_workers=2)
+        assert runner.wait_for(runner.submit("first", lambda: "one"), timeout=5).result == "one"
+        # 等待 worker 因空闲超时退出（有界等待，非固定 sleep 断言）。
+        assert _wait_until(lambda: runner._worker_count == 0, timeout=5)
+        assert runner.wait_for(runner.submit("second", lambda: "two"), timeout=5).result == "two"
+        assert runner.wait_for(runner.submit("third", lambda: "three"), timeout=5).result == "three"
+        runner.close()
+        assert runner._worker_count == 0
+
+    def test_double_close_is_idempotent(self):
+        runner = TaskRunner(max_workers=1)
+        task_id = runner.submit("quick", lambda: "ok")
+        assert runner.wait_for(task_id, timeout=5).status == TaskStatus.SUCCESS
+        runner.close(wait=True)
+        runner.close(wait=True)
+        runner.close(wait=False)
+        with pytest.raises(RuntimeError, match="closed"):
+            runner.submit("after-double-close", lambda: None)
+
+    def test_cleanup_old_does_not_remove_task_while_waiter_is_reading(self):
+        runner = TaskRunner()
+        task_id = runner.submit("wait-cleanup", lambda: "done")
+        runner.wait_for(task_id, timeout=5)
+        event = runner._events[task_id]
+        original_wait = event.wait
+        waiter_entered = threading.Event()
+        continue_wait = threading.Event()
+        outcome = {}
+
+        def gated_wait(timeout=None):
+            waiter_entered.set()
+            assert continue_wait.wait(timeout=5)
+            return original_wait(timeout)
+
+        event.wait = gated_wait
+        thread = threading.Thread(
+            target=lambda: outcome.setdefault("task", runner.wait_for(task_id, timeout=5)),
+            daemon=True,
+        )
+        thread.start()
+        assert waiter_entered.wait(timeout=5)
+
+        assert runner.cleanup_old(max_age_seconds=0) == 0
+        continue_wait.set()
+        thread.join(timeout=5)
+
+        assert not thread.is_alive()
+        assert outcome["task"].status == TaskStatus.SUCCESS
+        assert runner.cleanup_old(max_age_seconds=0) == 1
 
     def test_get_status(self):
         runner = TaskRunner()

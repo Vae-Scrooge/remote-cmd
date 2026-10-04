@@ -1,6 +1,8 @@
 """BatchExecutor 批量执行器测试"""
 
 import threading
+import time
+from concurrent.futures import ThreadPoolExecutor as RealThreadPoolExecutor
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -457,6 +459,71 @@ class TestBatchExecutor:
             executor.execute(["srv1"], "uptime", progress_callback=async_callback)
 
         assert "同步内核不支持异步进度回调" in caplog.text
+
+
+class TestBoundedSyncScheduling:
+    def test_10k_hosts_keep_only_concurrency_bounded_futures_outstanding(self):
+        concurrency = 4
+        host_names = [f"srv{i}" for i in range(10_000)]
+        metrics = {"submitted": 0, "pending": 0, "peak_pending": 0}
+        metrics_lock = threading.Lock()
+
+        class TrackingExecutor(RealThreadPoolExecutor):
+            def submit(self, fn, /, *args, **kwargs):
+                future = super().submit(fn, *args, **kwargs)
+                with metrics_lock:
+                    metrics["submitted"] += 1
+                    metrics["pending"] += 1
+                    metrics["peak_pending"] = max(
+                        metrics["peak_pending"], metrics["pending"]
+                    )
+
+                def completed(_future):
+                    with metrics_lock:
+                        metrics["pending"] -= 1
+
+                future.add_done_callback(completed)
+                return future
+
+        executor = BatchExecutor(host_service=MagicMock(), max_concurrency=concurrency)
+
+        def execute_one(host_name, command, _retry_count, _retry_delay, *_args):
+            return BatchHostResult(host=host_name, success=True, command=command)
+
+        executor._execute_on_host = MagicMock(side_effect=execute_one)
+        with patch("remote_cmd.service.batch_executor.ThreadPoolExecutor", TrackingExecutor):
+            result = executor.execute(host_names, "true")
+
+        assert result.total == len(host_names)
+        assert result.success == len(host_names)
+        assert metrics["submitted"] == concurrency
+        assert metrics["peak_pending"] <= concurrency
+
+    def test_worker_start_failure_stops_started_producers(self):
+        class FailingExecutor(RealThreadPoolExecutor):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.submissions = 0
+
+            def submit(self, fn, /, *args, **kwargs):
+                self.submissions += 1
+                if self.submissions == 2:
+                    raise RuntimeError("simulated thread creation failure")
+                return super().submit(fn, *args, **kwargs)
+
+        executor = BatchExecutor(host_service=MagicMock(), max_concurrency=4)
+        executor._execute_on_host = MagicMock(
+            side_effect=lambda name, command, *_args: BatchHostResult(
+                host=name, success=True, command=command
+            )
+        )
+        started = time.perf_counter()
+        with (
+            patch("remote_cmd.service.batch_executor.ThreadPoolExecutor", FailingExecutor),
+            pytest.raises(RuntimeError, match="simulated thread creation failure"),
+        ):
+            executor.execute([f"srv{i}" for i in range(20)], "true")
+        assert time.perf_counter() - started < 2.0
 
 
 # ============================================================================

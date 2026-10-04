@@ -8,8 +8,12 @@
 
 from __future__ import annotations
 
+import errno
+import queue
 import socket
+import stat
 import threading
+import time
 from unittest.mock import MagicMock, Mock, patch
 
 import paramiko
@@ -79,6 +83,43 @@ class TestCommandResult:
 # ============================================================================
 
 
+class _PollingChannel:
+    """Small Paramiko-channel fake exposing the public readiness API."""
+
+    def __init__(self, stdout: bytes = b"stdout data\n", stderr: bytes = b"") -> None:
+        self.stdout_buffer = bytearray(stdout)
+        self.stderr_buffer = bytearray(stderr)
+        self.status_ready = True
+        self.closed = False
+        self.exit_code = 0
+        self.recv = Mock(side_effect=self._recv_stdout)
+        self.recv_stderr = Mock(side_effect=self._recv_stderr)
+        self.recv_exit_status = Mock(side_effect=lambda: self.exit_code)
+        self.close = Mock(side_effect=self._close)
+
+    def recv_ready(self) -> bool:
+        return bool(self.stdout_buffer)
+
+    def recv_stderr_ready(self) -> bool:
+        return bool(self.stderr_buffer)
+
+    def exit_status_ready(self) -> bool:
+        return self.status_ready or self.closed
+
+    def _recv_stdout(self, size: int) -> bytes:
+        chunk = bytes(self.stdout_buffer[:size])
+        del self.stdout_buffer[:size]
+        return chunk
+
+    def _recv_stderr(self, size: int) -> bytes:
+        chunk = bytes(self.stderr_buffer[:size])
+        del self.stderr_buffer[:size]
+        return chunk
+
+    def _close(self) -> None:
+        self.closed = True
+
+
 @pytest.fixture
 def mock_paramiko():
     """Mock paramiko.SSHClient 及其返回值。"""
@@ -88,11 +129,9 @@ def mock_paramiko():
 
         # exec_command 模拟
         _stdin = Mock()
-        _stdout = Mock()
-        _stderr = Mock()
-        _stdout.channel.recv_exit_status.return_value = 0
-        _stdout.read.return_value = b"stdout data\n"
-        _stderr.read.return_value = b""
+        channel = _PollingChannel()
+        _stdout = Mock(channel=channel)
+        _stderr = Mock(channel=channel)
         inst.exec_command.return_value = (_stdin, _stdout, _stderr)
 
         # transport 模拟
@@ -165,6 +204,7 @@ class TestSSHClientConnect:
         config = ConnectionConfig(hostname="h", username="u", password="p")
         with pytest.raises(SSHAuthenticationError, match="authentication failed"):
             SSHClient(config).connect()
+        mock_paramiko.close.assert_called_once()
 
     def test_connect_timeout(self, mock_paramiko):
         mock_paramiko.connect.side_effect = socket.timeout("timeout")
@@ -200,6 +240,13 @@ class TestSSHClientConnect:
         SSHClient(config).connect()
         # paramiko 的 load_host_keys 应被调用
         mock_paramiko.load_host_keys.assert_called_once_with(str(known))
+
+    def test_default_loads_system_known_hosts_with_reject_policy(self, mock_paramiko):
+        SSHClient(ConnectionConfig(hostname="h", username="u")).connect()
+
+        mock_paramiko.load_system_host_keys.assert_called_once_with()
+        policy = mock_paramiko.set_missing_host_key_policy.call_args.args[0]
+        assert isinstance(policy, paramiko.RejectPolicy)
 
     def test_disconnect_cleanup(self, mock_paramiko):
         config = ConnectionConfig(hostname="h", username="u")
@@ -297,11 +344,9 @@ class TestSSHClientExecute:
 
     def test_execute_stdout_decoding(self, mock_paramiko):
         _stdin = Mock()
-        _stdout = Mock()
-        _stderr = Mock()
-        _stdout.channel.recv_exit_status.return_value = 0
-        _stdout.read.return_value = b"\xff\xfe\x00hello"  # 非 utf-8 字节
-        _stderr.read.return_value = b""
+        channel = _PollingChannel(b"\xff\xfe\x00hello")
+        _stdout = Mock(channel=channel)
+        _stderr = Mock(channel=channel)
         mock_paramiko.exec_command.return_value = (_stdin, _stdout, _stderr)
         config = ConnectionConfig(hostname="h", username="u")
         with SSHClient(config) as client:
@@ -350,6 +395,13 @@ class TestSSHClientFileTransfer:
             client.upload_file(str(local), "/remote/a.txt")
         sftp = mock_paramiko.open_sftp.return_value
         sftp.put.assert_called_once()
+        staged_path = sftp.put.call_args.args[1]
+        assert staged_path.startswith("/remote/.remote-cmd-")
+        staging_dir = sftp.mkdir.call_args.args[0]
+        assert staged_path == f"{staging_dir}/upload"
+        assert sftp.mkdir.call_args.kwargs["mode"] == 0o700
+        sftp.posix_rename.assert_called_once_with(staged_path, "/remote/a.txt")
+        sftp.rmdir.assert_called_once_with(staging_dir)
 
     def test_upload_missing_local(self, mock_paramiko):  # noqa: ARG002
         config = ConnectionConfig(hostname="h", username="u")
@@ -365,11 +417,128 @@ class TestSSHClientFileTransfer:
         sftp = mock_paramiko.open_sftp.return_value
         sftp.put.side_effect = paramiko.SSHException("transfer fail")
         config = ConnectionConfig(hostname="h", username="u")
+        with SSHClient(config) as client:
+            with pytest.raises(SSHFileTransferError, match="file upload failed"):
+                client.upload_file(str(local), "/remote/x")
+            assert client._sftp is None
+        sftp.close.assert_called_once()
+
+    def test_failed_staged_upload_does_not_replace_destination(self, mock_paramiko, tmp_path):
+        local = tmp_path / "failed.txt"
+        local.write_text("new data")
+        sftp = mock_paramiko.open_sftp.return_value
+        sftp.put.side_effect = OSError("connection reset")
+
         with (
-            SSHClient(config) as client,
+            SSHClient(ConnectionConfig(hostname="h", username="u")) as client,
             pytest.raises(SSHFileTransferError, match="file upload failed"),
         ):
-            client.upload_file(str(local), "/remote/x")
+            client.upload_file(str(local), "/remote/existing.txt")
+
+        staged_path = sftp.put.call_args.args[1]
+        assert staged_path != "/remote/existing.txt"
+        sftp.posix_rename.assert_not_called()
+        sftp.remove.assert_called_once_with(staged_path)
+        sftp.rmdir.assert_called_once_with(staged_path.rsplit("/", 1)[0])
+
+    def test_new_upload_uses_standard_rename_when_posix_extension_is_missing(
+        self, mock_paramiko, tmp_path
+    ):
+        local = tmp_path / "new.txt"
+        local.write_text("new")
+        sftp = mock_paramiko.open_sftp.return_value
+        sftp.lstat.side_effect = FileNotFoundError(errno.ENOENT, "missing")
+        sftp.posix_rename.side_effect = paramiko.SSHException("extension unsupported")
+
+        with SSHClient(ConnectionConfig(hostname="h", username="u")) as client:
+            client.upload_file(str(local), "/remote/new.txt")
+
+        staged_path = sftp.put.call_args.args[1]
+        sftp.rename.assert_called_once_with(staged_path, "/remote/new.txt")
+
+    def test_existing_upload_fallback_commits_and_removes_backup(self, mock_paramiko, tmp_path):
+        local = tmp_path / "replacement.txt"
+        local.write_text("replacement")
+        sftp = mock_paramiko.open_sftp.return_value
+        attrs = paramiko.SFTPAttributes()
+        attrs.st_mode = stat.S_IFREG | 0o640
+        sftp.lstat.return_value = attrs
+        sftp.posix_rename.side_effect = paramiko.SSHException("extension unsupported")
+        sftp.rename.side_effect = [paramiko.SSHException("destination exists"), None, None]
+
+        with SSHClient(ConnectionConfig(hostname="h", username="u")) as client:
+            client.upload_file(str(local), "/remote/existing.txt")
+
+        staged_path = sftp.put.call_args.args[1]
+        backup_path = sftp.rename.call_args_list[1].args[1]
+        assert sftp.rename.call_args_list[2].args == (staged_path, "/remote/existing.txt")
+        sftp.remove.assert_called_once_with(backup_path)
+
+    def test_existing_upload_fallback_rolls_back_and_preserves_mode(self, mock_paramiko, tmp_path):
+        local = tmp_path / "replacement.txt"
+        local.write_text("replacement")
+        sftp = mock_paramiko.open_sftp.return_value
+        attrs = paramiko.SFTPAttributes()
+        attrs.st_mode = stat.S_IFREG | 0o640
+        sftp.lstat.return_value = attrs
+        sftp.posix_rename.side_effect = paramiko.SSHException("extension unsupported")
+        sftp.rename.side_effect = [
+            paramiko.SSHException("destination exists"),
+            None,
+            OSError("commit failed"),
+            None,
+        ]
+
+        with (
+            SSHClient(ConnectionConfig(hostname="h", username="u")) as client,
+            pytest.raises(SSHFileTransferError, match="file upload failed"),
+        ):
+            client.upload_file(str(local), "/remote/existing.txt")
+
+        staged_path = sftp.put.call_args.args[1]
+        backup_path = sftp.rename.call_args_list[1].args[1]
+        assert staged_path.startswith("/remote/.remote-cmd-")
+        assert backup_path.startswith("/remote/.remote-cmd-")
+        assert backup_path.endswith(".backup")
+        sftp.chmod.assert_called_once_with(staged_path, 0o640)
+        assert sftp.rename.call_args_list[2].args == (staged_path, "/remote/existing.txt")
+        assert sftp.rename.call_args_list[3].args == (backup_path, "/remote/existing.txt")
+
+    def test_upload_follows_destination_symlink(self, mock_paramiko, tmp_path):
+        local = tmp_path / "link-target.txt"
+        local.write_text("replacement")
+        sftp = mock_paramiko.open_sftp.return_value
+        link = paramiko.SFTPAttributes()
+        link.st_mode = stat.S_IFLNK | 0o777
+        target = paramiko.SFTPAttributes()
+        target.st_mode = stat.S_IFREG | 0o600
+        sftp.lstat.return_value = link
+        sftp.normalize.return_value = "/remote/actual.txt"
+        sftp.stat.return_value = target
+
+        with SSHClient(ConnectionConfig(hostname="h", username="u")) as client:
+            client.upload_file(str(local), "/remote/link.txt")
+
+        staged_path = sftp.put.call_args.args[1]
+        assert staged_path.startswith("/remote/.remote-cmd-")
+        sftp.posix_rename.assert_called_once_with(staged_path, "/remote/actual.txt")
+        sftp.chmod.assert_called_once_with(staged_path, 0o600)
+
+    def test_upload_rejects_directory_destination(self, mock_paramiko, tmp_path):
+        local = tmp_path / "source.txt"
+        local.write_text("data")
+        attrs = paramiko.SFTPAttributes()
+        attrs.st_mode = stat.S_IFDIR | 0o755
+        sftp = mock_paramiko.open_sftp.return_value
+        sftp.lstat.return_value = attrs
+
+        with (
+            SSHClient(ConnectionConfig(hostname="h", username="u")) as client,
+            pytest.raises(SSHFileTransferError, match="remote destination is a directory"),
+        ):
+            client.upload_file(str(local), "/remote/directory")
+
+        sftp.put.assert_not_called()
 
     def test_download_file_success(self, mock_paramiko, tmp_path):
         local = tmp_path / "out" / "b.txt"
@@ -378,17 +547,25 @@ class TestSSHClientFileTransfer:
             client.download_file("/remote/b.txt", str(local))
         sftp = mock_paramiko.open_sftp.return_value
         sftp.get.assert_called_once()
+        remote, staged_path = sftp.get.call_args.args
+        assert remote == "/remote/b.txt"
+        assert staged_path != str(local)
+        assert local.exists()
+        assert list(local.parent.glob(".*.part")) == []
         assert local.parent.exists()
 
     def test_download_sftp_exception(self, mock_paramiko, tmp_path):
         sftp = mock_paramiko.open_sftp.return_value
         sftp.get.side_effect = OSError("disk full")
         config = ConnectionConfig(hostname="h", username="u")
-        with (
-            SSHClient(config) as client,
-            pytest.raises(SSHFileTransferError, match="file download failed"),
-        ):
-            client.download_file("/remote/x", str(tmp_path / "x.txt"))
+        local = tmp_path / "x.txt"
+        local.write_text("existing-good-content")
+        with SSHClient(config) as client:
+            with pytest.raises(SSHFileTransferError, match="file download failed"):
+                client.download_file("/remote/x", str(local))
+            assert client._sftp is None
+        assert local.read_text() == "existing-good-content"
+        assert list(tmp_path.glob(".*.part")) == []
 
     def test_list_remote_directory(self, mock_paramiko):
         """在 mock 中需要构造 SFTPAttributes 列表。"""
@@ -575,24 +752,38 @@ class TestSSHClientDeadlockAndTimeout:
         return client
 
     def test_reads_streams_before_exit_status(self, mock_paramiko):
-        """死锁防护契约：退出状态必须在两个输出流排空完成后获取。
+        """两个 readiness buffer 必须都排空后才读取退出状态。
 
         顺序颠倒（先 recv_exit_status）会在输出超过 SSH 通道窗口时
         死锁——paramiko 官方文档明确警告的场景。
         """
         client = self._connected_client(mock_paramiko)
         _stdin, _stdout, _stderr = mock_paramiko.exec_command.return_value
+        channel = _stdout.channel
+        channel.stdout_buffer = bytearray(b"out")
+        channel.stderr_buffer = bytearray(b"err")
         events = []
-        _stdout.read.side_effect = lambda: (events.append("stdout"), b"out")[1]
-        _stderr.read.side_effect = lambda: (events.append("stderr"), b"err")[1]
-        _stdout.channel.recv_exit_status.side_effect = lambda: (events.append("exit"), 0)[1]
+        recv_stdout = channel.recv.side_effect
+        recv_stderr = channel.recv_stderr.side_effect
+
+        def read_stdout(size):
+            events.append("stdout")
+            return recv_stdout(size)
+
+        def read_stderr(size):
+            events.append("stderr")
+            return recv_stderr(size)
+
+        channel.recv.side_effect = read_stdout
+        channel.recv_stderr.side_effect = read_stderr
+        channel.recv_exit_status.side_effect = lambda: (events.append("exit"), 0)[1]
 
         result = client.execute("ls")
 
         assert result.exit_code == 0
         assert result.stdout == "out"
         assert result.stderr == "err"
-        # 退出状态必须在最后；两个流的读取在它之前完成（线程顺序不定）
+        # 每个流均有数据时，两者都先于退出状态包消费。
         assert events[-1] == "exit"
         assert set(events[:2]) == {"stdout", "stderr"}
 
@@ -602,8 +793,8 @@ class TestSSHClientDeadlockAndTimeout:
         _stdin, _stdout, _stderr = mock_paramiko.exec_command.return_value
         big_out = b"x" * (3 * 1024 * 1024)
         big_err = b"y" * (3 * 1024 * 1024)
-        _stdout.read.return_value = big_out
-        _stderr.read.return_value = big_err
+        _stdout.channel.stdout_buffer = bytearray(big_out)
+        _stdout.channel.stderr_buffer = bytearray(big_err)
 
         result = client.execute("cat /var/log/big.log")
 
@@ -611,15 +802,92 @@ class TestSSHClientDeadlockAndTimeout:
         assert len(result.stderr) == 3 * 1024 * 1024
         assert result.exit_code == 0
 
+    def test_simultaneous_stream_flood_drains_a_bounded_remote_window(self, mock_paramiko):
+        """Both producers exceed a tiny simulated SSH window without deadlock."""
+        window_chunks = 2
+        chunk_size = 32 * 1024
+        total_bytes = 3 * 1024 * 1024
+
+        class WindowedChannel:
+            def __init__(self):
+                self.stdout_queue: queue.Queue[bytes | None] = queue.Queue(window_chunks)
+                self.stderr_queue: queue.Queue[bytes | None] = queue.Queue(window_chunks)
+                self.producers_done = 0
+                self.stdout_eof = False
+                self.stderr_eof = False
+                self.lock = threading.Lock()
+                self.recv_exit_status = Mock(return_value=0)
+                self.close = Mock()
+                self.producer_threads = [
+                    threading.Thread(target=self._produce, args=(self.stdout_queue, b"x"), daemon=True),
+                    threading.Thread(target=self._produce, args=(self.stderr_queue, b"y"), daemon=True),
+                ]
+                for thread in self.producer_threads:
+                    thread.start()
+
+            def _produce(self, target: queue.Queue[bytes | None], value: bytes) -> None:
+                try:
+                    for _ in range(total_bytes // chunk_size):
+                        target.put(value * chunk_size, timeout=5)
+                    target.put(None, timeout=5)
+                finally:
+                    with self.lock:
+                        self.producers_done += 1
+
+            def recv_ready(self) -> bool:
+                return not self.stdout_queue.empty()
+
+            def recv_stderr_ready(self) -> bool:
+                return not self.stderr_queue.empty()
+
+            @staticmethod
+            def _read(target: queue.Queue[bytes | None], size: int) -> bytes:
+                item = target.get_nowait()
+                if item is None:
+                    return b""
+                return item[:size]
+
+            def recv(self, size: int) -> bytes:
+                data = self._read(self.stdout_queue, size)
+                if not data:
+                    self.stdout_eof = True
+                return data
+
+            def recv_stderr(self, size: int) -> bytes:
+                data = self._read(self.stderr_queue, size)
+                if not data:
+                    self.stderr_eof = True
+                return data
+
+            def exit_status_ready(self) -> bool:
+                with self.lock:
+                    return self.producers_done == 2 and self.stdout_eof and self.stderr_eof
+
+        channel = WindowedChannel()
+        stdout = Mock(channel=channel)
+        stderr = Mock(channel=channel)
+        mock_paramiko.exec_command.return_value = (Mock(), stdout, stderr)
+        client = self._connected_client(mock_paramiko)
+
+        result = client.execute("generate both streams")
+
+        for thread in channel.producer_threads:
+            thread.join(timeout=2)
+            assert not thread.is_alive()
+        assert len(result.stdout.encode()) == total_bytes
+        assert len(result.stderr.encode()) == total_bytes
+        assert result.exit_code == 0
+
     def test_timeout_raises_command_timeout_error(self, mock_paramiko):
         """wall-clock 超时：挂起的命令在超时后抛 SSHCommandTimeoutError"""
         client = self._connected_client(mock_paramiko)
-        _stdin, _stdout, _stderr = mock_paramiko.exec_command.return_value
+        _stdin, stdout, _stderr = mock_paramiko.exec_command.return_value
+        channel = stdout.channel
         closed = threading.Event()
-        _stdout.channel.close.side_effect = lambda: closed.set()
-        # stdout.read 阻塞直到通道被超时定时器关闭（模拟静默挂起的命令）
-        _stdout.read.side_effect = lambda: (closed.wait(timeout=5), b"partial")[1]
-        _stderr.read.return_value = b""
+        channel.stdout_buffer.clear()
+        channel.stderr_buffer.clear()
+        channel.status_ready = False
+        channel.close.side_effect = lambda: (closed.set(), setattr(channel, "closed", True))
 
         with pytest.raises(SSHCommandTimeoutError, match="timed out after 0.1"):
             client.execute("sleep 100", timeout=0.1)
@@ -627,22 +895,104 @@ class TestSSHClientDeadlockAndTimeout:
     def test_timeout_closes_channel(self, mock_paramiko):
         """超时后必须关闭通道以终止远端命令（避免僵尸进程）"""
         client = self._connected_client(mock_paramiko)
-        _stdin, _stdout, _stderr = mock_paramiko.exec_command.return_value
+        _stdin, stdout, _stderr = mock_paramiko.exec_command.return_value
+        channel = stdout.channel
         closed = threading.Event()
-        _stdout.channel.close.side_effect = lambda: closed.set()
-        _stdout.read.side_effect = lambda: (closed.wait(timeout=5), b"")[1]
-        _stderr.read.return_value = b""
+        channel.stdout_buffer.clear()
+        channel.stderr_buffer.clear()
+        channel.status_ready = False
+        channel.close.side_effect = lambda: (closed.set(), setattr(channel, "closed", True))
 
         with pytest.raises(SSHCommandTimeoutError):
             client.execute("sleep 100", timeout=0.1)
-        _stdout.channel.close.assert_called_once()
+        channel.close.assert_called_once()
+
+    def test_client_reusable_after_timeout(self, mock_paramiko):
+        """超时命令后同一客户端必须可执行下一命令（无半关闭状态）。"""
+        client = self._connected_client(mock_paramiko)
+        _stdin, stdout, _stderr = mock_paramiko.exec_command.return_value
+        channel = stdout.channel
+        channel.stdout_buffer.clear()
+        channel.stderr_buffer.clear()
+        channel.status_ready = False
+        channel.close.side_effect = lambda: setattr(channel, "closed", True)
+
+        with pytest.raises(SSHCommandTimeoutError):
+            client.execute("sleep 100", timeout=0.1)
+
+        fresh = _PollingChannel(stdout=b"recovered\n")
+        mock_paramiko.exec_command.return_value = (Mock(), Mock(channel=fresh), Mock(channel=fresh))
+        result = client.execute("echo ok")
+        assert result.success is True
+        assert result.stdout == "recovered\n"
+        assert client.is_connected()
+
+    def test_timeout_returns_if_channel_close_fails(self, mock_paramiko):
+        """A failed close is bounded by the Paramiko channel I/O timeout fallback."""
+        client = self._connected_client(mock_paramiko)
+        _stdin, stdout, stderr = mock_paramiko.exec_command.return_value
+        channel = stdout.channel
+        channel.stdout_buffer.clear()
+        channel.stderr_buffer.clear()
+        channel.status_ready = False
+        channel.close.side_effect = OSError("close failed")
+        mock_paramiko.close.side_effect = lambda: setattr(channel, "closed", True)
+        started = time.monotonic()
+        with pytest.raises(SSHCommandTimeoutError, match="timed out after 0.1"):
+            client.execute("sleep 100", timeout=0.1)
+        assert time.monotonic() - started < 1.0
+        mock_paramiko.close.assert_called_once()
+
+    def test_timeout_covers_exec_request_setup(self, mock_paramiko):
+        """Paramiko exec request 等待阶段也必须受 wall-clock watchdog 约束。"""
+        client = self._connected_client(mock_paramiko)
+        closed = threading.Event()
+        entered = threading.Event()
+        mock_paramiko.close.side_effect = closed.set
+
+        def blocking_exec(_command, timeout=None):  # noqa: ARG001
+            entered.set()
+            assert closed.wait(timeout=2)
+            raise paramiko.SSHException("transport closed by command timeout")
+
+        mock_paramiko.exec_command.side_effect = blocking_exec
+        with pytest.raises(SSHCommandTimeoutError, match="timed out after 0.1"):
+            client.execute("uptime", timeout=0.1)
+
+        assert entered.is_set()
+        assert mock_paramiko.close.called
+        assert mock_paramiko.exec_command.call_args.kwargs["timeout"] == 0.1
+
+    def test_timeout_covers_exit_status_wait(self, mock_paramiko):
+        """输出 EOF 后迟迟不发 exit-status 也不得绕过调用超时。"""
+        client = self._connected_client(mock_paramiko)
+        _stdin, stdout, stderr = mock_paramiko.exec_command.return_value
+        channel = stdout.channel
+        status_ready = threading.Event()
+        channel.stdout_buffer = bytearray(b"out")
+        channel.stderr_buffer.clear()
+        channel.status_ready = False
+
+        def close_status_wait():
+            status_ready.set()
+            channel.closed = True
+
+        channel.close.side_effect = close_status_wait
+
+        with pytest.raises(SSHCommandTimeoutError, match="timed out after 0.1"):
+            client.execute("uptime", timeout=0.1)
+
+        assert status_ready.is_set()
+        channel.close.assert_called_once()
 
     def test_stderr_reader_error_propagates(self, mock_paramiko):
-        """stderr 排空线程中的异常回传主线程并包装为 SSHCommandError"""
+        """stderr receive 异常在命令 worker 中回传并包装为 SSHCommandError"""
         client = self._connected_client(mock_paramiko)
-        _stdin, _stdout, _stderr = mock_paramiko.exec_command.return_value
-        _stdout.read.return_value = b"out"
-        _stderr.read.side_effect = OSError("connection reset during drain")
+        _stdin, stdout, _stderr = mock_paramiko.exec_command.return_value
+        channel = stdout.channel
+        channel.stdout_buffer = bytearray(b"out")
+        channel.stderr_buffer = bytearray(b"err")
+        channel.recv_stderr.side_effect = OSError("connection reset during drain")
 
         with pytest.raises(SSHCommandError, match="command execution failed"):
             client.execute("ls")
@@ -650,22 +1000,25 @@ class TestSSHClientDeadlockAndTimeout:
     def test_no_timeout_by_default(self, mock_paramiko):
         """未传 timeout 时不创建超时定时器（历史行为：不限时）"""
         client = self._connected_client(mock_paramiko)
-        _stdin, _stdout, _stderr = mock_paramiko.exec_command.return_value
-        _stdout.read.return_value = b"ok"
-        _stderr.read.return_value = b""
+        _stdin, stdout, _stderr = mock_paramiko.exec_command.return_value
+        channel = stdout.channel
+        channel.stdout_buffer = bytearray(b"ok")
+        channel.stderr_buffer.clear()
 
         result = client.execute("ls")
         assert result.success is True
-        _stdout.channel.close.assert_not_called()
+        channel.close.assert_not_called()
 
     def test_execute_sudo_timeout(self, mock_paramiko):
         """execute_sudo 复用同一 wall-clock 超时语义"""
         client = self._connected_client(mock_paramiko)
-        _stdin, _stdout, _stderr = mock_paramiko.exec_command.return_value
+        _stdin, stdout, _stderr = mock_paramiko.exec_command.return_value
+        channel = stdout.channel
         closed = threading.Event()
-        _stdout.channel.close.side_effect = lambda: closed.set()
-        _stdout.read.side_effect = lambda: (closed.wait(timeout=5), b"")[1]
-        _stderr.read.return_value = b""
+        channel.stdout_buffer.clear()
+        channel.stderr_buffer.clear()
+        channel.status_ready = False
+        channel.close.side_effect = lambda: (closed.set(), setattr(channel, "closed", True))
 
         with pytest.raises(SSHCommandTimeoutError, match="timed out after 0.1"):
             client.execute_sudo("sleep 100", password="pw", timeout=0.1)
@@ -693,9 +1046,6 @@ class TestSSHClientEnvironmentValidation:
     def test_valid_keys_accepted(self, mock_paramiko, good_key):
         client = SSHClient(ConnectionConfig(hostname="h", username="u"))
         client.connect()
-        _stdin, _stdout, _stderr = mock_paramiko.exec_command.return_value
-        _stdout.read.return_value = b""
-        _stderr.read.return_value = b""
 
         result = client.execute("ls", environment={good_key: "v z"})
 
@@ -707,31 +1057,18 @@ class TestSSHClientEnvironmentValidation:
 
 
 class TestSSHClientReaderJoinHardening:
-    """stderr 排空线程有界 join（v2.1 发布加固）"""
+    """Polling read errors must close the channel without leaking a helper thread."""
 
-    def test_blocked_stderr_reader_does_not_hang_execute(self, mock_paramiko, monkeypatch):
-        """有界 join：主线程读取异常退出而 stderr 排空线程仍阻塞时，
-        execute 不得在 join 上永久等待
-
-        复现路径：stdout.read 抛 OSError（如网络中断）时通道未关闭，
-        排空线程的 stderr.read 仍可能阻塞——无界 join 会让调用方挂死。
-        """
-        monkeypatch.setattr("remote_cmd.core.ssh_client._READER_JOIN_TIMEOUT", 0.1)
-
+    def test_stream_read_error_closes_channel_and_returns(self, mock_paramiko):
         client = SSHClient(ConnectionConfig(hostname="h", username="u"))
         client.connect()
-        _stdin, _stdout, _stderr = mock_paramiko.exec_command.return_value
+        _stdin, stdout, _stderr = mock_paramiko.exec_command.return_value
+        stdout.channel.stdout_buffer = bytearray(b"data")
+        stdout.channel.recv.side_effect = OSError("main read failed")
 
-        # 主线程读取立即失败；stderr 排空线程阻塞至测试收尾
-        _stdout.read.side_effect = OSError("main read failed")
-        block = threading.Event()
-        _stderr.read.side_effect = lambda: (block.wait(), b"")[1]
-
-        try:
-            with pytest.raises(SSHCommandError, match="command execution failed"):
-                client.execute("ls")
-        finally:
-            block.set()  # 允许排空线程退出
+        with pytest.raises(SSHCommandError, match="command execution failed"):
+            client.execute("ls")
+        stdout.channel.close.assert_called_once()
 
 
 # ============================================================================
@@ -741,6 +1078,27 @@ class TestSSHClientReaderJoinHardening:
 
 class TestSSHClientFileTransferTimeout:
     """SFTP 操作使用 channel 级 inactivity 超时，静默即中止且清理会话。"""
+
+    def test_open_sftp_channel_timeout_interrupts_stalled_subsystem_request(self, mock_paramiko):
+        client_closed = threading.Event()
+        mock_paramiko.close.side_effect = client_closed.set
+
+        def stalled_open():
+            assert client_closed.wait(timeout=2)
+            raise paramiko.SSHException("transport closed during SFTP startup")
+
+        mock_paramiko.open_sftp.side_effect = stalled_open
+        client = SSHClient(ConnectionConfig(hostname="h", username="u"))
+        client.connect()
+
+        with pytest.raises(
+            SSHFileTransferError,
+            match="open SFTP channel timed out after 0.1 seconds of inactivity",
+        ):
+            client._get_sftp(timeout=0.1)
+
+        assert client_closed.is_set()
+        assert client._sftp is None
 
     def test_default_timeout_applied_to_sftp_channel(self, mock_paramiko, tmp_path):
         local = tmp_path / "a.txt"
@@ -777,6 +1135,14 @@ class TestSSHClientFileTransferTimeout:
 
             def get_channel(self):
                 return self.channel
+
+            def lstat(self, _path):
+                attrs = paramiko.SFTPAttributes()
+                attrs.st_mode = stat.S_IFREG | 0o644
+                return attrs
+
+            def mkdir(self, _path, mode=0o777):
+                self.staging_mode = mode
 
             def put(self, *_args, **_kwargs):
                 # 记录 put 被调用时 channel 上已生效的超时
@@ -872,11 +1238,7 @@ class TestSSHClientFileTransferTimeout:
 
 
 class TestReadOutputThreadModel:
-    """锁定每命令线程模型：1 个 stderr 排空线程 + 可选 1 个超时 Timer。
-
-    该模型是 P2.4 基准的量化对象；若未来改为集中式 channel polling，
-    本测试需随实现一并更新（届时断言将反映 0 线程/命令）。
-    """
+    """The command worker polls both streams; only timed commands need a Timer."""
 
     @staticmethod
     def _spy(monkeypatch):
@@ -908,14 +1270,14 @@ class TestReadOutputThreadModel:
         monkeypatch.setattr("remote_cmd.core.ssh_client.threading", ThreadingSpy())
         return created_threads, created_timers
 
-    def test_no_timeout_creates_only_stderr_thread(self, mock_paramiko, monkeypatch):
+    def test_no_timeout_creates_no_auxiliary_thread(self, mock_paramiko, monkeypatch):
         threads, timers = self._spy(monkeypatch)
 
         client = SSHClient(ConnectionConfig(hostname="h", username="u"))
         client.connect()
         client.execute("ls")  # timeout=None
 
-        assert threads.count("ssh-stderr-drain") == 1
+        assert threads == []
         assert timers == []
 
     def test_timeout_adds_one_timer_thread(self, mock_paramiko, monkeypatch):
@@ -925,5 +1287,5 @@ class TestReadOutputThreadModel:
         client.connect()
         client.execute("ls", timeout=30)
 
-        assert threads.count("ssh-stderr-drain") == 1
+        assert threads == []
         assert len(timers) == 1

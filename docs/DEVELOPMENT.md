@@ -305,7 +305,15 @@ pytest tests/test_ssh_client.py::TestSSHClient::test_connect_with_password -v
 # Generate a coverage report
 pytest --cov=remote_cmd --cov-report=html
 pytest --cov=remote_cmd --cov-report=term-missing
+
+# Opt-in scale benchmarks (excluded from the default test run)
+pytest tests/performance -m benchmark -s -q
 ```
+
+The scale benchmarks use deterministic fake SSH clients and report scheduler
+Future/Task counts, thread starts/peak task threads, Python allocation peak,
+connection counts and elapsed time. `tracemalloc` reports Python allocations,
+not process RSS; real-network capacity still requires the integration tests.
 
 ### Test Structure
 
@@ -460,11 +468,10 @@ Follow [Semantic Versioning](https://semver.org/):
 1. **Bump the version**
 
 ```python
-# remote_cmd/__init__.py
+# remote_cmd/_version.py is the sole version source
 __version__ = "1.1.0"
 
-# pyproject.toml
-version = "1.1.0"
+# pyproject.toml reads the dynamic version from that module; do not duplicate it.
 ```
 
 2. **Update the CHANGELOG**

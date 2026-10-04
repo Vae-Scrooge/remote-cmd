@@ -108,6 +108,45 @@ class TestRecipeCrudCli:
         assert r.exit_code == 1
         assert "not found" in r.output
 
+    def test_rich_recipe_run_does_not_echo_variable_values(self, runner, config_file):
+        _invoke(runner, config_file, "recipe", "add", "deploy", "-c", "deploy {{ token }}", "-V", "token")
+        with patch("remote_cmd.cli.main.BatchExecutor") as executor_class:
+            executor_class.return_value.execute.return_value = _ok_batch()
+            result = _invoke(
+                runner,
+                config_file,
+                "recipe",
+                "run",
+                "deploy",
+                "h1",
+                "-V",
+                "token=private-value",
+            )
+
+        assert result.exit_code == 0
+        assert "private-value" not in result.output
+
+    def test_json_recipe_validation_error_is_valid_json(self, config_file):
+        runner = CliRunner(mix_stderr=False)
+        _invoke(runner, config_file, "recipe", "add", "deploy", "-c", "deploy {{ package }}", "-V", "package")
+        result = _invoke(
+            runner,
+            config_file,
+            "recipe",
+            "run",
+            "deploy",
+            "h1",
+            "-V",
+            "unknown=x",
+            "--format",
+            "json",
+        )
+        assert result.exit_code == 1
+        payload = json.loads(result.stdout)
+        assert payload["total"] == 1
+        assert payload["results"]["h1"]["success"] is False
+        assert "unknown variable" in payload["results"]["h1"]["error"]
+
 
 class TestRecipeRunCli:
     def test_run_renders_shell_arg_safely(self, runner, config_file):

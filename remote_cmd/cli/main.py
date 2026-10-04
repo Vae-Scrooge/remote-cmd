@@ -31,9 +31,11 @@ from remote_cmd.cli.formatters.base import FORMAT_CHOICES
 from remote_cmd.core.host import Host
 from remote_cmd.core.profile import HostProfile
 from remote_cmd.core.recipe import Recipe, RecipeVariable
+from remote_cmd.core.ssh_client import CommandResult
+from remote_cmd.repository.host_repository import HostRepository
 from remote_cmd.repository.profile_store import ProfileStore
 from remote_cmd.repository.recipe_store import RecipeStore
-from remote_cmd.service.batch_executor import BatchExecutor
+from remote_cmd.service.batch_executor import BatchExecutor, BatchHostResult, BatchResult
 from remote_cmd.service.credential_provider import (
     ChainCredentialProvider,
     EncryptedFileCredentialProvider,
@@ -50,7 +52,7 @@ from remote_cmd.utils.exceptions import ValidationError
 
 def _build_service(
     config_file: str, storage_backend: Optional[str] = None
-) -> tuple[HostService, ProfileService, RecipeService]:
+) -> tuple[HostService, ProfileService, RecipeService, HostRepository]:
     """Build a HostService and ProfileService from a config file.
 
     Credential chain order: env var -> encrypted file storage.
@@ -84,7 +86,7 @@ def _build_service(
     assert isinstance(repo, RecipeStore)
     profile_service = ProfileService(store=repo, host_repository=repo)
     recipe_service = RecipeService(store=repo)
-    return service, profile_service, recipe_service
+    return service, profile_service, recipe_service, repo
 
 
 @click.group()
@@ -135,14 +137,22 @@ def cli(
     # （扩展名推断覆盖 .json/.db/.sqlite 常见场景）
     hosts_file = hosts_file_override or ctx.obj["config"].get("hosts_file", "hosts.json")
     storage_backend = ctx.obj["config"].get("storage_backend")
-    service, profile_service, recipe_service = _build_service(hosts_file, storage_backend)
+    service, profile_service, recipe_service, repository = _build_service(
+        hosts_file, storage_backend
+    )
     ctx.obj["service"] = service
     ctx.obj["profile_service"] = profile_service
     ctx.obj["recipe_service"] = recipe_service
+    if hasattr(repository, "close"):
+        # Deterministic lifecycle: one repository per CLI invocation.
+        # SqliteHostRepository caches thread-local connections; without this,
+        # short-lived CLI processes rely on GC/__del__ to release FDs.
+        ctx.call_on_close(repository.close)
 
     if verbose:
-        click.echo(f"Using config file: {config_path}")
-        click.echo(f"Using hosts file: {hosts_file}")
+        # stdout 可能被 run/batch-run --format json 管道消费；诊断信息只走 stderr。
+        click.echo(f"Using config file: {config_path}", err=True)
+        click.echo(f"Using hosts file: {hosts_file}", err=True)
 
 
 @cli.group()
@@ -677,31 +687,68 @@ def recipe_run(
         values = _parse_var_values(var_values)
         rendered = recipes.render(name, values)
     except KeyError:
-        click.echo(f"✗ Error: recipe '{name}' not found", err=True)
+        message = f"recipe '{name}' not found"
+        if output_format == "json":
+            click.echo(
+                format_batch_result(
+                    _batch_failure_result(host_names, f"recipe:{name}", message), "json"
+                )
+            )
+        else:
+            click.echo(f"✗ Error: {message}", err=True)
         ctx.exit(1)
     except (ValueError, ValidationError) as e:
-        click.echo(f"✗ Error: {e}", err=True)
+        if output_format == "json":
+            click.echo(
+                format_batch_result(
+                    _batch_failure_result(host_names, f"recipe:{name}", str(e)), "json"
+                )
+            )
+        else:
+            click.echo(f"✗ Error: {e}", err=True)
         ctx.exit(1)
 
     if output_format == "rich":
-        click.echo(
-            f"Recipe '{name}' on {len(host_names)} hosts, "
-            f"command={rendered.command!r}"
-        )
+        # 不回显渲染后的命令，变量可能包含 token、密码或其他敏感值。
+        click.echo(f"Recipe '{name}' on {len(host_names)} hosts")
 
-    executor = BatchExecutor(
-        host_service=service,
-        max_concurrency=concurrency,
-        command_timeout=timeout,
-        use_async=use_async,
-    )
-    result = executor.execute(
-        host_names=list(host_names),
-        command=rendered.command,
-        retry_count=retry,
-        retry_delay=1.0,
-        environment=rendered.environment or None,
-    )
+    try:
+        executor = BatchExecutor(
+            host_service=service,
+            max_concurrency=concurrency,
+            command_timeout=timeout,
+            use_async=use_async,
+        )
+        result = executor.execute(
+            host_names=list(host_names),
+            command=rendered.command,
+            retry_count=retry,
+            retry_delay=1.0,
+            environment=rendered.environment or None,
+        )
+    except KeyboardInterrupt:
+        if output_format == "json":
+            click.echo(
+                format_batch_result(
+                    _batch_failure_result(host_names, f"recipe:{name}", "user interrupted"),
+                    "json",
+                )
+            )
+        else:
+            click.echo("✗ cancelled", err=True)
+        ctx.exit(130)
+    except (Exit, click.Abort):
+        raise
+    except Exception as e:  # noqa: BLE001 - CLI converts execution errors to user output
+        if output_format == "json":
+            click.echo(
+                format_batch_result(
+                    _batch_failure_result(host_names, f"recipe:{name}", str(e)), "json"
+                )
+            )
+        else:
+            click.echo(f"✗ Error: {e}", err=True)
+        ctx.exit(1)
 
     if output_format != "rich":
         click.echo(format_batch_result(result, output_format, show_failures=show_failures))
@@ -765,10 +812,33 @@ def run(
 
             ctx.exit(result.exit_code)
 
+    except KeyboardInterrupt:
+        if output_format == "json":
+            click.echo(
+                format_single_result(
+                    host_name,
+                    command,
+                    CommandResult(command=command, stdout="", stderr="cancelled", exit_code=-1),
+                    "json",
+                )
+            )
+        else:
+            click.echo("✗ cancelled", err=True)
+        ctx.exit(130)
     except (Exit, click.Abort):
         raise
     except Exception as e:  # noqa: BLE001
-        click.echo(f"✗ Error: {e}", err=True)
+        if output_format == "json":
+            click.echo(
+                format_single_result(
+                    host_name,
+                    command,
+                    CommandResult(command=command, stdout="", stderr=str(e), exit_code=-1),
+                    "json",
+                )
+            )
+        else:
+            click.echo(f"✗ Error: {e}", err=True)
         ctx.exit(1)
 
 
@@ -852,6 +922,29 @@ def _echo_batch_rich(result: Any, show_failures: bool) -> None:
             click.echo(click.style(f"  ✓ {host}", fg="green"))
 
 
+def _batch_failure_result(
+    host_names: tuple[str, ...], command: str, error: str
+) -> BatchResult:
+    """Create a stable per-host failure result for CLI setup/execution errors."""
+    names = list(dict.fromkeys(host_names))
+    results = {
+        name: BatchHostResult(
+            host=name,
+            success=False,
+            command=command,
+            error=error,
+        )
+        for name in names
+    }
+    return BatchResult(
+        total=len(names),
+        success=0,
+        failed=len(names),
+        duration=0.0,
+        results=results,
+    )
+
+
 def _parse_var_declarations(items: tuple[str, ...], var_type: str) -> dict[str, RecipeVariable]:
     """解析 CLI 变量声明（NAME 或 NAME=DEFAULT）。"""
     variables: dict[str, RecipeVariable] = {}
@@ -925,49 +1018,73 @@ def batch_run(
         remote-cmd batch-run --async web-1 web-2 db-1 "uptime"
     """
     service: HostService = ctx.obj["service"]
-    executor = BatchExecutor(
-        host_service=service,
-        max_concurrency=concurrency,
-        command_timeout=timeout,
-        use_async=use_async,
-    )
-
-    # 机器格式：不打印表头/进度条（保持 stdout 可解析），只输出结果本身
-    if output_format != "rich":
-        result = executor.execute(
-            host_names=list(host_names),
-            command=command,
-            retry_count=retry,
-            retry_delay=retry_delay,
+    try:
+        executor = BatchExecutor(
+            host_service=service,
+            max_concurrency=concurrency,
+            command_timeout=timeout,
+            use_async=use_async,
         )
+
+        # 机器格式：不打印表头/进度条（保持 stdout 可解析），只输出结果本身。
+        if output_format != "rich":
+            result = executor.execute(
+                host_names=list(host_names),
+                command=command,
+                retry_count=retry,
+                retry_delay=retry_delay,
+            )
+        else:
+            # 命令行可能包含凭据/token；rich 进度也不应写入 shell/CI 日志。
+            click.echo(f"Batch running on {len(host_names)} hosts, concurrency={concurrency}")
+            click.echo()
+
+            bar: Any
+            with click.progressbar(
+                length=len(host_names),
+                label="Progress",
+                show_eta=True,
+                show_percent=True,
+            ) as bar:
+
+                def progress(_completed: int, _total: int, _host_name: str) -> None:
+                    bar.update(1)
+
+                result = executor.execute(
+                    host_names=list(host_names),
+                    command=command,
+                    retry_count=retry,
+                    retry_delay=retry_delay,
+                    progress_callback=progress,
+                )
+    except KeyboardInterrupt:
+        if output_format == "json":
+            click.echo(
+                format_batch_result(
+                    _batch_failure_result(host_names, command, "user interrupted"), "json"
+                )
+            )
+        else:
+            click.echo("✗ cancelled", err=True)
+        ctx.exit(130)
+    except (Exit, click.Abort):
+        raise
+    except Exception as e:  # noqa: BLE001 - convert CLI failures to machine/user output
+        if output_format == "json":
+            click.echo(
+                format_batch_result(
+                    _batch_failure_result(host_names, command, str(e)), "json"
+                )
+            )
+        else:
+            click.echo(f"✗ Error: {e}", err=True)
+        ctx.exit(1)
+
+    if output_format != "rich":
         click.echo(format_batch_result(result, output_format, show_failures=show_failures))
         if result.failed > 0:
             ctx.exit(1)
         return
-
-    click.echo(
-        f"Batch running on {len(host_names)} hosts, command='{command}', concurrency={concurrency}"
-    )
-    click.echo()
-
-    bar: Any
-    with click.progressbar(
-        length=len(host_names),
-        label="Progress",
-        show_eta=True,
-        show_percent=True,
-    ) as bar:
-
-        def progress(_completed: int, _total: int, _host_name: str) -> None:
-            bar.update(1)
-
-        result = executor.execute(
-            host_names=list(host_names),
-            command=command,
-            retry_count=retry,
-            retry_delay=retry_delay,
-            progress_callback=progress,
-        )
 
     _echo_batch_rich(result, show_failures)
 
@@ -977,7 +1094,14 @@ def batch_run(
 
 def main() -> None:
     """CLI entry point"""
-    cli()
+    try:
+        cli()
+    except KeyboardInterrupt:
+        click.echo("✗ cancelled", err=True)
+        raise SystemExit(130) from None
+    except Exception as exc:  # noqa: BLE001 - top-level CLI boundary, no traceback by default
+        click.echo(f"✗ Error: {exc}", err=True)
+        raise SystemExit(1) from None
 
 
 if __name__ == "__main__":

@@ -204,18 +204,28 @@ paramiko.SSHException: Server '192.168.1.100' not found in known_hosts
 **Solutions:**
 
 ```bash
-# Method 1: add the host key manually
+# Method 1: add the host key manually, then verify its fingerprint out-of-band
 ssh-keyscan -H 192.168.1.100 >> ~/.ssh/known_hosts
 
-# Method 2: accept on first connection
-ssh user@192.168.1.100  # Type yes
-
-# Method 3: disable strict checking in code (not recommended for production)
+# Method 2: verify the host fingerprint with the server administrator before trusting it
+ssh-keygen -lf ~/.ssh/known_hosts
 ```
 
 ```python
-# Python API (already the default implementation)
-client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+# Strict host-key checking is the default. To use a dedicated known_hosts file:
+config = ConnectionConfig(
+    hostname="192.168.1.100",
+    username="admin",
+    known_hosts_file="~/.ssh/known_hosts",
+)
+
+# AutoAddPolicy is an explicit, insecure opt-in for controlled/test environments only.
+# It emits a security warning and is not the default.
+config = ConnectionConfig(
+    hostname="192.168.1.100",
+    username="admin",
+    host_key_policy=paramiko.AutoAddPolicy(),
+)
 ```
 
 ---
@@ -326,6 +336,11 @@ result = client.execute("nohup long_command > /tmp/output.log 2>&1 &")
 ---
 
 ## File Transfer Problems
+
+Downloads are written to a same-directory temporary file and atomically moved
+into place only after the transfer completes. If a transfer fails or is
+cancelled, an existing local destination remains unchanged; remove any old
+`.part` files only if they were left by an interrupted process or older release.
 
 ### 1. File Not Found
 
@@ -746,4 +761,4 @@ Most problems can be solved by checking the following:
 
 ---
 
-*Last updated: 2026-08-23 (v2.1.0)*
+*Last updated: 2026-09-26 (v2.10.0 reliability audit)*

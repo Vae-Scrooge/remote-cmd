@@ -1,5 +1,8 @@
 name: Publish to PyPI
 
+permissions:
+  contents: read
+
 on:
   release:
     types: [published]
@@ -17,18 +20,22 @@ jobs:
   build:
     name: Build distributions
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: Install build tools
         run: |
           python -m pip install --upgrade pip
-          pip install "build==1.5.0" "twine==7.0.0"
+          pip install "build==1.5.0" "twine==7.0.0" "setuptools==80.9.0" "wheel==0.45.1"
 
       - name: Verify version / CHANGELOG metadata
         run: python scripts/check_release_metadata.py
@@ -38,10 +45,15 @@ jobs:
         run: python scripts/check_release_metadata.py --tag "${{ github.ref_name }}"
 
       - name: Build package
-        run: python -m build
+        run: python -m build --no-isolation
 
       - name: Check distributions with twine
         run: python -m twine check dist/*
+
+      - name: Attest distribution provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/*
 
       - name: Upload distributions
         uses: actions/upload-artifact@v7
@@ -57,6 +69,7 @@ jobs:
       name: testpypi
       url: https://test.pypi.org/p/remote-cmd-manager
     permissions:
+      contents: read
       id-token: write
     if: github.event.inputs.environment == 'testpypi' && github.event_name == 'workflow_dispatch'
     steps:
@@ -78,6 +91,7 @@ jobs:
       name: pypi
       url: https://pypi.org/p/remote-cmd-manager
     permissions:
+      contents: read
       id-token: write
     if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'pypi')
     steps:
@@ -88,3 +102,36 @@ jobs:
           path: dist/
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+
+  smoke-pypi-install:
+    name: Smoke test published PyPI install
+    needs: publish-pypi
+    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'pypi')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Wait for PyPI and install the exact release
+        run: |
+          VERSION="$(python -c 'import ast; from pathlib import Path; tree = ast.parse(Path("remote_cmd/_version.py").read_text()); print(next(ast.literal_eval(node.value) for node in tree.body if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id == "__version__" for target in node.targets)))')"
+          python -m venv /tmp/remote-cmd-pypi-smoke
+          for attempt in $(seq 1 12); do
+            if /tmp/remote-cmd-pypi-smoke/bin/python -m pip install "remote_cmd_manager==${VERSION}"; then
+              break
+            fi
+            if [ "$attempt" -eq 12 ]; then
+              echo "PyPI did not serve remote_cmd_manager==${VERSION}" >&2
+              exit 1
+            fi
+            sleep 10
+          done
+          /tmp/remote-cmd-pypi-smoke/bin/remote-cmd --version
+          /tmp/remote-cmd-pypi-smoke/bin/remote-cmd --help
+          /tmp/remote-cmd-pypi-smoke/bin/python -c "import remote_cmd; assert remote_cmd.__version__ == '${VERSION}'"

@@ -1,48 +1,25 @@
-"""P2.4 基准：Paramiko 同步执行路径的每命令线程开销量化。
+"""Benchmark Paramiko synchronous command resource costs.
 
-背景（v2.7 决策依据）
-====================
-``SSHClient._read_output`` 为每个命令创建一个 stderr 排空线程
-（防大输出死锁所必需），并在设置 timeout 时额外创建一个 Timer 线程。
-N 个并发命令的瞬时线程数因此约为 ``N(执行器 worker) + 2N``。
+The legacy ``SSHClient._read_output`` created a stderr-drain thread per
+command, plus a Timer thread when a timeout was configured. The readiness-poll
+implementation is evaluated at 100/500/1,000 simultaneous commands for thread
+count, throughput, wall time, memory, and timeout reliability.
 
-本基准量化三件事，为"是否值得重写为集中式 channel polling"提供数据：
+Run explicitly (benchmarks are excluded from the default suite)::
 
-1. 每命令线程创建数（确定性；由 tests/test_ssh_client.py 锁定回归）
-2. 零延迟下单命令 ``execute`` 的墙钟开销（线程创建/join 成本）
-3. 批量执行在不同并发下的**峰值线程数**（与并发的线性关系）
+    pytest tests/performance/test_paramiko_threads.py -m benchmark -s
 
-运行
-====
-默认不运行（pyproject addopts 已排除 `benchmark` 标记）。
-
-    pytest tests/performance/test_paramiko_threads.py -m benchmark -s -p no:cacheprovider
-
-指标说明
-========
-- ``peak_threads``：执行期间 ``threading.active_count()`` 峰值（2ms 采样）
-- ``us/command``：零延迟下包含真实线程创建/join 的单命令开销
-
-实测基线（2026-09-13，Linux，Python 3.14，``_HarnessClient`` 假传输）
-====================================================================
-::
-
-    zero-latency per-command overhead            ~100 us/command
-
-    concurrency   peak_threads @10ms   peak_threads @50ms
-    10                     32                 32
-    50                    101                152
-    100                   124                302
-    250                   160                397
-
-结论（v2.7 决策记录）：持续并发 <250 时维持每命令 2 线程（stderr + timer）
-的现有模型；持续并发 >=250 时再评估集中式 channel polling 重写。
+The high-inflight harness gates every worker at its first channel read. It uses
+local fakes, not a remote SSH server; timings are observations rather than
+pass/fail thresholds.
 """
 
 from __future__ import annotations
 
+import sys
 import threading
 import time
+import tracemalloc
 from unittest.mock import patch
 
 import pytest
@@ -55,37 +32,118 @@ pytestmark = pytest.mark.benchmark
 
 
 class _FakeChannel:
-    def __init__(self, exit_code: int = 0) -> None:
+    def __init__(
+        self,
+        exit_code: int = 0,
+        stdout: bytes = b"OK\n",
+        stderr: bytes = b"",
+        read_delay: float = 0.0,
+        gate: threading.Barrier | None = None,
+        gate_release: threading.Event | None = None,
+        status_ready: bool = True,
+        gate_each_stream: bool = False,
+    ) -> None:
         self._exit_code = exit_code
+        self.stdout_buffer = bytearray(stdout)
+        self.stderr_buffer = bytearray(stderr)
+        self._read_delay = read_delay
+        self._gate = gate
+        self._gate_release = gate_release
+        self._status_ready = status_ready
+        self._gate_each_stream = gate_each_stream
+        self._gated_streams: set[str] = set()
+        self._gate_lock = threading.Lock()
+        self._first_read = True
+        self.closed_event = threading.Event()
         self.closed = False
+
+    def recv_ready(self) -> bool:
+        return bool(self.stdout_buffer)
+
+    def recv_stderr_ready(self) -> bool:
+        return bool(self.stderr_buffer)
+
+    def _before_read(self, stream: str) -> None:
+        with self._gate_lock:
+            first_read = self._first_read
+            self._first_read = False
+            should_gate = self._gate is not None and (
+                (self._gate_each_stream and stream not in self._gated_streams)
+                or (not self._gate_each_stream and not self._gated_streams)
+            )
+            self._gated_streams.add(stream)
+        if first_read and self._read_delay:
+            time.sleep(self._read_delay)
+        if should_gate and self._gate is not None:
+            self._gate.wait(timeout=15)
+        if should_gate and self._gate_release is not None:
+            self._gate_release.wait(timeout=15)
+
+    def recv(self, size: int) -> bytes:
+        self._before_read("stdout")
+        chunk = bytes(self.stdout_buffer[:size])
+        del self.stdout_buffer[:size]
+        return chunk
+
+    def recv_stderr(self, size: int) -> bytes:
+        self._before_read("stderr")
+        chunk = bytes(self.stderr_buffer[:size])
+        del self.stderr_buffer[:size]
+        return chunk
 
     def recv_exit_status(self) -> int:
         return self._exit_code
 
+    def exit_status_ready(self) -> bool:
+        return self._status_ready or self.closed
+
     def close(self) -> None:
         self.closed = True
+        self.closed_event.set()
 
 
 class _FakeStream:
-    def __init__(self, data: bytes = b"", channel: _FakeChannel | None = None, delay: float = 0.0):
-        self._data = data
+    def __init__(self, channel: _FakeChannel, stream: str):
         self.channel = channel
-        self._delay = delay
+        self._stream = stream
 
     def read(self) -> bytes:
-        if self._delay:
-            time.sleep(self._delay)
-        return self._data
+        self.channel._before_read(self._stream)
+        if self._stream == "stdout":
+            buffer = self.channel.stdout_buffer
+        else:
+            buffer = self.channel.stderr_buffer
+        if not buffer and not self.channel.exit_status_ready():
+            self.channel.closed_event.wait(timeout=15)
+        data = bytes(buffer)
+        buffer.clear()
+        return data
 
 
 class _FakeParamikoClient:
+    read_gate: threading.Barrier | None = None
+    read_gate_release: threading.Event | None = None
+    exec_gate: threading.Barrier | None = None
+    silent_commands = False
+    gate_each_stream = False
+
     def __init__(self, read_delay: float = 0.0) -> None:
         self._read_delay = read_delay
 
     def exec_command(self, command, **kwargs):  # noqa: ARG002
-        channel = _FakeChannel()
-        stdout = _FakeStream(b"OK\n", channel=channel, delay=self._read_delay)
-        stderr = _FakeStream(b"", delay=self._read_delay)
+        if type(self).exec_gate is not None:
+            type(self).exec_gate.wait(timeout=15)
+        silent = type(self).silent_commands
+        channel = _FakeChannel(
+            stdout=b"" if silent else b"OK\n",
+            read_delay=self._read_delay,
+            gate=type(self).read_gate,
+            gate_release=type(self).read_gate_release,
+            status_ready=not silent,
+            gate_each_stream=type(self).gate_each_stream,
+        )
+        stdout = _FakeStream(channel, "stdout")
+        stderr = _FakeStream(channel, "stderr")
         return (None, stdout, stderr)
 
     def close(self) -> None:
@@ -93,7 +151,7 @@ class _FakeParamikoClient:
 
 
 class _HarnessClient(SSHClient):
-    """真实 SSHClient 子类：仅替换传输层，_read_output 走真实线程路径。"""
+    """Real SSHClient command path with a deterministic channel fake."""
 
     read_delay = 0.0
 
@@ -109,6 +167,60 @@ class _HarnessClient(SSHClient):
 
     def is_connected(self) -> bool:
         return True
+
+
+class _LegacyHarnessClient(_HarnessClient):
+    """Benchmark reference for the prior blocking stdout + stderr-thread drain."""
+
+    def _read_output(
+        self,
+        stdout,
+        stderr,
+        timeout,
+        *,
+        timed_out_event=None,
+        manage_timeout=True,
+        deadline=None,
+    ):
+        del manage_timeout
+        channel = stdout.channel
+        timed_out = timed_out_event or threading.Event()
+        stderr_data = bytearray()
+        stderr_error = []
+
+        def drain_stderr():
+            try:
+                stderr_data.extend(stderr.read())
+            except BaseException as exc:  # noqa: BLE001 - legacy reference behavior
+                stderr_error.append(exc)
+
+        reader = threading.Thread(target=drain_stderr, name="ssh-stderr-drain", daemon=True)
+        reader.start()
+        try:
+            stdout_data = stdout.read()
+            reader.join(timeout=5)
+            if timed_out.is_set():
+                from remote_cmd.utils.exceptions import SSHCommandTimeoutError
+
+                raise SSHCommandTimeoutError(f"command timed out after {timeout} seconds")
+            if stderr_error:
+                raise stderr_error[0]
+            if deadline is not None:
+                while not channel.exit_status_ready():
+                    if time.monotonic() >= deadline or timed_out.is_set():
+                        from remote_cmd.utils.exceptions import SSHCommandTimeoutError
+
+                        raise SSHCommandTimeoutError(f"command timed out after {timeout} seconds")
+                    time.sleep(0.01)
+            exit_code = channel.recv_exit_status()
+            return (
+                exit_code,
+                stdout_data.decode("utf-8", errors="replace"),
+                bytes(stderr_data).decode("utf-8", errors="replace"),
+            )
+        finally:
+            if reader.is_alive():
+                reader.join(timeout=5)
 
 
 class TestPerCommandThreadCost:
@@ -127,8 +239,8 @@ class TestPerCommandThreadCost:
         per_command_us = elapsed / runs * 1e6
 
         print(
-            f"\n[P2.4] zero-latency per-command overhead "
-            f"(1 stderr thread + 1 timer): {per_command_us:.1f} us/command "
+            f"\n[Paramiko] zero-latency per-command overhead "
+            f"(no reader thread + one timeout Timer): {per_command_us:.1f} us/command "
             f"({runs} runs)"
         )
         # 健全性上限：单命令线程成本不应接近毫秒级
@@ -136,7 +248,7 @@ class TestPerCommandThreadCost:
 
 
 class TestPeakThreadsVsConcurrency:
-    """批量执行峰值线程数：worker + 每在飞命令 2 线程的线性关系。"""
+    """Batch peaks should be bounded by workers plus one Timer per command."""
 
     @pytest.mark.parametrize("read_delay", [0.01, 0.05])
     @pytest.mark.parametrize("concurrency", [10, 50, 100, 250])
@@ -165,10 +277,143 @@ class TestPeakThreadsVsConcurrency:
 
         assert result.success == concurrency
         print(
-            f"\n[P2.4] concurrency={concurrency:4d} read_delay={read_delay:.2f}s "
+            f"\n[Paramiko] concurrency={concurrency:4d} read_delay={read_delay:.2f}s "
             f"peak_threads={peak['n']:4d} "
-            f"(workers={concurrency}, +2 per in-flight command)"
+            f"(workers={concurrency}, +1 timeout Timer per in-flight command)"
         )
-        # 每个命令最多 2 个瞬时线程（stderr + timer）；峰值不应超过
-        # worker 数 + 2*并发 + 采样/主线程等余量
-        assert peak["n"] <= concurrency * 3 + 20
+        assert peak["n"] <= concurrency * 2 + 20
+
+    @pytest.mark.parametrize("concurrency", [100, 500, 1000])
+    def test_high_inflight_command_thread_scale(self, concurrency):
+        """Compare the legacy reader thread with one-worker dual-stream polling."""
+        if sys.platform == "win32" and concurrency >= 500:
+            pytest.skip("high thread stress is Linux/macOS only")
+        _HarnessClient.read_delay = 0.0
+        hosts = make_hosts(concurrency)
+        service = make_mock_service(hosts)
+
+        def measure(client_class, streams_per_command: int):
+            at_gate = threading.Event()
+            release = threading.Event()
+            _FakeParamikoClient.read_gate = threading.Barrier(
+                concurrency * streams_per_command,
+                action=at_gate.set,
+            )
+            _FakeParamikoClient.read_gate_release = release
+            _FakeParamikoClient.gate_each_stream = streams_per_command == 2
+            peak = {"n": threading.active_count()}
+            stop = threading.Event()
+            outcome = {}
+
+            def sampler() -> None:
+                while not stop.is_set():
+                    peak["n"] = max(peak["n"], threading.active_count())
+                    stop.wait(0.001)
+
+            sampler_thread = threading.Thread(target=sampler, daemon=True)
+            sampler_thread.start()
+
+            def run_batch():
+                with patch("remote_cmd.service.batch_executor.SSHClient", client_class):
+                    outcome["result"] = BatchExecutor(
+                        host_service=service,
+                        max_concurrency=concurrency,
+                    ).execute([host.name for host in hosts], "uptime")
+
+            batch_thread = threading.Thread(target=run_batch, daemon=True)
+            tracemalloc.start()
+            started = time.perf_counter()
+            batch_thread.start()
+            try:
+                assert at_gate.wait(timeout=15), "not all command streams reached the gate"
+                active = threading.enumerate()
+                peak["n"] = max(peak["n"], len(active))
+                workers = sum("ThreadPoolExecutor" in thread.name for thread in active)
+                readers = sum(thread.name == "ssh-stderr-drain" for thread in active)
+                timers = sum(isinstance(thread, threading.Timer) for thread in active)
+            finally:
+                release.set()
+                batch_thread.join(timeout=15)
+                stop.set()
+                sampler_thread.join(timeout=2.0)
+                _FakeParamikoClient.read_gate = None
+                _FakeParamikoClient.read_gate_release = None
+                _FakeParamikoClient.gate_each_stream = False
+            elapsed = time.perf_counter() - started
+            _current, peak_bytes = tracemalloc.get_traced_memory()
+            tracemalloc.stop()
+            assert not batch_thread.is_alive()
+            result = outcome["result"]
+            assert result.success == concurrency
+            return {
+                "threads": peak["n"],
+                "workers": workers,
+                "readers": readers,
+                "timers": timers,
+                "seconds": elapsed,
+                "throughput": concurrency / elapsed,
+                "peak_mib": peak_bytes / 1024 / 1024,
+                "total": result.total,
+            }
+
+        legacy = measure(_LegacyHarnessClient, streams_per_command=2)
+        polling = measure(_HarnessClient, streams_per_command=1)
+        print(f"\n[Paramiko legacy] concurrency={concurrency} {legacy}")
+        print(f"[Paramiko polling] concurrency={concurrency} {polling}")
+        assert legacy["total"] == polling["total"] == concurrency
+        assert polling["readers"] == 0
+        assert polling["threads"] <= concurrency * 2 + 20
+
+    @pytest.mark.parametrize("concurrency", [100, 500, 1000])
+    def test_concurrent_silent_command_timeouts(self, concurrency):
+        """Both drain designs enforce wall-clock timeout at high in-flight counts."""
+        if sys.platform == "win32" and concurrency >= 500:
+            pytest.skip("high thread stress is Linux/macOS only")
+        _HarnessClient.read_delay = 0.0
+        _FakeParamikoClient.silent_commands = True
+        hosts = make_hosts(concurrency)
+        service = make_mock_service(hosts)
+
+        def run_batch(batch_runner, client_class, outcome_holder):
+            with patch("remote_cmd.service.batch_executor.SSHClient", client_class):
+                outcome_holder["result"] = batch_runner.execute(
+                    [host.name for host in hosts], "sleep forever"
+                )
+
+        try:
+            for variant in (_LegacyHarnessClient, _HarnessClient):
+                batch = BatchExecutor(
+                    service,
+                    max_concurrency=concurrency,
+                    command_timeout=0.15,
+                )
+                outcome = {}
+
+                started = time.perf_counter()
+                worker = threading.Thread(
+                    target=run_batch,
+                    args=(batch, variant, outcome),
+                    daemon=True,
+                )
+                worker.start()
+                worker.join(timeout=10)
+                elapsed = time.perf_counter() - started
+
+                assert not worker.is_alive()
+                result = outcome["result"]
+                assert result.failed == concurrency
+                assert all(
+                    "timed out" in (host_result.error or "")
+                    for host_result in result.results.values()
+                )
+                max_duration = max(host_result.duration for host_result in result.results.values())
+                print(
+                    f"\n[Paramiko timeout reliability] variant={variant.__name__} "
+                    f"concurrency={concurrency} wall={elapsed:.3f}s "
+                    f"max_command={max_duration:.3f}s timed_out={result.failed}/{result.total}"
+                )
+                assert 0.1 <= max_duration < 2.0
+                assert elapsed < 10.0
+        finally:
+            _FakeParamikoClient.silent_commands = False
+            _FakeParamikoClient.exec_gate = None

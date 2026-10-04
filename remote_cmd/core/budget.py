@@ -19,17 +19,16 @@
 - 异步：:meth:`acquire_async` / :meth:`release_async` /
   :meth:`acquire_context_async`
 
-同一实例可被同步与异步执行器共享：容量与等待队列由单个
+同一实例可被同步与异步执行器共享：容量与全局 FIFO 等待队列由单个
 ``threading.Condition`` 保护；异步等待者注册 ``asyncio.Future``，
-释放时通过 ``loop.call_soon_threadsafe`` 精准唤醒（v2.7 P2.5 优化：
+释放时通过 ``loop.call_soon_threadsafe`` 精准唤醒：
 取代 v2.6 的 10→50ms 轮询，无空转 wakeup）。
 
 唤醒语义（condition-variable 模式）：
-- 唤醒只是"提示"而非预留：被唤醒者需重新竞争容量；释放方不预占槽位。
-- 异步等待者之间 FIFO；同步等待者之间 FIFO；跨类型顺序不作保证。
-- 等待者超时/取消时会从队列移除；若唤醒权已派发给它，
-  ``_resolve_waiter`` 检测到 future 已完成会补唤醒下一个等待者，
-  不会因取消竞态丢失唤醒。
+- 同步和异步等待者共用 FIFO 队列，容量在唤醒前即被预留；新到达者
+  不能抢占已等待者，因此持续流量下也不会造成 waiter starvation。
+- 等待者超时/取消会从队列移除；若槽位已预留，则原子归还并派给下一个
+  waiter，不存在丢失唤醒窗口。
 
 超时：``acquire_timeout=None``（默认）无限等待；配置正整数/浮点秒数时
 超时抛出 :class:`~remote_cmd.utils.exceptions.BudgetTimeoutError`。
@@ -49,12 +48,24 @@
 
 import asyncio
 import contextlib
+import math
 import threading
 import time
 from collections import deque
+from dataclasses import dataclass
 from typing import Any, AsyncIterator, Deque, Iterator, Optional
 
-from remote_cmd.utils.exceptions import BudgetTimeoutError, ValidationError
+from remote_cmd.utils.exceptions import BudgetTimeoutError, PoolClosedError, ValidationError
+
+
+@dataclass(eq=False)
+class _BudgetWaiter:
+    """同步/异步共用的 FIFO 等待者记录。"""
+
+    cancel_event: Optional[threading.Event]
+    future: Optional[asyncio.Future[None]] = None
+    loop: Optional[asyncio.AbstractEventLoop] = None
+    granted: bool = False
 
 
 class ConnectionBudget:
@@ -85,6 +96,7 @@ class ConnectionBudget:
         if acquire_timeout is not None and (
             isinstance(acquire_timeout, bool)
             or not isinstance(acquire_timeout, (int, float))
+            or (isinstance(acquire_timeout, float) and not math.isfinite(acquire_timeout))
             or acquire_timeout <= 0
         ):
             raise ValidationError(
@@ -97,7 +109,7 @@ class ConnectionBudget:
         # 单一互斥 + 条件变量：保护容量计数与等待队列（同步/异步共享）
         self._cond = threading.Condition(threading.Lock())
         self._in_use = 0
-        self._async_waiters: Deque[asyncio.Future[None]] = deque()
+        self._waiters: Deque[_BudgetWaiter] = deque()
 
         # 指标
         self._total_acquired = 0
@@ -127,35 +139,58 @@ class ConnectionBudget:
                 "total_acquired": self._total_acquired,
                 "total_released": self._total_released,
                 "total_timeouts": self._total_timeouts,
+                "waiters": len(self._waiters),
             }
 
     # ------------------------------------------------------------------
     # 同步接口
     # ------------------------------------------------------------------
-    def acquire(self) -> None:
+    def acquire(self, cancel_event: Optional[threading.Event] = None) -> None:
         """获取一个连接预算槽位（阻塞，受 ``acquire_timeout`` 约束）。
+
+        ``cancel_event`` 是池内部使用的可选生命周期信号；池关闭时会通知
+        条件变量，使等待者立即以 ``PoolClosedError`` 退出，而不是一直等到
+        其他池释放容量。
 
         Raises:
             BudgetTimeoutError: 等待超过 ``acquire_timeout``
+            PoolClosedError: ``cancel_event`` 在等待期间被置位
         """
         timeout = self._acquire_timeout
         deadline = None if timeout is None else time.monotonic() + timeout
         with self._cond:
-            while self._in_use >= self._max:
-                remaining = None if deadline is None else deadline - time.monotonic()
-                if remaining is not None and remaining <= 0:
-                    self._total_timeouts += 1
-                    # 超时者退出前让出一次唤醒权，避免其他同步等待者
-                    # 因槽位空闲却无人被通知而饥饿
-                    self._cond.notify()
-                    raise BudgetTimeoutError(
-                        "connection budget exhausted: "
-                        f"waited {timeout}s for a slot "
-                        f"(max_connections={self._max})"
-                    )
-                self._cond.wait(remaining)
-            self._in_use += 1
-            self._total_acquired += 1
+            if cancel_event is not None and cancel_event.is_set():
+                raise PoolClosedError("connection pool is closed")
+            if self._in_use < self._max and not self._waiters:
+                self._reserve_slot_locked()
+                return
+
+            waiter = _BudgetWaiter(cancel_event=cancel_event)
+            self._waiters.append(waiter)
+            self._dispatch_waiters_locked()
+            try:
+                while not waiter.granted:
+                    if cancel_event is not None and cancel_event.is_set():
+                        self._cancel_waiter_locked(waiter)
+                        self._dispatch_waiters_locked()
+                        raise PoolClosedError("connection pool is closed")
+                    remaining = None if deadline is None else deadline - time.monotonic()
+                    if remaining is not None and remaining <= 0:
+                        self._total_timeouts += 1
+                        self._cancel_waiter_locked(waiter)
+                        self._dispatch_waiters_locked()
+                        raise self._timeout_error(timeout)
+                    self._cond.wait(remaining)
+                if cancel_event is not None and cancel_event.is_set():
+                    self._cancel_waiter_locked(waiter)
+                    self._dispatch_waiters_locked()
+                    raise PoolClosedError("connection pool is closed")
+            except (BudgetTimeoutError, PoolClosedError):
+                raise
+            except BaseException:
+                self._cancel_waiter_locked(waiter)
+                self._dispatch_waiters_locked()
+                raise
 
     def release(self) -> None:
         """释放一个连接预算槽位并唤醒一个等待者。
@@ -168,7 +203,7 @@ class ConnectionBudget:
                 raise ValueError("release without a matching acquire")
             self._in_use -= 1
             self._total_released += 1
-            self._wake_next_locked()
+            self._dispatch_waiters_locked()
 
     @contextlib.contextmanager
     def acquire_context(self) -> Iterator[None]:
@@ -182,56 +217,82 @@ class ConnectionBudget:
     # ------------------------------------------------------------------
     # 异步接口
     # ------------------------------------------------------------------
-    async def acquire_async(self) -> None:
+    async def acquire_async(self, cancel_event: Optional[threading.Event] = None) -> None:
         """获取一个连接预算槽位（asyncio 原生等待，受 ``acquire_timeout`` 约束）。
 
         通过注册 ``asyncio.Future`` 等待释放方唤醒，不使用轮询。
+        ``cancel_event`` 为池关闭信号；配合 :meth:`_notify_waiters` 可取消
+        正在等待共享预算的建连操作。
         """
         timeout = self._acquire_timeout
         deadline = None if timeout is None else time.monotonic() + timeout
         loop = asyncio.get_running_loop()
-        while True:
-            with self._cond:
-                if self._in_use < self._max:
-                    self._in_use += 1
-                    self._total_acquired += 1
-                    return
-                remaining = None if deadline is None else deadline - time.monotonic()
-                if remaining is not None and remaining <= 0:
-                    self._total_timeouts += 1
-                    self._cond.notify()
-                    raise BudgetTimeoutError(
-                        "connection budget exhausted: "
-                        f"waited {timeout}s for a slot "
-                        f"(max_connections={self._max})"
-                    )
-                fut: asyncio.Future[None] = loop.create_future()
-                self._async_waiters.append(fut)
+        with self._cond:
+            if cancel_event is not None and cancel_event.is_set():
+                raise PoolClosedError("connection pool is closed")
+            if self._in_use < self._max and not self._waiters:
+                self._reserve_slot_locked()
+                return
+            waiter = _BudgetWaiter(
+                cancel_event=cancel_event,
+                future=loop.create_future(),
+                loop=loop,
+            )
+            self._waiters.append(waiter)
+            self._dispatch_waiters_locked()
+            granted_immediately = waiter.granted
+
+        if not granted_immediately:
+            future = waiter.future
+            assert future is not None
+            remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
             try:
                 if remaining is None:
-                    await fut
+                    await future
                 else:
-                    await asyncio.wait_for(fut, remaining)
+                    await asyncio.wait_for(future, remaining)
             except asyncio.TimeoutError:
                 with self._cond:
-                    self._discard_waiter_locked(fut)
                     self._total_timeouts += 1
-                    # 若唤醒权已被派发给本 future（弹出后 resolve 前超时），
-                    # _resolve_waiter 会发现 fut 已完成并补唤醒下一个等待者
-                raise BudgetTimeoutError(
-                    "connection budget exhausted: "
-                    f"waited {timeout}s for a slot "
-                    f"(max_connections={self._max})"
-                ) from None
+                    self._cancel_waiter_locked(waiter)
+                    self._dispatch_waiters_locked()
+                raise self._timeout_error(timeout) from None
             except asyncio.CancelledError:
                 with self._cond:
-                    self._discard_waiter_locked(fut)
+                    self._cancel_waiter_locked(waiter)
+                    self._dispatch_waiters_locked()
                 raise
-            # 被唤醒后回到循环顶部重新竞争容量（唤醒不预留槽位）
+
+        with self._cond:
+            if cancel_event is not None and cancel_event.is_set():
+                self._cancel_waiter_locked(waiter)
+                self._dispatch_waiters_locked()
+                raise PoolClosedError("connection pool is closed")
+            if not waiter.granted:
+                # close notification may complete the future without granting a
+                # slot; the cancel_event check above normally consumes this path.
+                self._cancel_waiter_locked(waiter)
+                self._dispatch_waiters_locked()
+                raise RuntimeError("connection budget waiter woke without a reserved slot")
 
     async def release_async(self) -> None:
         """释放一个连接预算槽位（异步接口；与 :meth:`release` 等价）。"""
         self.release()
+
+    def _notify_waiters(self) -> None:
+        """通知预算等待者重新检查容量或池生命周期。
+
+        由同步/异步连接池在关闭时调用；关闭 token 置位后，等待者会被
+        唤醒并检查 ``cancel_event``，已派发槽位则由 acquire 取消路径归还。
+        """
+        with self._cond:
+            self._cond.notify_all()
+            for waiter in tuple(self._waiters):
+                if waiter.cancel_event is not None and waiter.cancel_event.is_set():
+                    if waiter.future is None:
+                        self._cond.notify_all()
+                    else:
+                        self._schedule_async_waiter_locked(waiter)
 
     @contextlib.asynccontextmanager
     async def acquire_context_async(self) -> AsyncIterator[None]:
@@ -245,39 +306,62 @@ class ConnectionBudget:
     # ------------------------------------------------------------------
     # 内部：等待队列
     # ------------------------------------------------------------------
-    def _discard_waiter_locked(self, fut: asyncio.Future[None]) -> None:
-        """从异步等待队列移除 future（不存在则忽略）。须持锁调用。"""
+    def _reserve_slot_locked(self) -> None:
+        """在持锁状态下预留一个连接预算槽位。"""
+        self._in_use += 1
+        self._total_acquired += 1
+
+    def _cancel_waiter_locked(self, waiter: _BudgetWaiter) -> None:
+        """移除 waiter；若容量已预留，则原子归还该槽位。"""
+        if waiter.granted:
+            waiter.granted = False
+            self._in_use -= 1
+            self._total_released += 1
         with contextlib.suppress(ValueError):
-            self._async_waiters.remove(fut)
+            self._waiters.remove(waiter)
 
-    def _wake_next_locked(self) -> None:
-        """唤醒一个等待者（异步优先 FIFO，否则通知一个同步等待者）。
+    def _dispatch_waiters_locked(self) -> None:
+        """按全局 FIFO 顺序预留可用槽位并唤醒 waiter。"""
+        while self._in_use < self._max and self._waiters:
+            waiter = self._waiters.popleft()
+            if waiter.cancel_event is not None and waiter.cancel_event.is_set():
+                if waiter.future is None:
+                    self._cond.notify_all()
+                else:
+                    self._schedule_async_waiter_locked(waiter)
+                continue
+            if waiter.future is not None and (
+                waiter.future.done() or not self._schedule_async_waiter_locked(waiter)
+            ):
+                continue
+            waiter.granted = True
+            self._reserve_slot_locked()
+            if waiter.future is None:
+                self._cond.notify_all()
 
-        唤醒不预留槽位；被唤醒者会重新检查容量。须持锁调用。
-        """
-        while self._async_waiters:
-            fut = self._async_waiters.popleft()
-            if fut.done():
-                continue
-            loop = fut.get_loop()
-            if loop.is_closed():
-                continue
-            try:
-                loop.call_soon_threadsafe(self._resolve_waiter, fut)
-            except RuntimeError:
-                # 事件循环正在关闭：跳过该等待者，尝试下一个
-                continue
-            return
-        self._cond.notify()
+    def _schedule_async_waiter_locked(self, waiter: _BudgetWaiter) -> bool:
+        """在 waiter 所属事件循环中完成 Future；必须持 budget 锁调用。"""
+        future = waiter.future
+        loop = waiter.loop
+        if future is None or loop is None or future.done() or loop.is_closed():
+            return False
+        try:
+            loop.call_soon_threadsafe(self._resolve_waiter, future)
+        except RuntimeError:
+            return False
+        return True
+
+    def _timeout_error(self, timeout: Optional[float]) -> BudgetTimeoutError:
+        return BudgetTimeoutError(
+            "connection budget exhausted: "
+            f"waited {timeout}s for a slot "
+            f"(max_connections={self._max})"
+        )
 
     def _resolve_waiter(self, fut: asyncio.Future[None]) -> None:
-        """在事件循环线程内完成 future（或补唤醒下一个等待者）。"""
-        if fut.done():
-            # 等待者已超时/取消：唤醒权未被消费，补唤醒下一个
-            with self._cond:
-                self._wake_next_locked()
-            return
-        fut.set_result(None)
+        """在事件循环线程内完成已派发 waiter 的 Future。"""
+        if not fut.done():
+            fut.set_result(None)
 
 
 __all__ = ["ConnectionBudget"]

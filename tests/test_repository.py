@@ -5,9 +5,11 @@ import warnings
 import pytest
 
 from remote_cmd.core.host import Host
+from remote_cmd.core.profile import HostProfile
+from remote_cmd.core.recipe import Recipe, RecipeVariable
 from remote_cmd.repository.json_host_repository import JsonHostRepository
 from remote_cmd.utils.crypto import CredentialEncryption
-from remote_cmd.utils.exceptions import CredentialError, PlaintextCredentialWarning
+from remote_cmd.utils.exceptions import ConfigError, CredentialError, PlaintextCredentialWarning
 
 
 class TestJsonHostRepository:
@@ -57,6 +59,13 @@ class TestJsonHostRepository:
 
         prod_hosts = repo.list(tag="prod")
         assert len(prod_hosts) == 2
+
+    def test_non_string_tags_are_normalized_for_backend_parity(self, tmp_path):
+        repo = JsonHostRepository(filepath=str(tmp_path / "hosts.json"))
+        repo.save(Host(name="mixed", hostname="1", username="u", tags=["web", 7]))
+
+        assert repo.get("mixed").tags == ["web"]
+        assert repo.list_tags() == ["web"]
 
     def test_list_tags(self, tmp_path):
         """测试：列出所有标签"""
@@ -111,6 +120,53 @@ class TestJsonHostRepository:
         """测试：从缺失文件加载应安全处理"""
         repo = JsonHostRepository(filepath=str(tmp_path / "missing.json"))
         assert repo.count() == 0
+
+    def test_objects_returned_by_json_repository_are_isolated(self, tmp_path):
+        repo = JsonHostRepository(filepath=str(tmp_path / "hosts.json"))
+        host = Host(name="srv", hostname="1", username="u", tags=["original"])
+        profile = HostProfile(name="prod", tags=["production"])
+        recipe = Recipe(
+            name="deploy",
+            command="deploy {{ package }}",
+            variables={"package": RecipeVariable(name="package")},
+            tags=["release"],
+        )
+        repo.save(host)
+        repo.save_profile(profile)
+        repo.save_recipe(recipe)
+
+        # Mutating submitted objects must not mutate repository state.
+        host.tags.append("caller")
+        profile.tags.append("caller")
+        recipe.tags.append("caller")
+        recipe.variables.clear()
+        assert repo.get("srv").tags == ["original"]
+        assert repo.get_profile("prod").tags == ["production"]
+        assert repo.get_recipe("deploy").tags == ["release"]
+        assert "package" in repo.get_recipe("deploy").variables
+
+        # Mutating returned objects/lists must also remain local to the caller.
+        repo.get("srv").tags.append("returned")
+        repo.list()[0].tags.append("listed")
+        repo.get_profile("prod").tags.append("returned")
+        repo.list_profiles()[0].tags.append("listed")
+        repo.get_recipe("deploy").tags.append("returned")
+        repo.list_recipes()[0].variables.clear()
+        assert repo.get("srv").tags == ["original"]
+        assert repo.get_profile("prod").tags == ["production"]
+        assert repo.get_recipe("deploy").tags == ["release"]
+        assert "package" in repo.get_recipe("deploy").variables
+
+    def test_malformed_json_store_is_not_overwritten(self, tmp_path):
+        path = tmp_path / "hosts.json"
+        damaged = "{not valid json"
+        path.write_text(damaged, encoding="utf-8")
+        repo = JsonHostRepository(filepath=str(path))
+        repo.save(Host(name="new", hostname="1", username="u"))
+
+        with pytest.raises(ConfigError, match="refusing to overwrite malformed JSON store"):
+            repo.flush()
+        assert path.read_text(encoding="utf-8") == damaged
 
 
 class TestJsonHostRepositoryEncryption:

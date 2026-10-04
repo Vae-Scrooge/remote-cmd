@@ -281,7 +281,8 @@ class TestSqliteBackendProfileFlow:
         r = _invoke(runner, str(config), "host", "add", "web1", "10.0.0.1", "--profile", "aws")
         assert r.exit_code == 0, r.output
 
-        stored = SqliteHostRepository(str(db)).get("web1")
+        with SqliteHostRepository(str(db)) as repo:
+            stored = repo.get("web1")
         assert stored.profile == "aws"  # v2.8.0 此处为 None
         assert stored.username == ""
 

@@ -108,9 +108,12 @@ class SSHClient:
                 environment: Optional[Dict[str, str]] = None) -> CommandResult
     def execute_sudo(self, command: str, password: Optional[str] = None,
                      timeout: Optional[int] = None) -> CommandResult
-    def upload_file(self, local_path: str, remote_path: str) -> None
-    def download_file(self, remote_path: str, local_path: str) -> None
-    def list_remote_directory(self, remote_path: str = ".") -> List[RemoteFileEntry]
+    def upload_file(self, local_path: str, remote_path: str,
+                    timeout: Optional[float] = None) -> None
+    def download_file(self, remote_path: str, local_path: str,
+                      timeout: Optional[float] = None) -> None
+    def list_remote_directory(self, remote_path: str = ".",
+                              timeout: Optional[float] = None) -> List[RemoteFileEntry]
     def is_connected(self) -> bool
 ```
 
@@ -173,7 +176,7 @@ Execute a command on the remote server.
 **Parameters:**
 
 - `command` (str): the command string to execute
-- `timeout` (Optional[int]): wall-clock command execution timeout (seconds); no timeout by default; on timeout the channel is closed and `SSHCommandTimeoutError` is raised
+- `timeout` (Optional[int]): wall-clock command execution timeout (seconds); no timeout by default; on timeout the channel is closed (or the transport during channel setup) and `SSHCommandTimeoutError` is raised
 - `environment` (Optional[Dict[str, str]]): environment variable dictionary; keys must be valid shell identifiers
 
 **Returns:**
@@ -209,6 +212,13 @@ else:
     print(f"Error: {result.stderr}")
 ```
 
+Paramiko stdout/stderr are drained by alternating bounded readiness reads in
+the calling command worker; there is no additional stderr-reader thread. Timed
+commands still use a watchdog Timer to interrupt Paramiko's unbounded exec
+request wait, while the read loop checks the same monotonic wall-clock deadline.
+Both channel buffers are serviced before exit-status retrieval to preserve the
+large-output deadlock protection.
+
 ##### `execute_sudo(command: str, password: Optional[str] = None, timeout: Optional[int] = None) -> CommandResult`
 
 Execute a command with sudo privileges.
@@ -217,7 +227,7 @@ Execute a command with sudo privileges.
 
 - `command` (str): the command to execute
 - `password` (Optional[str]): sudo password (omit if passwordless sudo is configured)
-- `timeout` (Optional[int]): wall-clock command execution timeout (seconds); no timeout by default; on timeout the channel is closed and `SSHCommandTimeoutError` is raised
+- `timeout` (Optional[int]): wall-clock command execution timeout (seconds); no timeout by default; on timeout the channel is closed (or the transport during channel setup) and `SSHCommandTimeoutError` is raised
 
 **Returns:**
 
@@ -233,7 +243,7 @@ result = client.execute_sudo("apt update", password="sudopass")
 result = client.execute_sudo("systemctl restart nginx")
 ```
 
-##### `upload_file(local_path: str, remote_path: str) -> None`
+##### `upload_file(local_path: str, remote_path: str, timeout: Optional[float] = None) -> None`
 
 Upload a file to the remote server.
 
@@ -241,11 +251,21 @@ Upload a file to the remote server.
 
 - `local_path` (str): local file path
 - `remote_path` (str): remote destination path
+- `timeout` (Optional[float]): inactivity timeout in seconds; defaults to `ConnectionConfig.timeout`
 
 **Exceptions:**
 
 - `SSHFileTransferError`: raised on transfer failure
 - `SSHConnectionError`: raised when not connected
+
+Uploads are written inside a unique, private (`0700`) sibling staging directory
+and committed only after the transfer completes. POSIX rename is preferred; on
+Paramiko servers without that extension, overwrite uses a temporary backup and
+attempts rollback if the second rename fails. Existing file mode bits are
+preserved, and a final destination symlink is followed as with the previous
+direct upload. A timeout or connection loss can leave a uniquely named private
+`.remote-cmd-….tmpdir` directory on the server, but does not expose the
+incomplete transfer at the destination.
 
 **Example:**
 
@@ -253,7 +273,7 @@ Upload a file to the remote server.
 client.upload_file("./local_script.sh", "/tmp/remote_script.sh")
 ```
 
-##### `download_file(remote_path: str, local_path: str) -> None`
+##### `download_file(remote_path: str, local_path: str, timeout: Optional[float] = None) -> None`
 
 Download a file from the remote server.
 
@@ -261,11 +281,18 @@ Download a file from the remote server.
 
 - `remote_path` (str): remote file path
 - `local_path` (str): local save path
+- `timeout` (Optional[float]): inactivity timeout in seconds; defaults to `ConnectionConfig.timeout`
 
 **Exceptions:**
 
 - `SSHFileTransferError`: raised on transfer failure
 - `SSHConnectionError`: raised when not connected
+
+On success, download writes to a same-directory staging file and atomically
+replaces the destination. A failed/cancelled transfer leaves an existing local
+file untouched. Existing POSIX permission bits are preserved; a new POSIX
+download is created with private `0600` permissions. Windows continues to use
+the platform's normal ACL behavior.
 
 **Example:**
 
@@ -273,13 +300,14 @@ Download a file from the remote server.
 client.download_file("/var/log/nginx/error.log", "./logs/error.log")
 ```
 
-##### `list_remote_directory(remote_path: str = ".") -> List[RemoteFileEntry]`
+##### `list_remote_directory(remote_path: str = ".", timeout: Optional[float] = None) -> List[RemoteFileEntry]`
 
 List the contents of a remote directory.
 
 **Parameters:**
 
 - `remote_path` (str): remote directory path, defaults to the current directory
+- `timeout` (Optional[float]): inactivity timeout in seconds; defaults to `ConnectionConfig.timeout`
 
 **Returns:**
 
@@ -874,6 +902,27 @@ class HostRepository(ABC):
 | `JsonHostRepository` | JSON file (atomic write, optional encryption) | Default, lightweight config; **single-process/single-writer** — concurrent writes from multiple processes may lose updates |
 | `SqliteHostRepository` | SQLite database (indexing, pagination, search) | Large host counts and **multi-process writers** (WAL + `busy_timeout`) |
 
+Built-in repositories return detached `Host` / `HostProfile` / `Recipe` values.
+Mutating an object returned by `get()` / `list()` does not persist or mutate
+repository state; call the appropriate `save*()` method explicitly. JSON
+`save()` also snapshots the submitted object. This matches SQLite's existing
+row-to-object lifecycle and prevents accidental in-memory writes.
+
+`SqliteHostRepository(db_path, migrate_from="hosts.json")` migrates the
+versioned JSON store atomically, including hosts, profiles, recipes, tags,
+profile references and encrypted passwords (supply the same encryption key
+when the source is encrypted). Existing SQLite v3 databases upgrade to v4 on
+open: `host_tags` is backfilled from `hosts.tags` and indexed for exact tag
+filtering. The JSON `tags` field remains in place as the portable source of
+truth.
+
+`SqliteHostRepository` reuses one connection per calling thread; methods on an
+instance are serialized, while separate repository instances keep independent
+connections. Use `repo.close()` or `with SqliteHostRepository(...) as repo:` to
+close cached connections deterministically. Create the repository after a
+`fork()`; using an inherited instance in the child fails fast rather than
+reusing inherited SQLite handles.
+
 ##### Plaintext Credential Policy (v2.5)
 
 Both repositories accept `allow_plaintext_credentials` (default `None`, phased
@@ -950,9 +999,12 @@ class AsyncSSHClient:
                       environment: Optional[Dict[str, str]] = None) -> CommandResult
     async def execute_sudo(self, command: str, password: Optional[str] = None,
                            timeout: Optional[int] = None) -> CommandResult
-    async def upload_file(self, local_path: str, remote_path: str) -> None
-    async def download_file(self, remote_path: str, local_path: str) -> None
-    async def list_remote_directory(self, remote_path: str = ".") -> List[RemoteFileEntry]
+    async def upload_file(self, local_path: str, remote_path: str,
+                          timeout: Optional[float] = None) -> None
+    async def download_file(self, remote_path: str, local_path: str,
+                            timeout: Optional[float] = None) -> None
+    async def list_remote_directory(self, remote_path: str = ".",
+                                    timeout: Optional[float] = None) -> List[RemoteFileEntry]
 ```
 
 #### Constructor
@@ -994,7 +1046,18 @@ asyncio.run(main())
 | Use case | simple scripts, CLI | high-concurrency batch |
 | Return type | `CommandResult` | `CommandResult` (consistent) |
 
-`AsyncSSHClient.execute`'s `timeout` is treated by asyncssh as a command execution timeout; `environment` keys must be valid shell identifiers and values are safely escaped.
+`AsyncSSHClient.execute`'s `timeout` bounds the remote command. `execute_sudo`
+uses one wall-clock deadline across process creation and waiting. A command
+timeout raises `SSHCommandTimeoutError` in both sync and async clients;
+`environment` keys must be valid shell identifiers and values are safely escaped.
+
+Async uploads use the same private sibling staging directory and
+permission-preservation behavior.
+They follow a destination symlink and atomically replace the final path when the
+server supports POSIX rename or the SFTP overwrite flag. If an existing file
+cannot be replaced atomically, the async client fails safely with the old file
+left in place. A transfer timeout or connection loss may leave a unique private
+`.tmpdir` staging directory on the server.
 
 #### Exceptions
 
@@ -1002,6 +1065,7 @@ asyncio.run(main())
 - `SSHAuthenticationError`: authentication failure (a permanent subclass of `SSHConnectionError`)
 - `SSHTimeoutError`: connection-establishment timeout (a transient subclass of `SSHConnectionError`)
 - `SSHCommandError`: command execution failure
+- `SSHCommandTimeoutError`: remote command exceeded its wall-clock timeout
 - `SSHFileTransferError`: file transfer failure
 - `ValidationError`: invalid environment variable name
 
@@ -1040,7 +1104,10 @@ class AsyncConnectionPool:
 | `client_factory` | `Optional[Any]` | `None` | Optional client factory, defaults to `AsyncSSHClient` |
 | `connection_budget` | `Optional[ConnectionBudget]` | `None` | v2.6 global live-connection budget; every live connection (including idle) holds one slot, released on close/cleanup/`close_all` |
 
-After `close_all()` the pool cannot be borrowed from again; if `acquire()` was already waiting on the semaphore, it will raise `RuntimeError("connection pool is closed")` when woken after the pool closes.
+After `close_all()` the pool cannot be borrowed from again. `close_all()` wakes
+acquisitions waiting on the per-pool semaphore or shared connection budget;
+they fail with `PoolClosedError` (`RuntimeError` compatible) without requiring
+an active borrower to return a connection first.
 
 #### Usage Example
 
@@ -1126,7 +1193,10 @@ pool.close_all()
 | `client_factory` | `Optional[Any]` | `None` | Optional client factory, defaults to `SSHClient` |
 | `connection_budget` | `Optional[ConnectionBudget]` | `None` | v2.6 global live-connection budget; see below |
 
-After `close_all()` the pool cannot be borrowed from again; if `acquire()` was already waiting on the semaphore, it will raise `RuntimeError("connection pool is closed")` when woken after the pool closes.
+After `close_all()` the pool cannot be borrowed from again. `close_all()` wakes
+acquisitions waiting on the per-pool semaphore or shared connection budget;
+they fail with `PoolClosedError` (`RuntimeError` compatible) without requiring
+an active borrower to return a connection first.
 
 #### Metrics (get_metrics)
 
@@ -1148,9 +1218,22 @@ Semantics:
 - one slot per live connection, including idle pooled connections;
 - acquired when a connection is created (`connect`), released when the connection is closed, discarded by cleanup, or on `close_all()`;
 - returning a connection to the idle queue does **not** release the slot;
-- the same instance can be shared by the sync and async kernels: a single `threading.Condition` guards capacity and wait queues; async waiters register `asyncio.Future`s and are woken directly by `loop.call_soon_threadsafe` (v2.7 queue-based wake, no polling). Wake-ups are hints — woken waiters re-check capacity; async waiters are FIFO and cancellation-safe (removed from the queue).
+- the same instance can be shared by the sync and async kernels. A single
+  `threading.Condition` protects one global FIFO queue; async waiters use
+  `asyncio.Future` and `loop.call_soon_threadsafe`. A freed slot is reserved
+  for the oldest waiter before wakeup, so new arrivals cannot steal it.
+  Timeout/cancellation returns a reserved slot to the next waiter, and pool
+  close wakes waiters blocked on the shared budget.
+
+`acquire(cancel_event=None)` and `acquire_async(cancel_event=None)` keep their
+existing zero-argument behavior. `cancel_event` is an optional pool-lifecycle
+signal used by built-in connection pools to stop waiting when the pool closes.
 
 `acquire_timeout` (default `None` = wait forever) raises `BudgetTimeoutError` when the wait exceeds the limit; the error is classified as transient (retryable).
+
+`get_metrics()` returns `max_connections`, `in_use`, `available`, cumulative
+`total_acquired` / `total_released` / `total_timeouts`, and the current `waiters`
+queue depth.
 
 ```python
 from remote_cmd import BatchExecutor, ConnectionBudget
@@ -1170,7 +1253,7 @@ when constructing them if they should be counted.
 
 ### BatchExecutor
 
-Synchronous batch command executor using `ThreadPoolExecutor`; in multi-host or retry scenarios it uses `SyncConnectionPool` per host by default. When `use_async=True` is passed, it keeps a synchronous `execute()` interface externally but internally delegates to `AsyncBatchExecutor`'s native asyncssh kernel.
+Synchronous batch command executor using `ThreadPoolExecutor`; in multi-host or retry scenarios it uses `SyncConnectionPool` per host by default. It creates only `min(max_concurrency, host_count)` worker futures. Workers consume the host iterator and publish to a bounded completion queue; no per-host Future is retained. When `use_async=True` is passed, it keeps a synchronous `execute()` interface externally but internally delegates to `AsyncBatchExecutor`'s native asyncssh kernel.
 
 #### Class Definition
 
@@ -1206,6 +1289,11 @@ command success/failure or exit codes, and only bounds the retained
 `BatchResult` — the client may still briefly hold the full output during
 execution.
 
+The result contract intentionally keeps one `BatchHostResult` per deduplicated
+host, so result retention is O(host_count). The scheduler itself uses O(concurrency)
+future/task state. Use `OutputPolicy(max_output_bytes=...)` to cap retained
+stdout/stderr; the cap does not discard or stream output during SSH execution.
+
 ```python
 from remote_cmd import BatchExecutor, OutputPolicy
 
@@ -1227,10 +1315,11 @@ Authentication, credential, configuration, validation, and programming errors ar
 
 ### AsyncBatchExecutor
 
-Native async batch command executor using a **bounded worker queue** (v2.5):
-only `min(max_concurrency, host_count)` worker tasks are created, pulling
-hosts from a shared `asyncio.Queue`. Scheduling memory is therefore decoupled
-from host count (previously one task per host).
+Native async batch command executor using a fixed worker set: only
+`min(max_concurrency, host_count)` worker tasks are created. Workers pull the
+next host from an iterator, without a queue containing one pending item per
+host. Cancelling `execute()` cancels and joins the workers before propagating
+cancellation, so per-host pool cleanup completes first.
 
 #### Class Definition
 
@@ -1301,6 +1390,24 @@ asyncio.run(main())
 #### Relationship to Synchronous BatchExecutor
 
 `BatchExecutor(host_service, use_async=True)` delegates internally to `AsyncBatchExecutor`, keeping a synchronous interface externally. Both share the exact same data contract (`BatchResult` / `BatchHostResult`) and are interchangeable. But `BatchExecutor(use_async=True)` must not be called inside an active event loop; use `await AsyncBatchExecutor.execute()` directly in that case.
+
+### TaskRunner
+
+`TaskRunner` (`remote_cmd.service.task_runner`) tracks background functions and
+their `PENDING` / `RUNNING` / terminal states. `max_workers` must be a positive
+integer. `submit()` registers a PENDING task and blocks for a worker slot before
+enqueuing it; caller-side submission therefore provides backpressure rather
+than an unbounded queue. A bounded queue feeds up to `max_workers` reusable
+daemon workers; workers retire after a short idle period. `close()` or the
+context manager cancels queued PENDING tasks and optionally waits for running
+functions to return; RUNNING cancellation remains cooperative.
+
+`cancel()` marks a PENDING task immediately. For a RUNNING task it sets a
+cooperative cancellation flag; the worker function must return before its state
+becomes `CANCELLED`. `get_task()` and `list_tasks()` return snapshots: changing
+the returned Task fields does not alter the runner's stored status. `wait_for()`
+pins the task against concurrent `cleanup_old()` removal until the snapshot has
+been read.
 
 ---
 
@@ -1498,6 +1605,11 @@ Options:
 }
 ```
 
+`--verbose` diagnostics are written to stderr, not stdout. If a run fails before
+it can produce a `CommandResult`, `--format json` still emits the same object
+shape with `success=false`, `exit_code=-1`, empty stdout and the error in stderr;
+the process exit code remains non-zero.
+
 **Example:**
 
 ```bash
@@ -1529,6 +1641,10 @@ stdout stays parseable; `results` keys are sorted for deterministic output:
   }
 }
 ```
+
+Executor setup failures and keyboard interruption also produce a JSON
+`BatchResult` failure entry for each distinct requested host before returning a
+non-zero exit code.
 
 #### upload command
 

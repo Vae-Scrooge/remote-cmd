@@ -19,17 +19,22 @@ import builtins
 import contextlib
 import json
 import logging
+import os
 import sqlite3
 import threading
 import time
 import warnings
+import weakref
 from collections.abc import Iterator
-from typing import Optional
+from pathlib import Path
+from types import TracebackType
+from typing import Optional, cast
 
 from remote_cmd.core.host import Host
 from remote_cmd.core.profile import HostProfile
 from remote_cmd.core.recipe import Recipe
 from remote_cmd.repository.host_repository import HostRepository
+from remote_cmd.repository.json_host_repository import JsonHostRepository
 from remote_cmd.utils.credential_guard import PasswordGuard, is_plaintext_password
 from remote_cmd.utils.crypto import CredentialEncryption
 from remote_cmd.utils.exceptions import (
@@ -41,7 +46,7 @@ from remote_cmd.utils.exceptions import (
 logger = logging.getLogger(__name__)
 
 # SQLite 数据库版本（用于未来迁移；v2.9：hosts 表新增 profile 外键约束）
-DB_VERSION = 3
+DB_VERSION = 4
 
 # hosts 建表 SQL 模板（v2.9：profile 外键 ON DELETE RESTRICT；重建迁移复用）
 CREATE_HOSTS_TABLE_TEMPLATE = """
@@ -64,10 +69,21 @@ CREATE_TABLE_SQL = CREATE_HOSTS_TABLE_TEMPLATE.format(table="hosts")
 
 # 索引 SQL
 CREATE_INDEXES_SQL = [
-    "CREATE INDEX IF NOT EXISTS idx_hosts_tags ON hosts(tags);",
     "CREATE INDEX IF NOT EXISTS idx_hosts_hostname ON hosts(hostname);",
     "CREATE INDEX IF NOT EXISTS idx_hosts_name ON hosts(name);",
+    "CREATE INDEX IF NOT EXISTS idx_host_tags_tag ON host_tags(tag, host_name);",
 ]
+
+# 可索引的规范化标签映射。hosts.tags 继续保留 JSON 字段，兼容已有
+# 文件/查询；此表仅为精确标签筛选提供可迁移、可索引的辅助结构。
+CREATE_HOST_TAGS_SQL = """
+CREATE TABLE IF NOT EXISTS host_tags (
+    host_name TEXT NOT NULL,
+    tag TEXT NOT NULL,
+    PRIMARY KEY (host_name, tag),
+    FOREIGN KEY (host_name) REFERENCES hosts(name) ON DELETE CASCADE
+);
+"""
 
 # Recipe 表（v2.9；command 模板 + variables JSON；无凭据字段）
 CREATE_RECIPES_SQL = """
@@ -111,6 +127,52 @@ DEFAULT_BUSY_TIMEOUT_MS = 5000
 CHECKPOINT_MODES = frozenset({"PASSIVE", "FULL", "RESTART", "TRUNCATE"})
 
 
+class _ProcessAwareLock:
+    """A repository lock which fails fast if inherited across ``fork()``."""
+
+    def __init__(self) -> None:
+        self._pid = os.getpid()
+        self._lock = threading.Lock()
+
+    def __enter__(self) -> "_ProcessAwareLock":
+        if os.getpid() != self._pid:
+            raise RuntimeError(
+                "SqliteHostRepository cannot be used after fork; construct it in the child process"
+            )
+        self._lock.acquire()
+        return self
+
+    def __exit__(
+        self,
+        exc_type: Optional[type[BaseException]],
+        exc: Optional[BaseException],
+        tb: Optional[TracebackType],
+    ) -> None:
+        self._lock.release()
+
+
+class _ThreadConnection:
+    """One SQLite connection owned by a thread-local repository slot."""
+
+    __slots__ = ("connection", "pid", "__weakref__")
+
+    def __init__(self, connection: sqlite3.Connection, pid: int) -> None:
+        self.connection: Optional[sqlite3.Connection] = connection
+        self.pid = pid
+
+    def close(self) -> None:
+        connection, self.connection = self.connection, None
+        if connection is not None:
+            connection.close()
+
+    def __del__(self) -> None:
+        # Thread-local state is normally finalized by its owning thread. This
+        # fallback also closes cached handles when a short-lived Thread object
+        # is reclaimed before repository.close() is called.
+        with contextlib.suppress(Exception):
+            self.close()
+
+
 class SqliteHostRepository(HostRepository):
     """
     SQLite 主机仓库
@@ -134,6 +196,10 @@ class SqliteHostRepository(HostRepository):
 
     并发：WAL + busy_timeout 处理多进程并发写，适合作为多写入者后端
     （与 JsonHostRepository 的 single-writer 语义不同）。
+
+    连接生命周期：每个调用线程缓存一个独立连接；使用 ``close()`` 或
+    context manager 确定性释放。一个 repository instance 不可跨 fork
+    复用，应在子进程内新建。
     """
 
     def __init__(
@@ -146,11 +212,19 @@ class SqliteHostRepository(HostRepository):
         allow_plaintext_credentials: Optional[bool] = None,
     ) -> None:
         self._db_path = db_path
-        self._lock = threading.Lock()
+        self._lock = _ProcessAwareLock()
+        self._pid = os.getpid()
+        self._connection_lock = threading.Lock()
+        self._connection_local = threading.local()
+        self._connections: weakref.WeakKeyDictionary[
+            threading.Thread, weakref.ReferenceType[_ThreadConnection]
+        ] = weakref.WeakKeyDictionary()
+        self._closed = False
         self._encryption = encryption
         self._guard = PasswordGuard(encryption)
         self._busy_timeout_ms = busy_timeout_ms
         self._allow_plaintext = allow_plaintext_credentials
+        self._wal_ready = False
 
         if auto_create:
             self._init_db()
@@ -162,6 +236,32 @@ class SqliteHostRepository(HostRepository):
     # 数据库初始化
     # ========================================================================
 
+    @staticmethod
+    def _parse_tag_list(raw_tags: Optional[str]) -> list[str]:
+        """解析持久化标签，只保留有效字符串值。"""
+        try:
+            parsed = json.loads(raw_tags or "[]")
+        except (json.JSONDecodeError, TypeError):
+            return []
+        if not isinstance(parsed, list):
+            return []
+        return [tag for tag in parsed if isinstance(tag, str)]
+
+    @staticmethod
+    def _replace_host_tags(conn: sqlite3.Connection, host_name: str, tags: object) -> None:
+        """在当前事务中同步 host_tags 派生索引。"""
+        conn.execute("DELETE FROM host_tags WHERE host_name = ?", (host_name,))
+        if not isinstance(tags, (list, tuple)):
+            return
+        seen: set[str] = set()
+        for tag in tags:
+            if isinstance(tag, str) and tag not in seen:
+                conn.execute(
+                    "INSERT INTO host_tags (host_name, tag) VALUES (?, ?)",
+                    (host_name, tag),
+                )
+                seen.add(tag)
+
     def _init_db(self) -> None:
         """初始化数据库：创建表和索引"""
         with self._txn(write=True) as conn:
@@ -171,8 +271,17 @@ class SqliteHostRepository(HostRepository):
             conn.execute(CREATE_RECIPES_SQL)
             conn.execute(CREATE_TABLE_SQL)
             self._ensure_hosts_profile_column(conn)
+            host_tags_exists = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='host_tags'"
+            ).fetchone() is not None
+            conn.execute(CREATE_HOST_TAGS_SQL)
+            conn.execute("DROP INDEX IF EXISTS idx_hosts_tags;")
             for idx_sql in CREATE_INDEXES_SQL:
                 conn.execute(idx_sql)
+            if not host_tags_exists:
+                rows = conn.execute("SELECT name, tags FROM hosts").fetchall()
+                for row in rows:
+                    self._replace_host_tags(conn, row["name"], self._parse_tag_list(row["tags"]))
             # 设置数据库版本
             conn.execute(
                 "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
@@ -204,60 +313,88 @@ class SqliteHostRepository(HostRepository):
         ``foreign_keys``（该 PRAGMA 在事务内为 no-op），并在重建后恢复。
         """
         conn = self._get_conn()
+        fks = conn.execute("PRAGMA foreign_key_list(hosts);").fetchall()
+        if any(row["table"] == "profiles" and row["from"] == "profile" for row in fks):
+            return  # 已是 v3 schema
+        logger.info("migrating hosts table: adding profile foreign key")
+        conn.execute("PRAGMA foreign_keys=OFF;")
         try:
-            fks = conn.execute("PRAGMA foreign_key_list(hosts);").fetchall()
-            if any(row["table"] == "profiles" and row["from"] == "profile" for row in fks):
-                return  # 已是 v3 schema
-            logger.info("migrating hosts table: adding profile foreign key")
-            conn.execute("PRAGMA foreign_keys=OFF;")
-            try:
-                conn.execute("BEGIN IMMEDIATE;")
-                conn.execute("DROP TABLE IF EXISTS hosts_new;")
-                conn.execute(CREATE_HOSTS_TABLE_TEMPLATE.format(table="hosts_new"))
-                conn.execute(
-                    """
-                    INSERT INTO hosts_new (name, hostname, username, port, password,
-                                           key_filename, tags, description, profile,
-                                           created_at, updated_at)
-                    SELECT name, hostname, username, port, password,
-                           key_filename, tags, description, profile,
-                           created_at, updated_at
-                    FROM hosts;
-                    """
-                )
-                conn.execute("DROP TABLE hosts;")
-                conn.execute("ALTER TABLE hosts_new RENAME TO hosts;")
-                for idx_sql in CREATE_INDEXES_SQL:
-                    conn.execute(idx_sql)
-                conn.execute("COMMIT;")
-            except BaseException:
-                with contextlib.suppress(sqlite3.Error):
-                    conn.execute("ROLLBACK;")
-                raise
-            finally:
-                with contextlib.suppress(sqlite3.Error):
-                    conn.execute("PRAGMA foreign_keys=ON;")
+            conn.execute("BEGIN IMMEDIATE;")
+            conn.execute("DROP TABLE IF EXISTS hosts_new;")
+            conn.execute(CREATE_HOSTS_TABLE_TEMPLATE.format(table="hosts_new"))
+            conn.execute(
+                """
+                INSERT INTO hosts_new (name, hostname, username, port, password,
+                                       key_filename, tags, description, profile,
+                                       created_at, updated_at)
+                SELECT name, hostname, username, port, password,
+                       key_filename, tags, description, profile,
+                       created_at, updated_at
+                FROM hosts;
+                """
+            )
+            conn.execute("DROP TABLE hosts;")
+            conn.execute("ALTER TABLE hosts_new RENAME TO hosts;")
+            for idx_sql in CREATE_INDEXES_SQL:
+                conn.execute(idx_sql)
+            conn.execute("COMMIT;")
+        except BaseException:
+            with contextlib.suppress(sqlite3.Error):
+                conn.execute("ROLLBACK;")
+            raise
         finally:
-            conn.close()
+            with contextlib.suppress(sqlite3.Error):
+                conn.execute("PRAGMA foreign_keys=ON;")
+
+    def _check_process(self) -> None:
+        """Reject inherited repository instances; construct one in each child."""
+        if os.getpid() != self._pid:
+            raise RuntimeError(
+                "SqliteHostRepository cannot be used after fork; construct it in the child process"
+            )
 
     def _get_conn(self) -> sqlite3.Connection:
-        """获取数据库连接（线程安全）。
+        """Return the calling thread's cached SQLite connection.
 
-        PRAGMA 顺序约定：``busy_timeout`` 必须最先设置——首次并发打开同一
-        数据库文件时，``journal_mode=WAL`` 本身需要短暂排他锁，若 busy
-        handler 尚未生效会立即抛 ``database is locked``（v2.2 多进程回归）。
+        Each thread owns its own connection; repository methods still serialize
+        operations with ``self._lock``. ``check_same_thread=False`` is used only
+        so ``close()`` can release all cached handles under that same lock.
 
-        注意：SQLite 的 journal_mode 切换不经过 busy handler，即使设置了
-        ``busy_timeout`` 仍会直接返回 SQLITE_BUSY；因此在首次并发切换到
-        WAL 时使用有界重试（上限即 busy_timeout）等待其他连接的短事务结束。
+        PRAGMA order remains connection-local: install ``busy_timeout`` before
+        the once-per-repository WAL transition, then enable foreign keys on
+        every thread-local connection.
         """
-        conn = sqlite3.connect(self._db_path, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        # 多进程/多连接写入争用：等待对方事务结束而不是立即失败
-        conn.execute(f"PRAGMA busy_timeout={self._busy_timeout_ms};")
-        self._enable_wal(conn)
-        conn.execute("PRAGMA foreign_keys=ON;")
-        return conn
+        self._check_process()
+        if self._closed:
+            raise RuntimeError("SqliteHostRepository is closed")
+
+        state = getattr(self._connection_local, "state", None)
+        if state is not None and state.pid == self._pid and state.connection is not None:
+            return cast(sqlite3.Connection, state.connection)
+
+        with self._connection_lock:
+            if self._closed:
+                raise RuntimeError("SqliteHostRepository is closed")
+            state = getattr(self._connection_local, "state", None)
+            if state is not None and state.pid == self._pid and state.connection is not None:
+                return cast(sqlite3.Connection, state.connection)
+
+            conn = sqlite3.connect(self._db_path, check_same_thread=False)
+            try:
+                conn.row_factory = sqlite3.Row
+                conn.execute(f"PRAGMA busy_timeout={self._busy_timeout_ms};")
+                if not self._wal_ready:
+                    self._enable_wal(conn)
+                    self._wal_ready = True
+                conn.execute("PRAGMA foreign_keys=ON;")
+            except BaseException:
+                conn.close()
+                raise
+
+            state = _ThreadConnection(conn, self._pid)
+            self._connection_local.state = state
+            self._connections[threading.current_thread()] = weakref.ref(state)
+            return conn
 
     def _enable_wal(self, conn: sqlite3.Connection) -> None:
         """启用 WAL；对 journal_mode 切换的 SQLITE_BUSY 做有界重试。
@@ -281,82 +418,184 @@ class SqliteHostRepository(HostRepository):
     @contextlib.contextmanager
     def _txn(self, write: bool = False) -> Iterator[sqlite3.Connection]:
         """
-        事务 + 连接生命周期上下文
+        事务上下文（连接按线程缓存，生命周期归 repository 所有）。
 
-        包装 ``with conn:`` 与 ``conn.close()`` 为单一上下文：
-        - 进入时打开新连接并执行 PRAGMA
+        - 首次在一个线程使用时打开连接并执行 PRAGMA，后续操作复用；
         - ``write=True`` 时以 ``BEGIN IMMEDIATE`` 预先取得写锁（等待受
           ``busy_timeout`` 约束）；避免 deferred 事务在写升级时因快照过期
           直接返回 SQLITE_BUSY（busy handler 不适用该场景）
-        - 退出时先 ``conn.__exit__`` 提交/回滚，再 ``conn.close()`` 释放 fd
-
-        解决 ``with self._get_conn() as conn:`` 不自动 close 导致的 fd 累积泄漏
-        （sqlite3.Connection.__exit__ 仅管理事务边界，不释放连接句柄）。
+        - 退出时由 ``conn.__exit__`` 提交/回滚；句柄由 ``close()``、上下文
+          管理器或 originating thread 退出时释放。
 
         所有读写操作都应通过 ``with self._lock, self._txn() as conn:`` 使用，
-        保证 ``self._lock`` 串行化的同时每次操作后释放 fd；写操作使用
+        保证 repository API 内不会并发使用 SQLite connection；写操作使用
         ``self._txn(write=True)``。
         """
         conn = self._get_conn()
-        try:
-            if write:
-                conn.execute("BEGIN IMMEDIATE")
-            with conn:  # 事务：commit 或 rollback
-                yield conn
-        finally:
-            conn.close()
+        if write:
+            conn.execute("BEGIN IMMEDIATE")
+        with conn:  # 事务：commit 或 rollback
+            yield conn
+
+    def close(self) -> None:
+        """Close every thread-local handle owned by this repository.
+
+        API operations are serialized by ``self._lock``, so no connection is
+        in use while handles are closed. The weak thread registry also lets a
+        connection be reclaimed when its owning short-lived thread exits.
+        """
+        self._check_process()
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            with self._connection_lock:
+                states = [
+                    state
+                    for state_ref in self._connections.values()
+                    if (state := state_ref()) is not None
+                ]
+                self._connections.clear()
+            for state in states:
+                try:
+                    state.close()
+                except sqlite3.Error:
+                    logger.warning("error closing SQLite connection", exc_info=True)
+
+    def __enter__(self) -> "SqliteHostRepository":
+        self._check_process()
+        if self._closed:
+            raise RuntimeError("SqliteHostRepository is closed")
+        return self
+
+    def __exit__(
+        self,
+        exc_type: Optional[type[BaseException]],
+        exc_val: Optional[BaseException],
+        exc_tb: Optional[TracebackType],
+    ) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        # Best-effort backward compat: per-operation close model never
+        # required callers to close(). Suppress all errors: interpreter
+        # shutdown may have torn down locks/logging already.
+        with contextlib.suppress(Exception):
+            self.close()
 
     # ========================================================================
     # JSON 迁移
     # ========================================================================
 
     def _maybe_migrate_from_json(self, json_path: str) -> None:
-        """
-        if database is empty and JSON file exists, run migration
-
-        Args:
-            json_path: JSON 文件路径
-        """
+        """原子迁移 JSON 中的 hosts、profiles、recipes 到空数据库。"""
         with self._lock, self._txn() as conn:
-            count = conn.execute("SELECT COUNT(*) as cnt FROM hosts").fetchone()["cnt"]
-            if count > 0:
+            counts = {
+                table: conn.execute(f"SELECT COUNT(*) AS cnt FROM {table}").fetchone()["cnt"]
+                for table in ("hosts", "profiles", "recipes")
+            }
+            if any(counts.values()):
                 logger.info("database not empty, skipping JSON migration")
                 return
 
-        # 尝试加载 JSON 文件
+        path = Path(json_path)
+        if not path.exists():
+            logger.info(f"JSON file not found, skipping migration: {json_path}")
+            return
+
+        # JsonHostRepository understands both the legacy v1 host-only shape and
+        # the versioned format. Supplying the same encryption object preserves
+        # encrypted passwords as plaintext-in-memory → encrypted-in-SQLite.
         try:
-            from pathlib import Path
-
-            path = Path(json_path)
-            if not path.exists():
-                logger.info(f"JSON file not found, skipping migration: {json_path}")
-                return
-
-            with open(path, encoding="utf-8") as f:
-                raw_data = json.load(f)
-
-            # 解析版本格式
-            version = raw_data.get("version", 1)
-            hosts_data = raw_data.get("hosts", raw_data if version == 1 else {})
-
-            if not isinstance(hosts_data, dict):
-                logger.warning(f"unrecognized JSON format: {json_path}")
-                return
-
-            imported = 0
-            for name, host_dict in hosts_data.items():
-                try:
-                    host = Host.from_dict(host_dict)
-                    self.save(host)
-                    imported += 1
-                except (ValueError, TypeError, KeyError) as e:
-                    logger.warning(f"skipping invalid host '{name}': {e}")
-
-            if imported > 0:
-                logger.info(f"migrated {imported} hosts to SQLite")
-
+            source = JsonHostRepository(str(path), encryption=self._encryption)
         except (OSError, json.JSONDecodeError, ValueError) as e:
             logger.warning(f"JSON migration failed: {e}")
+            return
+        if source._load_error:
+            logger.warning("JSON migration skipped because source store is malformed: %s", path)
+            return
+
+        hosts = source.list()
+        profiles = source.list_profiles()
+        recipes = source.list_recipes()
+        with self._lock, self._txn(write=True) as conn:
+            # Re-check inside BEGIN IMMEDIATE so two processes cannot both start
+            # a migration after observing an empty database.
+            counts = {
+                table: conn.execute(f"SELECT COUNT(*) AS cnt FROM {table}").fetchone()["cnt"]
+                for table in ("hosts", "profiles", "recipes")
+            }
+            if any(counts.values()):
+                logger.info("database not empty, skipping JSON migration")
+                return
+
+            for profile in profiles:
+                conn.execute(
+                    """
+                    INSERT INTO profiles (name, username, port, key_filename, tags, description)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        profile.name,
+                        profile.username,
+                        profile.port,
+                        profile.key_filename,
+                        json.dumps(profile.tags, ensure_ascii=False),
+                        profile.description,
+                    ),
+                )
+
+            for recipe in recipes:
+                variables = {
+                    name: variable.to_dict() for name, variable in recipe.variables.items()
+                }
+                conn.execute(
+                    """
+                    INSERT INTO recipes (name, command, variables, description, tags)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        recipe.name,
+                        recipe.command,
+                        json.dumps(variables, ensure_ascii=False),
+                        recipe.description,
+                        json.dumps(recipe.tags, ensure_ascii=False),
+                    ),
+                )
+
+            for host in hosts:
+                if not self._guard.enabled:
+                    self._enforce_plaintext_policy(host.name, host.password)
+                password = self._guard.encrypt(host.password)
+                tags = list(host.tags or [])
+                conn.execute(
+                    """
+                    INSERT INTO hosts (name, hostname, username, port, password,
+                                       key_filename, tags, description, profile)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        host.name,
+                        host.hostname,
+                        host.username,
+                        host.port,
+                        password,
+                        host.key_filename,
+                        json.dumps(tags, ensure_ascii=False),
+                        host.description,
+                        host.profile,
+                    ),
+                )
+                self._replace_host_tags(conn, host.name, tags)
+
+            conn.commit()
+
+        logger.info(
+            "migrated JSON store to SQLite: %s hosts, %s profiles, %s recipes",
+            len(hosts),
+            len(profiles),
+            len(recipes),
+        )
 
     # ========================================================================
     # Repository 接口实现
@@ -404,6 +643,7 @@ class SqliteHostRepository(HostRepository):
                         host.profile,
                     ),
                 )
+                self._replace_host_tags(conn, host.name, host.tags)
             except sqlite3.IntegrityError as e:
                 # v2.9：FK ON DELETE RESTRICT 同时要求引用的 profile 存在。
                 # SQLite 在写入时快速失败（JSON 后端仍在解析时报 ConfigError）。
@@ -456,10 +696,14 @@ class SqliteHostRepository(HostRepository):
         """列出主机，可选按标签筛选"""
         with self._lock, self._txn() as conn:
             if tag:
-                # 使用 LIKE 匹配 tags JSON 中的标签
                 rows = conn.execute(
-                    "SELECT * FROM hosts WHERE tags LIKE ? ORDER BY name",
-                    (f'%"{tag}"%',),
+                    """
+                    SELECT hosts.* FROM hosts
+                    JOIN host_tags ON host_tags.host_name = hosts.name
+                    WHERE host_tags.tag = ?
+                    ORDER BY hosts.name
+                    """,
+                    (tag,),
                 ).fetchall()
             else:
                 rows = conn.execute("SELECT * FROM hosts ORDER BY name").fetchall()
@@ -469,18 +713,8 @@ class SqliteHostRepository(HostRepository):
     def list_tags(self) -> builtins.list[str]:
         """列出所有标签"""
         with self._lock, self._txn() as conn:
-            rows = conn.execute("SELECT DISTINCT tags FROM hosts WHERE tags IS NOT NULL").fetchall()
-
-        tags_set: set[str] = set()
-        for row in rows:
-            try:
-                tags = json.loads(row["tags"] or "[]")
-                if isinstance(tags, list):
-                    tags_set.update(tags)
-            except (json.JSONDecodeError, TypeError):
-                pass
-
-        return sorted(tags_set)
+            rows = conn.execute("SELECT DISTINCT tag FROM host_tags ORDER BY tag").fetchall()
+        return [row["tag"] for row in rows]
 
     def contains(self, name: str) -> bool:
         """检查主机是否存在"""
@@ -764,13 +998,22 @@ class SqliteHostRepository(HostRepository):
         with self._lock, self._txn() as conn:
             if tag:
                 count_row = conn.execute(
-                    "SELECT COUNT(*) as cnt FROM hosts WHERE tags LIKE ?",
-                    (f'%"{tag}"%',),
+                    """
+                    SELECT COUNT(*) as cnt FROM hosts
+                    JOIN host_tags ON host_tags.host_name = hosts.name
+                    WHERE host_tags.tag = ?
+                    """,
+                    (tag,),
                 ).fetchone()
                 total = count_row["cnt"] if count_row else 0
                 rows = conn.execute(
-                    "SELECT * FROM hosts WHERE tags LIKE ? ORDER BY name LIMIT ? OFFSET ?",
-                    (f'%"{tag}"%', limit, offset),
+                    """
+                    SELECT hosts.* FROM hosts
+                    JOIN host_tags ON host_tags.host_name = hosts.name
+                    WHERE host_tags.tag = ?
+                    ORDER BY hosts.name LIMIT ? OFFSET ?
+                    """,
+                    (tag, limit, offset),
                 ).fetchall()
             else:
                 count_row = conn.execute("SELECT COUNT(*) as cnt FROM hosts").fetchone()
@@ -797,16 +1040,8 @@ class SqliteHostRepository(HostRepository):
         Returns:
             Host: 主机配置对象
         """
-        # 解析 tags JSON
-        tags = None
-        try:
-            raw_tags = row["tags"]
-            if raw_tags:
-                parsed = json.loads(raw_tags)
-                if isinstance(parsed, list):
-                    tags = parsed
-        except (json.JSONDecodeError, TypeError):
-            pass
+        # 解析 tags JSON，丢弃非字符串损坏值以保持 JSON/SQLite parity。
+        tags = self._parse_tag_list(row["tags"])
 
         # 配置了加密器时解密密码
         password = row["password"]
@@ -814,10 +1049,6 @@ class SqliteHostRepository(HostRepository):
             password = self._guard.decrypt(password)
             if password is None:
                 logger.warning("failed to decrypt password for host '%s'", row["name"])
-
-        # tags 解析失败时为 None，归一化为空列表（与 Host 构造器默认行为一致）
-        if tags is None:
-            tags = []
 
         return Host(
             name=row["name"],

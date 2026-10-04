@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from remote_cmd.core.budget import ConnectionBudget
 from remote_cmd.core.ssh_client import CommandResult, ConnectionConfig
 from remote_cmd.core.sync_connection_pool import SyncConnectionPool
 from remote_cmd.utils.exceptions import PoolClosedError, SSHConnectionError
@@ -515,3 +516,141 @@ class TestSyncConnectionPoolCloseRace:
         assert isinstance(outcome["error"], PoolClosedError)
         assert isinstance(outcome["error"], RuntimeError)
         assert "connection pool is closed" in str(outcome["error"])
+
+    def test_close_while_connection_creation_is_in_flight(self, config):
+        """连接在 close_all 返回后完成时，必须被丢弃且归还预算。"""
+        connect_started = threading.Event()
+        finish_connect = threading.Event()
+        client = _client_mock()
+
+        def blocking_connect():
+            connect_started.set()
+            assert finish_connect.wait(timeout=5)
+            return client
+
+        client.connect.side_effect = blocking_connect
+        budget = ConnectionBudget(1)
+        pool = SyncConnectionPool(
+            config,
+            max_connections=1,
+            client_factory=lambda _config: client,
+            connection_budget=budget,
+        )
+        outcome = {}
+
+        def acquire():
+            try:
+                outcome["conn"] = pool.acquire()
+            except BaseException as exc:  # noqa: BLE001 - report worker outcome in test
+                outcome["error"] = exc
+
+        worker = threading.Thread(target=acquire, daemon=True)
+        worker.start()
+        assert connect_started.wait(timeout=5)
+
+        pool.close_all()
+        assert budget.get_metrics()["in_use"] == 1  # connect 仍在运行
+        finish_connect.set()
+        worker.join(timeout=5)
+
+        assert not worker.is_alive()
+        assert "conn" not in outcome
+        assert isinstance(outcome.get("error"), PoolClosedError)
+        client.disconnect.assert_called_once()
+        assert pool.get_metrics()["total_connections"] == 0
+        assert pool._free.qsize() == 0
+        assert budget.get_metrics()["in_use"] == 0
+
+    def test_close_wakes_waiter_without_requiring_active_release(self, config):
+        pool = SyncConnectionPool(config=config, max_connections=1, client_factory=lambda _c: _client_mock())
+        active = pool.acquire()
+        entered = threading.Event()
+        original_acquire = pool._semaphore.acquire
+
+        def traced_acquire(blocking=True, timeout=None):  # noqa: ARG001
+            entered.set()
+            return original_acquire(blocking, timeout)
+
+        pool._semaphore.acquire = traced_acquire
+        outcome = {}
+
+        def waiter():
+            try:
+                pool.acquire()
+            except BaseException as exc:  # noqa: BLE001 - report worker outcome in test
+                outcome["error"] = exc
+
+        worker = threading.Thread(target=waiter, daemon=True)
+        worker.start()
+        assert entered.wait(timeout=5)
+        pool.close_all()
+        worker.join(timeout=5)
+
+        assert not worker.is_alive()
+        assert isinstance(outcome.get("error"), PoolClosedError)
+        assert pool.get_metrics()["total_connections"] == 0
+        pool.release(active)  # release after close remains harmless/idempotent
+
+    def test_duplicate_release_does_not_inflate_capacity(self, config):
+        pool = SyncConnectionPool(config=config, max_connections=1, client_factory=lambda _c: _client_mock())
+        first = pool.acquire()
+        pool.release(first)
+        pool.release(first)
+
+        leased = pool.acquire()
+        entered = threading.Event()
+        original_acquire = pool._semaphore.acquire
+
+        def traced_acquire(blocking=True, timeout=None):  # noqa: ARG001
+            entered.set()
+            return original_acquire(blocking, timeout)
+
+        pool._semaphore.acquire = traced_acquire
+        outcome = {}
+        worker = threading.Thread(target=lambda: outcome.setdefault("conn", pool.acquire()), daemon=True)
+        worker.start()
+        assert entered.wait(timeout=5)
+        assert worker.is_alive(), "duplicate release must not create an extra semaphore permit"
+        pool.release(leased)
+        worker.join(timeout=5)
+        assert not worker.is_alive()
+        assert "conn" in outcome
+        pool.release(outcome["conn"])
+        pool.close_all()
+
+    def test_close_cancels_wait_on_shared_connection_budget(self, config):
+        budget = ConnectionBudget(1)
+        budget.acquire()  # 占用唯一预算槽，强制池停在 budget waiter
+        pool = SyncConnectionPool(
+            config,
+            max_connections=1,
+            client_factory=lambda _c: _client_mock(),
+            connection_budget=budget,
+        )
+        entered_budget = threading.Event()
+        original_acquire = budget.acquire
+
+        def traced_budget_acquire(cancel_event=None):
+            entered_budget.set()
+            return original_acquire(cancel_event=cancel_event)
+
+        budget.acquire = traced_budget_acquire
+        outcome = {}
+
+        def acquire():
+            try:
+                pool.acquire()
+            except BaseException as exc:  # noqa: BLE001 - report worker outcome in test
+                outcome["error"] = exc
+
+        worker = threading.Thread(target=acquire, daemon=True)
+        worker.start()
+        assert entered_budget.wait(timeout=5)
+        pool.close_all()
+        worker.join(timeout=5)
+
+        assert not worker.is_alive()
+        assert isinstance(outcome.get("error"), PoolClosedError)
+        assert budget.get_metrics()["in_use"] == 1  # 仅外部 owner 仍持有预算
+        budget.release()
+        assert budget.get_metrics()["in_use"] == 0

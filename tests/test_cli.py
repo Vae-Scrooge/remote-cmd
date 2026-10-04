@@ -4,6 +4,7 @@
 SSH 连接部分使用 mock 避免真实连接。
 """
 
+import json
 import os
 from unittest.mock import MagicMock, patch
 
@@ -572,6 +573,49 @@ class TestRun:
             assert result.exit_code == 1
             assert "error msg" in result.output
 
+    def test_json_errors_remain_parseable_with_verbose_diagnostics(self, config_file):
+        result = CliRunner(mix_stderr=False).invoke(
+            cli,
+            [
+                "--config",
+                config_file,
+                "--verbose",
+                "run",
+                "missing-host",
+                "uptime",
+                "--format",
+                "json",
+            ],
+        )
+
+        assert result.exit_code == 1
+        payload = json.loads(result.stdout)
+        assert payload["host"] == "missing-host"
+        assert payload["success"] is False
+        assert payload["exit_code"] == -1
+        assert "not found" in payload["stderr"]
+        assert "Using config file" in result.stderr
+        assert "Using hosts file" in result.stderr
+
+    def test_json_keyboard_interrupt_emits_result(self, config_file):
+        runner = CliRunner(mix_stderr=False)
+        with patch("remote_cmd.service.host_service.HostService.connect_to_host") as connect:
+            context = MagicMock()
+            client = MagicMock()
+            client.execute.side_effect = KeyboardInterrupt
+            context.__enter__.return_value = client
+            context.__exit__.return_value = None
+            connect.return_value = context
+            result = runner.invoke(
+                cli,
+                ["--config", config_file, "run", "srv", "uptime", "--format", "json"],
+            )
+
+        assert result.exit_code == 130
+        payload = json.loads(result.stdout)
+        assert payload["success"] is False
+        assert payload["stderr"] == "cancelled"
+
 
 # ============================================================================
 # upload / download 命令测试
@@ -913,6 +957,56 @@ class TestBatchRun:
             assert result.exit_code == 1
             assert "Failed hosts:" in result.output
             assert "boom" in result.output
+
+    def test_json_setup_error_emits_valid_batch_json(self, runner, config_file):
+        result = runner.invoke(
+            cli,
+            [
+                "--config",
+                config_file,
+                "batch-run",
+                "srv1",
+                "uptime",
+                "--concurrency",
+                "0",
+                "--format",
+                "json",
+            ],
+        )
+        assert result.exit_code == 1
+        payload = json.loads(result.stdout)
+        assert payload["total"] == 1
+        assert payload["failed"] == 1
+        assert payload["results"]["srv1"]["success"] is False
+        assert "max_concurrency" in payload["results"]["srv1"]["error"]
+
+    def test_json_keyboard_interrupt_emits_batch_result(self, config_file):
+        runner = CliRunner(mix_stderr=False)
+        with patch("remote_cmd.cli.main.BatchExecutor") as executor_class:
+            executor_class.return_value.execute.side_effect = KeyboardInterrupt
+            result = runner.invoke(
+                cli,
+                ["--config", config_file, "batch-run", "srv1", "uptime", "--format", "json"],
+            )
+
+        assert result.exit_code == 130
+        payload = json.loads(result.stdout)
+        assert payload["failed"] == 1
+        assert payload["results"]["srv1"]["error"] == "user interrupted"
+
+    def test_rich_batch_output_does_not_echo_command(self, runner, config_file):
+        secret_command = "curl https://internal.invalid --header Authorization:secret-token"
+        with patch("remote_cmd.cli.main.BatchExecutor") as mock_executor_cls:
+            mock_executor = MagicMock()
+            mock_executor.execute.return_value = make_batch_result(success_hosts=["srv1"])
+            mock_executor_cls.return_value = mock_executor
+            result = runner.invoke(
+                cli,
+                ["--config", config_file, "batch-run", "srv1", secret_command],
+            )
+
+        assert result.exit_code == 0
+        assert "secret-token" not in result.output
 
     def test_batch_run_missing_command_usage_error(self, runner, config_file):
         """测试：缺少 COMMAND 参数时返回 usage error（异步/同步同一解析错误）"""

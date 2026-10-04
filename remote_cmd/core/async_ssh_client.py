@@ -17,10 +17,11 @@
 import asyncio
 import contextlib
 import logging
+import os
 import shlex
 import stat
 from collections.abc import Awaitable, Callable, Sequence
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import TracebackType
 from typing import Any, Optional
 
@@ -30,11 +31,14 @@ from remote_cmd.core.ssh_client import (
     CommandResult,
     ConnectionConfig,
     RemoteFileEntry,
+    _create_download_temp,
+    _remote_temporary_path,
     validate_environment,
 )
 from remote_cmd.utils.exceptions import (
     SSHAuthenticationError,
     SSHCommandError,
+    SSHCommandTimeoutError,
     SSHConnectionError,
     SSHFileTransferError,
     SSHTimeoutError,
@@ -42,6 +46,60 @@ from remote_cmd.utils.exceptions import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+async def _resolve_remote_upload_target(
+    sftp: asyncssh.SFTPClient,
+    remote_path: str,
+) -> tuple[str, Optional[int], bool]:
+    """Resolve an upload target, following a final symlink like SFTP ``put``."""
+    missing_errors = (asyncssh.SFTPNoSuchFile, asyncssh.SFTPNoSuchPath)
+    try:
+        attrs = await sftp.lstat(remote_path)
+    except missing_errors:
+        return remote_path, None, False
+
+    mode = attrs.permissions
+    if isinstance(mode, int) and stat.S_ISLNK(mode):
+        # Preserve the old put() behavior: write through a destination symlink
+        # rather than replacing the link itself with the uploaded file.
+        remote_path = await sftp.realpath(remote_path)
+        try:
+            attrs = await sftp.stat(remote_path)
+        except missing_errors:
+            return remote_path, None, False
+        mode = attrs.permissions
+
+    if isinstance(mode, int) and stat.S_ISDIR(mode):
+        raise SSHFileTransferError(f"remote destination is a directory: {remote_path}")
+
+    return remote_path, mode if isinstance(mode, int) else None, True
+
+
+async def _commit_remote_upload(
+    sftp: asyncssh.SFTPClient,
+    staged_path: str,
+    remote_path: str,
+    existing_mode: Optional[int],
+    destination_existed: bool,
+) -> None:
+    """Atomically commit a staged file where the SFTP server supports replace."""
+    if existing_mode is not None:
+        await sftp.chmod(staged_path, stat.S_IMODE(existing_mode))
+
+    try:
+        await sftp.posix_rename(staged_path, remote_path)
+    except (OSError, asyncssh.Error) as posix_error:
+        try:
+            if destination_existed:
+                # SFTP v5+ supports overwrite flags. Older servers can still
+                # use the OpenSSH extension via posix_rename above. If neither
+                # is available, fail without moving/removing the old file.
+                await sftp.rename(staged_path, remote_path, flags=asyncssh.FXR_OVERWRITE)
+            else:
+                await sftp.rename(staged_path, remote_path)
+        except (OSError, asyncssh.Error) as rename_error:
+            raise rename_error from posix_error
 
 
 class AsyncSSHClient:
@@ -200,6 +258,8 @@ class AsyncSSHClient:
             SSHConnectionError: 未连接时抛出
         """
         conn = await self._get_conn()
+        if timeout is not None and timeout <= 0:
+            raise ValidationError(f"timeout must be > 0, got: {timeout}")
         # 安全：键必须为合法 shell 标识符（与同步实现一致，防止命令注入）
         validate_environment(environment)
         # 安全：对 value 做 shlex.quote 转义，防止 shell 元字符注入
@@ -221,6 +281,10 @@ class AsyncSSHClient:
                 timeout=timeout,
                 check=False,
             )
+        except asyncssh.TimeoutError as e:
+            raise SSHCommandTimeoutError(
+                f"command timed out after {timeout} seconds" if timeout is not None else "command timed out"
+            ) from e
         except (OSError, asyncssh.Error) as e:
             raise SSHCommandError(f"command execution failed: {e}") from e
 
@@ -254,20 +318,41 @@ class AsyncSSHClient:
         if password is None:
             return await self.execute(f"sudo {command}", timeout=timeout)
 
+        if timeout is not None and timeout <= 0:
+            raise ValidationError(f"timeout must be > 0, got: {timeout}")
+
+        loop = asyncio.get_running_loop()
+        deadline = None if timeout is None else loop.time() + timeout
+
         try:
             proc: asyncssh.SSHClientProcess[bytes] = await conn.create_process(
                 f"sudo -S {command}",
                 timeout=timeout,
             )
+        except asyncssh.TimeoutError as e:
+            raise SSHCommandTimeoutError(f"sudo command timed out after {timeout} seconds") from e
         except (OSError, asyncssh.Error) as e:
             raise SSHCommandError(f"sudo command execution failed: {e}") from e
 
         try:
+            if deadline is not None and loop.time() >= deadline:
+                proc.close()
+                raise SSHCommandTimeoutError(f"sudo command timed out after {timeout} seconds")
             proc.stdin.write((password + "\n").encode("utf-8"))
             proc.stdin.write_eof()
             # 与 execute 的 conn.run(timeout=...) 语义对齐：timeout 覆盖整个命令执行
             # wall-clock，避免挂起的 sudo（如等待密码）无限等待
-            result = await proc.wait(timeout=timeout)
+            remaining = None if deadline is None else max(0.0, deadline - loop.time())
+            result = await proc.wait(timeout=remaining)
+        except asyncio.CancelledError:
+            # Outer cancellation must not leak the remote process/channel.
+            # TimeoutError path already closes; cancel needs the same cleanup.
+            with contextlib.suppress(Exception):
+                proc.close()
+            raise
+        except asyncssh.TimeoutError as e:
+            proc.close()
+            raise SSHCommandTimeoutError(f"sudo command timed out after {timeout} seconds") from e
         except (OSError, asyncssh.Error) as e:
             raise SSHCommandError(f"sudo command execution failed: {e}") from e
 
@@ -404,13 +489,48 @@ class AsyncSSHClient:
             raise SSHFileTransferError(f"Local file not found: {local_path}")
         logger.info(f"uploading file: {local_path} -> {remote_path}")
 
+        try:
+            target_path, existing_mode, destination_existed = await _resolve_remote_upload_target(
+                sftp, remote_path
+            )
+        except (OSError, asyncssh.Error) as e:
+            self._discard_sftp()
+            raise SSHFileTransferError(f"file upload failed: {e}") from e
+
+        effective = self._effective_sftp_timeout(timeout)
+        staging_dir = _remote_temporary_path(target_path, "tmpdir")
+        staged_path = str(PurePosixPath(staging_dir) / "upload")
+
         async def _operation(progress: Callable[..., None]) -> None:
-            await sftp.put(str(local_file), remote_path, progress_handler=progress)
+            await sftp.mkdir(staging_dir, asyncssh.SFTPAttrs(permissions=0o700))
+            await sftp.put(str(local_file), staged_path, progress_handler=progress)
+            await _commit_remote_upload(
+                sftp,
+                staged_path,
+                target_path,
+                existing_mode,
+                destination_existed,
+            )
 
         try:
             await self._run_sftp_operation(_operation, timeout, "file upload")
         except (OSError, asyncssh.Error) as e:
+            # Best effort: transfer/commit errors can leave a completed staging
+            # file behind. Bound cleanup and discard the session either way.
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(sftp.remove(staged_path), timeout=min(effective, 1.0))
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(sftp.rmdir(staging_dir), timeout=min(effective, 1.0))
+            self._discard_sftp()
             raise SSHFileTransferError(f"file upload failed: {e}") from e
+        except BaseException:
+            self._discard_sftp()
+            raise
+        try:
+            await asyncio.wait_for(sftp.rmdir(staging_dir), timeout=min(effective, 1.0))
+        except Exception:  # noqa: BLE001 - final file is already committed
+            self._discard_sftp()
+            logger.warning("upload succeeded but private staging directory cleanup failed")
         logger.info("file upload finished")
 
     async def download_file(
@@ -429,16 +549,28 @@ class AsyncSSHClient:
         """
         sftp = await self._get_sftp(timeout)
         local_file = Path(local_path)
-        local_file.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            local_file.parent.mkdir(parents=True, exist_ok=True)
+            staged_file = _create_download_temp(local_file)
+        except OSError as e:
+            raise SSHFileTransferError(f"file download failed: {e}") from e
         logger.info(f"downloading file: {remote_path} -> {local_path}")
 
         async def _operation(progress: Callable[..., None]) -> None:
-            await sftp.get(remote_path, str(local_file), progress_handler=progress)
+            await sftp.get(remote_path, str(staged_file), progress_handler=progress)
 
         try:
             await self._run_sftp_operation(_operation, timeout, "file download")
+            os.replace(staged_file, local_file)
         except (OSError, asyncssh.Error) as e:
+            self._discard_sftp()
             raise SSHFileTransferError(f"file download failed: {e}") from e
+        except BaseException:
+            self._discard_sftp()
+            raise
+        finally:
+            with contextlib.suppress(OSError):
+                staged_file.unlink()
         logger.info("file download finished")
 
     async def list_remote_directory(

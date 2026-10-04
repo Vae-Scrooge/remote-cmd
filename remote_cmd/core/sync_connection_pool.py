@@ -57,6 +57,10 @@ class SyncConnectionPool:
         client_factory: Optional[Any] = None,
         connection_budget: Optional[ConnectionBudget] = None,
     ) -> None:
+        if isinstance(max_connections, bool) or not isinstance(max_connections, int):
+            raise ValueError("max_connections must be a positive integer")
+        if max_connections <= 0:
+            raise ValueError("max_connections must be a positive integer")
         self.config = config
         self._max = max_connections
         self._max_lifetime = max_lifetime
@@ -71,9 +75,13 @@ class SyncConnectionPool:
         self._free: queue.Queue[SSHClient] = queue.Queue()
         self._semaphore = threading.Semaphore(max_connections)
         self._lock = threading.Lock()
+        self._acquire_waiters = 0
+        self._leased: set[int] = set()
+        self._closed_leases: set[int] = set()
 
         # 生命周期状态：close_all() 后置 True，禁止再借用/归还
         self._closed = False
+        self._closed_event = threading.Event()
 
         # 指标
         self._total_created = 0
@@ -93,20 +101,23 @@ class SyncConnectionPool:
     # ------------------------------------------------------------------
     def get_metrics(self) -> dict[str, Any]:
         """获取连接池指标快照。"""
-        return {
-            # 当前在用的连接数 = 存活连接总数 - 空闲连接数。
-            # 不能用 total_created - total_released：复用连接时
-            # total_released 会超过 total_created，导致 active 为负。
-            "active": len(self._connections) - self._free.qsize(),
-            "idle": self._free.qsize(),
-            "total_connections": len(self._connections),
-            "total_created": self._total_created,
-            "reconnects": self._total_reconnects,
-            "failed": self._total_failed,
-            "max_connections": self._max,
-            "max_lifetime": self._max_lifetime,
-            "idle_timeout": self._idle_timeout,
-        }
+        with self._lock:
+            idle = self._free.qsize()
+            total = len(self._connections)
+            return {
+                # 当前在用的连接数 = 存活连接总数 - 空闲连接数。
+                # 不能用 total_created - total_released：复用连接时
+                # total_released 会超过 total_created，导致 active 为负。
+                "active": total - idle,
+                "idle": idle,
+                "total_connections": total,
+                "total_created": self._total_created,
+                "reconnects": self._total_reconnects,
+                "failed": self._total_failed,
+                "max_connections": self._max,
+                "max_lifetime": self._max_lifetime,
+                "idle_timeout": self._idle_timeout,
+            }
 
     # ------------------------------------------------------------------
     # 获取 / 释放
@@ -122,93 +133,156 @@ class SyncConnectionPool:
             PoolClosedError: 连接池已关闭（close_all 之后），
                 同时是 RuntimeError 子类（既有捕获行为不变）
         """
-        if self._closed:
-            raise PoolClosedError("connection pool is closed")
-        self._semaphore.acquire()
-        # 竞态守卫：等待信号量期间 close_all() 可能已完成——
-        # 取得槽位后必须复查，已关闭则归还槽位并抛出既有错误，
-        # 否则会向调用方发放来自已关闭池的连接
-        if self._closed:
-            self._semaphore.release()
-            raise PoolClosedError("connection pool is closed")
+        with self._lock:
+            if self._closed:
+                raise PoolClosedError("connection pool is closed")
+            self._acquire_waiters += 1
+        try:
+            self._semaphore.acquire()
+        finally:
+            with self._lock:
+                self._acquire_waiters -= 1
+
+        # close_all() 为已登记的 semaphore waiter 发放关闭唤醒许可。
+        # 已关闭池不再归还该许可：池生命周期已结束，且归还会制造虚假容量。
+        with self._lock:
+            if self._closed:
+                raise PoolClosedError("connection pool is closed")
         try:
             # 优先复用空闲连接
-            while not self._free.empty():
-                conn = self._free.get_nowait()
-                if self._check_connection(conn):
-                    self._touch(conn)
-                    return conn
+            while True:
+                with self._lock:
+                    if self._closed:
+                        raise PoolClosedError("connection pool is closed")
+                    try:
+                        conn = self._free.get_nowait()
+                    except queue.Empty:
+                        conn = None
+                if conn is None:
+                    break
+
+                try:
+                    healthy = self._check_connection(conn)
+                except BaseException:
+                    self._close_connection(conn)
+                    raise
+                if healthy:
+                    with self._lock:
+                        if not self._closed:
+                            self._touch(conn)
+                            self._leased.add(id(conn))
+                            return conn
+                    self._close_connection(conn)
+                    raise PoolClosedError("connection pool is closed")
                 self._close_connection(conn)
 
             # 创建新连接（信号量已保证未超额）
-            return self._create_connection()
+            conn = self._create_connection()
+            with self._lock:
+                if self._closed or id(conn) not in self._meta:
+                    raise PoolClosedError("connection pool is closed")
+                self._leased.add(id(conn))
+            return conn
         except BaseException:
-            self._semaphore.release()
+            with self._lock:
+                pool_closed = self._closed
+            if not pool_closed:
+                self._semaphore.release()
             raise
 
     def release(self, conn: Optional[SSHClient]) -> None:
         """归还连接到池中（如已断开/超时则关闭）。"""
         if conn is None:
             return
-        # 池已关闭：不把连接放回空闲队列（避免游离连接），直接关闭并释放槽位
-        if self._closed:
+        conn_id = id(conn)
+        with self._lock:
+            # 防止重复 release 把 semaphore 计数抬高，或把同一连接重复塞入
+            # free queue。外部/已归还连接不是当前 pool 的有效 lease。
+            if conn_id in self._leased:
+                self._leased.remove(conn_id)
+                self._total_released += 1
+            elif conn_id in self._closed_leases:
+                self._closed_leases.remove(conn_id)
+                self._total_released += 1
+            else:
+                return
+            pool_closed = self._closed
+            meta = self._meta.get(conn_id)
+
+        if pool_closed:
             self._close_connection(conn)
-            self._semaphore.release()
-            self._total_released += 1
             return
-        meta = self._meta.get(id(conn))
+
         if meta is not None:
             meta.last_used = time.time()
-
-        if not conn.is_connected():
-            self._close_connection(conn)
-            self._semaphore.release()
-            return
-
-        # 生命周期 / 空闲超时则关闭
-        if meta and should_close(meta, self._max_lifetime, self._idle_timeout, True):
-            self._close_connection(conn)
-            self._semaphore.release()
-            return
-
         try:
-            with self._lock:
-                self._free.put_nowait(conn)
-            # 放回 free 后释放许可：free 中的连接不再占用并发槽位，
-            # 后续 acquire 会从 free 直接复用（无需再次获取许可）
-            self._semaphore.release()
-        except queue.Full:
+            connected = conn.is_connected()
+        except BaseException:
             self._close_connection(conn)
-            self._semaphore.release()
-        finally:
-            self._total_released += 1
+            with self._lock:
+                if not self._closed:
+                    self._semaphore.release()
+            raise
+
+        close_conn = not connected or (
+            meta is not None and should_close(meta, self._max_lifetime, self._idle_timeout, True)
+        )
+        if close_conn:
+            self._close_connection(conn)
+            with self._lock:
+                if not self._closed:
+                    self._semaphore.release()
+            return
+
+        # release 与 close_all 必须在同一把锁下决定：否则 close_all 可能
+        # drain free queue 后，release 再把连接放进一个已关闭池的队列。
+        with self._lock:
+            if self._closed:
+                close_conn = True
+            else:
+                try:
+                    self._free.put_nowait(conn)
+                except queue.Full:
+                    close_conn = True
+                self._semaphore.release()
+        if close_conn:
+            self._close_connection(conn)
 
     # ------------------------------------------------------------------
     # 内部
     # ------------------------------------------------------------------
     def _create_connection(self) -> SSHClient:
         client = self._client_factory(self.config)
-        if self._connection_budget is not None:
-            self._connection_budget.acquire()
+        budget_held = False
         try:
-            client.connect()
-        except Exception:  # noqa: BLE001
-            # 信号量由 acquire() 的 except 统一释放，此处不再释放。
-            # 连接预算仅在成功建连后由 _close_connection 释放；
-            # 建连失败立即归还预算，避免预算泄漏
             if self._connection_budget is not None:
+                self._connection_budget.acquire(cancel_event=self._closed_event)
+                budget_held = True
+            if self._closed_event.is_set():
+                raise PoolClosedError("connection pool is closed")
+            client.connect()
+            now = time.time()
+            with self._lock:
+                if self._closed:
+                    raise PoolClosedError("connection pool is closed")
+                self._connections.append(client)
+                self._meta[id(client)] = ConnectionMeta(
+                    created_at=now,
+                    last_used=now,
+                    conn_id=uuid.uuid4().hex,
+                )
+                self._total_created += 1
+                # budget slot ownership transfers to the tracked connection.
+                budget_held = False
+        except BaseException as exc:
+            with contextlib.suppress(Exception):
+                client.disconnect()
+            if budget_held and self._connection_budget is not None:
                 self._connection_budget.release()
-            self._total_failed += 1
+            if isinstance(exc, Exception):
+                with self._lock:
+                    self._total_failed += 1
             raise
-        with self._lock:
-            self._connections.append(client)
-        now = time.time()
-        self._meta[id(client)] = ConnectionMeta(
-            created_at=now,
-            last_used=now,
-            conn_id=uuid.uuid4().hex,
-        )
-        self._total_created += 1
         return client
 
     def _touch(self, conn: SSHClient) -> None:
@@ -240,11 +314,11 @@ class SyncConnectionPool:
     def _close_connection(self, conn: SSHClient) -> None:
         with contextlib.suppress(Exception):
             conn.disconnect()
-        self._meta.pop(id(conn), None)
         with self._lock:
-            tracked = conn in self._connections
+            self._meta.pop(id(conn), None)
+            tracked = any(existing is conn for existing in self._connections)
             if tracked:
-                self._connections.remove(conn)
+                self._connections = [existing for existing in self._connections if existing is not conn]
         # exactly-once：仅对仍被池追踪的连接释放预算。
         # close_all 与 release 可能对同一连接重复调用 _close_connection，
         # 用 tracked 守卫避免预算被超额释放（BoundedSemaphore 会抛 ValueError）
@@ -256,15 +330,18 @@ class SyncConnectionPool:
     # ------------------------------------------------------------------
     def start_monitor(self) -> None:
         """启动后台清理线程（幂等）。"""
-        if self._monitor_thread is not None and self._monitor_thread.is_alive():
-            return
-        self._stop_event.clear()
-        self._monitor_thread = threading.Thread(
-            target=self._monitor_loop,
-            name="sync-connection-pool-monitor",
-            daemon=True,
-        )
-        self._monitor_thread.start()
+        with self._lock:
+            if self._closed:
+                raise PoolClosedError("connection pool is closed")
+            if self._monitor_thread is not None and self._monitor_thread.is_alive():
+                return
+            self._stop_event.clear()
+            self._monitor_thread = threading.Thread(
+                target=self._monitor_loop,
+                name="sync-connection-pool-monitor",
+                daemon=True,
+            )
+            self._monitor_thread.start()
 
     def stop_monitor(self) -> None:
         """停止后台清理线程。"""
@@ -291,8 +368,11 @@ class SyncConnectionPool:
         # 可能 put 到旧队列导致连接泄漏（未关闭、信号量已释放、池中不可见）。
         with self._lock:
             snapshot: list[SSHClient] = []
-            while not self._free.empty():
-                snapshot.append(self._free.get_nowait())
+            while True:
+                try:
+                    snapshot.append(self._free.get_nowait())
+                except queue.Empty:
+                    break
         keep: list[SSHClient] = []
         for conn in snapshot:
             meta = self._meta.get(id(conn))
@@ -301,9 +381,15 @@ class SyncConnectionPool:
                 continue
             keep.append(conn)
         # 将存活连接放回同一队列对象
+        close_after_snapshot: list[SSHClient] = []
         with self._lock:
-            for conn in keep:
-                self._free.put_nowait(conn)
+            if self._closed:
+                close_after_snapshot = keep
+            else:
+                for conn in keep:
+                    self._free.put_nowait(conn)
+        for conn in close_after_snapshot:
+            self._close_connection(conn)
 
     # ------------------------------------------------------------------
     # 上下文管理
@@ -332,15 +418,28 @@ class SyncConnectionPool:
 
     def close_all(self) -> None:
         """关闭池中所有连接并停止监控。"""
-        self._closed = True
-        self.stop_monitor()
         with self._lock:
+            first_close = not self._closed
+            self._closed = True
+            if first_close:
+                self._closed_event.set()
+                # semaphore 没有原生 close/wakeup 接口。为已登记的 acquire
+                # waiter 发放临时唤醒许可；它们醒来会检查 _closed 并退出。
+                for _ in range(self._acquire_waiters):
+                    self._semaphore.release()
+                self._closed_leases.update(self._leased)
+                self._leased.clear()
+                while True:
+                    try:
+                        self._free.get_nowait()
+                    except queue.Empty:
+                        break
             conns = list(self._connections)
+        if first_close and self._connection_budget is not None:
+            self._connection_budget._notify_waiters()
+        self.stop_monitor()
         for conn in conns:
             self._close_connection(conn)
-        # 释放所有信号量
-        while not self._free.empty():
-            self._free.get_nowait()
 
     def __enter__(self) -> "SyncConnectionPool":
         self.start_monitor()

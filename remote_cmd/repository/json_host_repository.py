@@ -31,6 +31,7 @@ from remote_cmd.repository.host_repository import HostRepository
 from remote_cmd.utils.credential_guard import PasswordGuard, is_plaintext_password
 from remote_cmd.utils.crypto import CredentialEncryption
 from remote_cmd.utils.exceptions import (
+    ConfigError,
     CredentialError,
     PlaintextCredentialWarning,
     ValidationError,
@@ -79,6 +80,7 @@ class JsonHostRepository(HostRepository):
         self._hosts: dict[str, Host] = {}
         self._profiles: dict[str, HostProfile] = {}
         self._recipes: dict[str, Recipe] = {}
+        self._load_error = False
 
         if auto_load and self._filepath.exists():
             self._load()
@@ -95,12 +97,12 @@ class JsonHostRepository(HostRepository):
         （仅当构造时传入了 encryption）。请勿绕过 HostService 直接以明文
         密码调用 save() 后再 flush() 落盘——确保传入了 encryption。
         """
-        self._hosts[host.name] = host
+        self._hosts[host.name] = self._copy_host(host)
 
     def get(self, name: str) -> Host:
         if name not in self._hosts:
             raise KeyError(f"Host '{name}' not found")
-        return self._hosts[name]
+        return self._copy_host(self._hosts[name])
 
     def delete(self, name: str) -> None:
         if name not in self._hosts:
@@ -108,7 +110,7 @@ class JsonHostRepository(HostRepository):
         del self._hosts[name]
 
     def list(self, tag: Optional[str] = None) -> list[Host]:
-        hosts = list(self._hosts.values())
+        hosts = [self._copy_host(host) for host in self._hosts.values()]
         if tag:
             hosts = [h for h in hosts if h.tags and tag in h.tags]
         return hosts
@@ -117,7 +119,7 @@ class JsonHostRepository(HostRepository):
         tags: set[str] = set()
         for host in self._hosts.values():
             if host.tags:
-                tags.update(host.tags)
+                tags.update(tag for tag in host.tags if isinstance(tag, str))
         return sorted(tags)
 
     def contains(self, name: str) -> bool:
@@ -132,12 +134,12 @@ class JsonHostRepository(HostRepository):
 
     def save_profile(self, profile: HostProfile) -> None:
         """保存 Profile 到内存，随后需要调用 flush() 写入文件。"""
-        self._profiles[profile.name] = profile
+        self._profiles[profile.name] = HostProfile.from_dict(profile.to_dict())
 
     def get_profile(self, name: str) -> HostProfile:
         if name not in self._profiles:
             raise KeyError(f"Profile '{name}' not found")
-        return self._profiles[name]
+        return HostProfile.from_dict(self._profiles[name].to_dict())
 
     def delete_profile(self, name: str) -> None:
         if name not in self._profiles:
@@ -145,7 +147,9 @@ class JsonHostRepository(HostRepository):
         del self._profiles[name]
 
     def list_profiles(self) -> builtins.list[HostProfile]:
-        return [self._profiles[name] for name in sorted(self._profiles)]
+        return [
+            HostProfile.from_dict(self._profiles[name].to_dict()) for name in sorted(self._profiles)
+        ]
 
     def contains_profile(self, name: str) -> bool:
         return name in self._profiles
@@ -156,12 +160,12 @@ class JsonHostRepository(HostRepository):
 
     def save_recipe(self, recipe: Recipe) -> None:
         """保存 Recipe 到内存，随后需要调用 flush() 写入文件。"""
-        self._recipes[recipe.name] = recipe
+        self._recipes[recipe.name] = Recipe.from_dict(recipe.to_dict())
 
     def get_recipe(self, name: str) -> Recipe:
         if name not in self._recipes:
             raise KeyError(f"Recipe '{name}' not found")
-        return self._recipes[name]
+        return Recipe.from_dict(self._recipes[name].to_dict())
 
     def delete_recipe(self, name: str) -> None:
         if name not in self._recipes:
@@ -169,7 +173,7 @@ class JsonHostRepository(HostRepository):
         del self._recipes[name]
 
     def list_recipes(self) -> builtins.list[Recipe]:
-        return [self._recipes[name] for name in sorted(self._recipes)]
+        return [Recipe.from_dict(self._recipes[name].to_dict()) for name in sorted(self._recipes)]
 
     def contains_recipe(self, name: str) -> bool:
         return name in self._recipes
@@ -186,7 +190,13 @@ class JsonHostRepository(HostRepository):
 
         Raises:
             CredentialError: allow_plaintext_credentials=False 且存在明文密码
+            ConfigError: 已加载的文件格式损坏；拒绝用不完整的内存状态覆盖原文件
         """
+        if self._load_error:
+            raise ConfigError(
+                f"refusing to overwrite malformed JSON store at {self._filepath}; "
+                "restore a valid backup or move the damaged file before writing"
+            )
         data = self._serialize()
         self._atomic_write(data)
 
@@ -243,12 +253,32 @@ class JsonHostRepository(HostRepository):
         try:
             with open(self._filepath, encoding="utf-8") as f:
                 raw = json.load(f)
-        except (json.JSONDecodeError, FileNotFoundError) as e:
+        except FileNotFoundError:
+            return
+        except json.JSONDecodeError as e:
+            self._load_error = True
             logger.warning(f"failed to load config file: {e}")
+            return
+
+        if not isinstance(raw, dict):
+            self._load_error = True
+            logger.warning("failed to load config file: top-level JSON value must be an object")
             return
 
         # 检查版本并迁移
         version = raw.get("version", 1)
+        if isinstance(version, bool) or not isinstance(version, int) or version < 1:
+            self._load_error = True
+            logger.warning("failed to load config file: invalid schema version %r", version)
+            return
+        if version > CONFIG_VERSION:
+            self._load_error = True
+            logger.warning(
+                "config schema version %s is newer than this package supports (%s)",
+                version,
+                CONFIG_VERSION,
+            )
+            return
         if version < CONFIG_VERSION:
             logger.info(f"config version {version} -> {CONFIG_VERSION}，running migration")
 
@@ -257,17 +287,26 @@ class JsonHostRepository(HostRepository):
         if version == 1 and isinstance(hosts_data, dict):
             pass  # hosts_data 已经是正确的格式
 
+        if not isinstance(hosts_data, dict):
+            self._load_error = True
+            logger.warning("failed to load config file: 'hosts' must be an object")
+            hosts_data = {}
+
         self._hosts = {}
         for name, host_data in hosts_data.items():
+            if not isinstance(host_data, dict):
+                logger.warning("skipping invalid host '%s': expected an object", name)
+                continue
             pw = host_data.get("password")
             if self._guard.is_encrypted(pw):
                 resolved = self._guard.decrypt(pw)
                 if resolved is None:
+                    self._load_error = True
                     logger.error(f"decrypting password for host '{name}' failed")
                 host_data["password"] = resolved
 
             try:
-                host = Host.from_dict(host_data)
+                host = self._copy_host(Host.from_dict(host_data))
                 self._hosts[name] = host
             except (ValueError, TypeError, KeyError) as e:
                 logger.warning(f"skipping invalid host '{name}': {e}")
@@ -275,21 +314,37 @@ class JsonHostRepository(HostRepository):
         # Profile（v2.8；旧文件无该段时为空）
         self._profiles = {}
         profiles_data = raw.get("profiles", {})
+        if not isinstance(profiles_data, dict):
+            self._load_error = True
+            logger.warning("failed to load profiles: 'profiles' must be an object")
+            profiles_data = {}
         if isinstance(profiles_data, dict):
             for name, profile_data in profiles_data.items():
+                if not isinstance(profile_data, dict):
+                    logger.warning("skipping invalid profile '%s': expected an object", name)
+                    continue
                 try:
                     self._profiles[name] = HostProfile.from_dict(profile_data)
                 except (ValueError, TypeError, KeyError, ValidationError) as e:
+                    self._load_error = True
                     logger.warning(f"skipping invalid profile '{name}': {e}")
 
         # Recipe（v2.9；旧文件无该段时为空）
         self._recipes = {}
         recipes_data = raw.get("recipes", {})
+        if not isinstance(recipes_data, dict):
+            self._load_error = True
+            logger.warning("failed to load recipes: 'recipes' must be an object")
+            recipes_data = {}
         if isinstance(recipes_data, dict):
             for name, recipe_data in recipes_data.items():
+                if not isinstance(recipe_data, dict):
+                    logger.warning("skipping invalid recipe '%s': expected an object", name)
+                    continue
                 try:
                     self._recipes[name] = Recipe.from_dict(recipe_data)
                 except (ValueError, TypeError, KeyError, ValidationError) as e:
+                    self._load_error = True
                     logger.warning(f"skipping invalid recipe '{name}': {e}")
 
     def _atomic_write(self, data: dict[str, Any]) -> None:
@@ -304,7 +359,23 @@ class JsonHostRepository(HostRepository):
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
             os.replace(tmp_path, str(self._filepath))
+            # Persist the directory entry as well as the file contents on
+            # POSIX. Directory fsync is not portable, so it is best-effort.
+            if os.name != "nt":
+                try:
+                    directory_fd = os.open(self._filepath.parent, os.O_RDONLY)
+                except OSError:
+                    logger.debug("directory fsync unavailable for %s", self._filepath.parent)
+                else:
+                    try:
+                        os.fsync(directory_fd)
+                    except OSError:
+                        logger.debug("directory fsync failed for %s", self._filepath.parent)
+                    finally:
+                        os.close(directory_fd)
         except Exception:
             # 清理临时文件
             with contextlib.suppress(OSError):
@@ -319,8 +390,18 @@ class JsonHostRepository(HostRepository):
 
     def load_from_dict(self, data: dict[str, Host]) -> None:
         """从字典批量加载主机（替换当前所有）"""
-        self._hosts = dict(data)
+        self._hosts = {name: self._copy_host(host) for name, host in data.items()}
 
     def to_dict(self) -> dict[str, Host]:
         """导出所有主机的字典"""
-        return dict(self._hosts)
+        return {name: self._copy_host(host) for name, host in self._hosts.items()}
+
+    @staticmethod
+    def _copy_host(host: Host) -> Host:
+        """Clone a Host and normalize malformed persisted tags to strings."""
+        data = host.to_dict()
+        tags = data.get("tags")
+        data["tags"] = (
+            [tag for tag in tags if isinstance(tag, str)] if isinstance(tags, list) else []
+        )
+        return Host.from_dict(data)

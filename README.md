@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  <b><code>pip install remote_cmd_manager</code></b> &nbsp;·&nbsp;
+  <b><code>pip install remote-cmd-manager</code></b> &nbsp;·&nbsp;
   <a href="#quick-start">Quick Start</a> &nbsp;·&nbsp;
   <a href="#use-cases">Use Cases</a> &nbsp;·&nbsp;
   <a href="#cli-reference">CLI Reference</a> &nbsp;·&nbsp;
@@ -31,35 +31,62 @@
 
 ```bash
 # One command to get started
-pip install remote_cmd_manager && remote-cmd host add web-01 192.168.1.10 ubuntu --key ~/.ssh/id_rsa && remote-cmd run web-01 "uptime"
+pip install remote-cmd-manager && remote-cmd host add web-01 192.168.1.10 ubuntu --key ~/.ssh/id_rsa && remote-cmd run web-01 "uptime"
 ```
 
 ---
 
-## v2.10.0 Release Highlights
+## v2.11.0 Release Highlights
 
-v2.10.0 is a maintenance & quality release: CI signal hardening, package-wide
-mypy strict, dependency auditing, and secret scanning. No new user features;
-public APIs are unchanged. See the [full migration notes](./CHANGELOG.md).
+v2.11.0 is a reliability & scalability release: connection lifecycle hardening,
+bounded batch scheduling, persistent TaskRunner workers, SQLite schema v4, and
+safer SFTP transfers. No CLI commands were removed; see Compatibility Notice below
+and the [full migration notes](./CHANGELOG.md).
 
-### CI Reliability
+### Reliability
 
-- Codecov step migrated to the current `files:` input (`codecov/codecov-action@v6`) — the workflow warning is gone.
-- `test_pending_count` no longer depends on fixed sleeps: it observes the PENDING state with a bounded wait and repeats 20× — the macOS timing flake is removed.
+- Connection pool close/create races fixed; `ConnectionBudget` FIFO waiters with
+  reserved wakeup, timeout/cancellation slot return, and close wakes all waiters.
+- Paramiko wall-clock timeout covers channel setup, output draining, and
+  exit-status wait; AsyncSSH timeouts map to `SSHCommandTimeoutError` with
+  cancellation cleanup.
+- SFTP uploads/downloads stage to temp files/dirs and commit atomically; failed
+  sessions are discarded before reuse. The CLI closes its repository
+  deterministically.
 
-### Type Quality
+### Scalability
 
-- **mypy strict now covers the entire `remote_cmd` package** (previously `strict = false` despite the README claim); all baseline errors fixed with real annotations, no blanket ignores.
-- Strict typing surfaced and fixed a latent bug: async `execute_sudo(password=...)` wrote `str` into a bytes stream and would crash on real connections — it now writes UTF-8 bytes with a regression test.
+- Sync/Async Batch Executors use bounded worker scheduling: worker/task/future
+  counts stay under the concurrency limit while `BatchResult` still holds one
+  entry per host.
+- Lower Paramiko per-command thread overhead, reusable bounded TaskRunner workers
+  with idle retirement, and one cached SQLite connection per calling thread.
+- Representative synthetic/local numbers (not production throughput guarantees):
+  1000-host batch ~3003→~2003 threads; 10k TaskRunner tasks 10000 thread
+  starts→8 workers; 10k SQLite saves ~2.5s→~0.7s over a single connection.
 
-### Supply-Chain Checks
+### Storage
 
-- New CI `dependency-audit` job: `pip-audit` on an isolated runtime-deps venv is **blocking**; dev tooling audit is advisory.
-- New CI `secret-scan` job: gitleaks with a minimal allowlist (generated docs/build artifacts and the local `hosts.json` only).
+- SQLite schema v4 with an indexed `host_tags` relation (exact tag filtering,
+  auto-backfilled from v3); JSON → SQLite transactional migration.
+
+### Security
+
+- `RejectPolicy` preserved with system/user `known_hosts` loaded by default;
+  secure SFTP staging; `pip-audit` and gitleaks enforced in CI.
+
+### Compatibility Notice
+
+- JSON repository `get()`/`list()` now return **detached snapshots** (SQLite
+  already did): mutating a returned object requires an explicit `save()`.
+  Migration: `h = repo.get(n); h.port = 2222; repo.save(h)`.
+- New API additions (`cancel_event`, `get_metrics()` waiter count,
+  `TaskRunner.close()`, `SqliteHostRepository.close()`) are optional and
+  backward compatible. See [migration notes](./CHANGELOG.md).
 
 ## Table of Contents
 
-- [v2.10.0 Release Highlights](#v2100-release-highlights)
+- [v2.11.0 Release Highlights](#v2110-release-highlights)
 
 
 - [v2.9.0 Release Highlights](#v290-release-highlights)
@@ -97,7 +124,7 @@ public APIs are unchanged. See the [full migration notes](./CHANGELOG.md).
 
 ```bash
 # 1. Install
-pip install remote_cmd_manager
+pip install remote-cmd-manager
 
 # 2. Add a server
 remote-cmd host add web-01 192.168.1.10 ubuntu --key ~/.ssh/id_rsa
@@ -241,10 +268,10 @@ with SSHClient(config) as client:
 
 ```bash
 # From PyPI (recommended) — keeps API and CLI in sync
-pip install remote_cmd_manager
+pip install remote-cmd-manager
 
 # With native async support (AsyncSSHClient / AsyncConnectionPool / AsyncBatchExecutor)
-pip install "remote_cmd_manager[async]"
+pip install "remote-cmd-manager[async]"
 
 # From source
 git clone git@github.com:Vae-Scrooge/remote-cmd.git
@@ -283,15 +310,17 @@ are simply not exported.
 
 ## Project Status
 
-**Stable.** The core API is stable and versioned under semantic versioning. Breaking changes are communicated via major-version bumps, and the public API surface has been stable since the 1.x line.
+**Stable — v2.11.0.** The core API is stable and versioned under semantic
+versioning; Linux, macOS, and Windows are tested (Python 3.10+). No CLI commands
+or major public API entry points were removed in v2.11.0; behavioral changes are
+documented in the [migration notes](./CHANGELOG.md).
 
 **Roadmap:**
-- [x] Async SSH operations (parallel execution) — v1.1.0
-- [x] Pluggable storage backends (JSON + SQLite) — v1.2.x
-- [x] Chainable credential providers + at-rest encryption — v1.2.x
-- [x] Configuration profiles (AWS, GCP, custom) — v2.8.0
-- [x] Output formatting (JSON, table) — v2.8.0
-- [x] Templated command recipes (typed variables, shell-quoted) — v2.9.0
+- Observability and lightweight metrics
+- Extensible plugin architecture
+- Persistent task/result storage
+- Large-scale execution and result handling
+- API ergonomics and long-term compatibility
 
 Good first issues are labelled `good first issue` in the
 [issue tracker](https://github.com/Vae-Scrooge/remote-cmd/issues) — contributions welcome.

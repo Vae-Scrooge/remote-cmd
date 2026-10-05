@@ -15,7 +15,7 @@
 </p>
 
 <p align="center">
-  <b><code>pip install remote_cmd_manager</code></b> &nbsp;·&nbsp;
+  <b><code>pip install remote-cmd-manager</code></b> &nbsp;·&nbsp;
   <a href="#快速开始">快速开始</a> &nbsp;·&nbsp;
   <a href="#使用场景">使用场景</a> &nbsp;·&nbsp;
   <a href="#cli-命令参考">CLI 命令参考</a> &nbsp;·&nbsp;
@@ -36,34 +36,57 @@
 
 ```bash
 # 一条命令即可上手
-pip install remote_cmd_manager && remote-cmd host add web-01 192.168.1.10 ubuntu --key ~/.ssh/id_rsa && remote-cmd run web-01 "uptime"
+pip install remote-cmd-manager && remote-cmd host add web-01 192.168.1.10 ubuntu --key ~/.ssh/id_rsa && remote-cmd run web-01 "uptime"
 ```
 
 ---
 
-## v2.10.0 发布亮点
+## v2.11.0 发布亮点
 
-v2.10.0 是维护与质量版本：CI 信号加固、全包 mypy strict、依赖审计与密钥扫描。
-无新用户功能，公共 API 不变。升级前请查看[完整迁移说明](./CHANGELOG.md)。
+v2.11.0 是可靠性与可扩展性版本：连接生命周期加固、有界批量调度、常驻 TaskRunner
+worker、SQLite schema v4，以及更安全的 SFTP 传输。未删除任何 CLI 命令；行为变化见下
+兼容性说明与[完整迁移说明](./CHANGELOG.md)。
 
-### CI 可靠性
+### 可靠性
 
-- Codecov 步骤改用 `codecov/codecov-action@v6` 当前的 `files:` 输入，workflow 警告消失。
-- `test_pending_count` 不再依赖固定 sleep：用有界等待观察 PENDING 状态并重复 20 次，macOS 时间竞态消除。
+- 修复连接池 close/create 竞态；`ConnectionBudget` FIFO 等待者在唤醒前预留容量，
+  超时/取消归还槽位，关闭时唤醒全部等待者。
+- Paramiko wall-clock 超时覆盖建连、输出排空与 exit-status 等待；AsyncSSH 超时统一
+  映射为 `SSHCommandTimeoutError` 并做好取消清理。
+- SFTP 上传/下载先写入暂存文件/目录再原子提交；失败会话在复用前丢弃。
+  CLI 通过 `call_on_close` 确定性关闭仓库。
 
-### 类型质量
+### 可扩展性
 
-- **mypy strict 覆盖整个 `remote_cmd` 包**（此前 `strict = false` 却与 README 声明不符）；51 项基线错误全部用真实注解修复，无批量 ignore。
-- strict 揭示并修复一个潜在缺陷：异步 `execute_sudo(password=...)` 向 bytes 流写入 `str`，真实连接会崩溃；现写入 UTF-8 bytes 并有回归测试。
+- Sync/Async Batch Executor 使用有界 worker 调度：worker/task/future 数量受并发度
+  限制，`BatchResult` 仍为每台主机保留一项。
+- 降低 Paramiko 单命令辅助线程开销；有界可复用 TaskRunner worker（空闲退出）；
+  每个调用线程缓存一个 SQLite 连接。
+- 代表性 synthetic/local 数据（非生产吞吐承诺）：1000 主机批量约 3003→2003 线程；
+  10k TaskRunner 任务 10000 次线程启动→8 个 worker；10k SQLite 保存约 2.5s→0.7s，
+  仅用一个连接。
 
-### 供应链检查
+### 存储
 
-- 新增 CI `dependency-audit` job：隔离 runtime 依赖后用 `pip-audit` **阻断**；dev 工具链审计为 advisory。
-- 新增 CI `secret-scan` job：gitleaks + 最小允许列表（仅生成物 docs/build 与本地 `hosts.json`）。
+- SQLite schema v4，新增可索引 `host_tags` 关系（精确标签过滤，v3 自动回填）；
+  JSON → SQLite 事务化迁移。
+
+### 安全性
+
+- 保留 `RejectPolicy` 并默认加载系统/用户 `known_hosts`；安全的 SFTP 暂存；
+  CI 强制 `pip-audit` 与 gitleaks。
+
+### 兼容性说明
+
+- JSON 仓库 `get()`/`list()` 现在返回**脱离内部状态的快照**（SQLite 早已如此）：
+  修改返回对象后需要显式 `save()` 才会持久化。
+  迁移：`h = repo.get(n); h.port = 2222; repo.save(h)`。
+- 新增 API 均为可选兼容加法（`cancel_event`、`get_metrics()` 等待者计数、
+  `TaskRunner.close()`、`SqliteHostRepository.close()`）。详见[迁移说明](./CHANGELOG.md)。
 
 ## 目录
 
-- [v2.10.0 发布亮点](#v2100-发布亮点)
+- [v2.11.0 发布亮点](#v2110-发布亮点)
 
 
 - [v2.9.0 发布亮点](#v290-发布亮点)
@@ -101,7 +124,7 @@ v2.10.0 是维护与质量版本：CI 信号加固、全包 mypy strict、依赖
 
 ```bash
 # 1. 安装
-pip install remote_cmd_manager
+pip install remote-cmd-manager
 
 # 2. 添加服务器
 remote-cmd host add web-01 192.168.1.10 ubuntu --key ~/.ssh/id_rsa
@@ -231,10 +254,10 @@ with SSHClient(config) as client:
 
 ```bash
 # 从 PyPI 安装（推荐）—— 同步 API 与 CLI
-pip install remote_cmd_manager
+pip install remote-cmd-manager
 
 # 启用原生异步支持（AsyncSSHClient / AsyncConnectionPool / AsyncBatchExecutor）
-pip install "remote_cmd_manager[async]"
+pip install "remote-cmd-manager[async]"
 
 # 从源码安装
 git clone git@github.com:Vae-Scrooge/remote-cmd.git
@@ -269,16 +292,16 @@ pip install -e ".[dev]"
 
 ## 项目状态
 
-**稳定版（v2.10.0）。** 核心 API 已稳定并遵循语义化版本；破坏性变更会通过主版本升级和迁移说明提前告知。
+**稳定版（v2.11.0）。** 核心 API 已稳定并遵循语义化版本；在 Linux、macOS、Windows
+均已测试（Python 3.10+）。v2.11.0 未删除 CLI 命令或主要 public API 入口；
+行为语义变化已在[迁移说明](./CHANGELOG.md)中说明。
 
 **路线图：**
-- [x] 异步 SSH 操作（并行执行）— v1.1.0
-- [x] 可插拔存储后端（JSON + SQLite）— v1.2.x
-- [x] 可链式凭据提供者 + 静态加密 — v1.2.x
-- [x] 配置档案（AWS、GCP、自定义）— v2.8.0
-- [x] 输出格式化（JSON、表格）— v2.8.0
-- [x] 类型化、安全的命令 Recipe — v2.9.0
-- [x] 全包 mypy strict、依赖审计与密钥扫描 — v2.10.0
+- 可观测性与轻量指标
+- 可扩展插件架构
+- 持久化任务/结果存储
+- 大规模执行与结果处理
+- API 易用性与长期兼容
 
 `good first issue` 标签下的问题很适合新手——
 欢迎在[问题跟踪器](https://github.com/Vae-Scrooge/remote-cmd/issues)中查看并参与贡献。

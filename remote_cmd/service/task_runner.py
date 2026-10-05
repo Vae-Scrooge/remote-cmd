@@ -454,7 +454,10 @@ class TaskRunner:
                     and not self._waiters.get(task_id, 0)
                 ):
                     age = (now - task.completed_at).total_seconds()
-                    if age > max_age_seconds:
+                    # NOTE: >= (not >) — Windows datetime resolution is ~15ms,
+                    # so a just-completed task can have age exactly 0.0 and
+                    # cleanup_old(0) must still deterministically remove it.
+                    if age >= max_age_seconds:
                         to_remove.append(task_id)
 
             for task_id in to_remove:

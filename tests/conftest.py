@@ -79,3 +79,18 @@ def temp_json_path(tmp_path):
 # ============================================================================
 # 异步测试辅助
 # ============================================================================
+
+def make_cli_runner():
+    """创建 stderr 分离的 Click CliRunner（兼容 Click <8.2 与 >=8.2）。
+
+    Click 8.2 移除了 ``CliRunner(mix_stderr=...)`` 参数，且默认即分离
+    stderr（与旧版 ``mix_stderr=False`` 语义一致）。此处按签名探测，
+    保证 ``click>=8.0`` 全范围可用。
+    """
+    import inspect
+
+    from click.testing import CliRunner
+
+    if "mix_stderr" in inspect.signature(CliRunner.__init__).parameters:
+        return CliRunner(mix_stderr=False)
+    return CliRunner()

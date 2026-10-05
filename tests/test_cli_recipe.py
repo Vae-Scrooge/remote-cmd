@@ -8,6 +8,7 @@ from click.testing import CliRunner
 
 from remote_cmd.cli.main import cli
 from remote_cmd.service._types import BatchHostResult, BatchResult
+from tests.conftest import make_cli_runner
 
 
 @pytest.fixture
@@ -127,7 +128,7 @@ class TestRecipeCrudCli:
         assert "private-value" not in result.output
 
     def test_json_recipe_validation_error_is_valid_json(self, config_file):
-        runner = CliRunner(mix_stderr=False)
+        runner = make_cli_runner()
         _invoke(runner, config_file, "recipe", "add", "deploy", "-c", "deploy {{ package }}", "-V", "package")
         result = _invoke(
             runner,

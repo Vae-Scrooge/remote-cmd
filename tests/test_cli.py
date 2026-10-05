@@ -14,6 +14,7 @@ from click.testing import CliRunner
 from remote_cmd import __version__
 from remote_cmd.cli.main import cli
 from remote_cmd.core.ssh_client import CommandResult
+from tests.conftest import make_cli_runner
 
 
 @pytest.fixture
@@ -574,7 +575,7 @@ class TestRun:
             assert "error msg" in result.output
 
     def test_json_errors_remain_parseable_with_verbose_diagnostics(self, config_file):
-        result = CliRunner(mix_stderr=False).invoke(
+        result = make_cli_runner().invoke(
             cli,
             [
                 "--config",
@@ -598,7 +599,7 @@ class TestRun:
         assert "Using hosts file" in result.stderr
 
     def test_json_keyboard_interrupt_emits_result(self, config_file):
-        runner = CliRunner(mix_stderr=False)
+        runner = make_cli_runner()
         with patch("remote_cmd.service.host_service.HostService.connect_to_host") as connect:
             context = MagicMock()
             client = MagicMock()
@@ -981,7 +982,7 @@ class TestBatchRun:
         assert "max_concurrency" in payload["results"]["srv1"]["error"]
 
     def test_json_keyboard_interrupt_emits_batch_result(self, config_file):
-        runner = CliRunner(mix_stderr=False)
+        runner = make_cli_runner()
         with patch("remote_cmd.cli.main.BatchExecutor") as executor_class:
             executor_class.return_value.execute.side_effect = KeyboardInterrupt
             result = runner.invoke(

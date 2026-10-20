@@ -26,8 +26,22 @@ from typing import Any, Optional
 # ============================================================================
 
 SENSITIVE_FIELDS = {"password", "passwd", "secret", "token", "key"}
+
+# 敏感字段（key）的取值范围。
+_SENSITIVE_KEY = r"password|passwd|secret|api[_-]?key|token"
+
+# 敏感值的边界：
+# - 引号包裹的值以配对的引号结束（``"a b c"`` / ``'a b c'``）；
+# - 未加引号的值由空白分隔的若干词组成，但遇到结构性分隔符（``,`` ``;``
+#   ``&``）或**下一个** ``key=value`` / ``key: value`` 字段时结束。
+#   因此 ``password=correct horse battery staple`` 整体被视为一个值，
+#   而 ``password=secret status=ok`` 只把 ``secret`` 当作值。
+# 负向前瞻 ``(?! ... [=:] )`` 用于在下一个字段前停下，避免把后续字段
+# 一并吞掉（同时保证多词口令的尾部单词不会泄漏到日志中）。
 SENSITIVE_PATTERN = re.compile(
-    r'(?:password|passwd|secret|api[_-]?key|token)\s*[=:]\s*["\']?([^"\'&\s,;]+)',
+    rf"(?P<key>{_SENSITIVE_KEY})"
+    r"(?P<gap>\s*)(?P<sep>[=:])(?P<sp>\s*)"
+    r'(?P<value>"[^"\n]*"|\'[^\'\n]*\'|[^\s,;&]+(?:\s+(?![^\s,;&]+[=:])[^\s,;&]+)*)',
     re.IGNORECASE,
 )
 
@@ -37,13 +51,23 @@ def redact_sensitive_data(message: str) -> str:
     过滤日志消息中敏感信息
 
     替换密码等字段的值为 [REDACTED]。
+
+    敏感值的**整体**都会被替换：含空格的口令（``password=correct horse
+    battery staple``）不会只替换首个单词而把其余单词留在日志里。值的边界
+    为配对引号、结构性分隔符（``,`` ``;`` ``&``）或下一个 ``key=value``
+    字段，以保留后续字段的可读性。
     """
 
     def _redact(m: re.Match[str]) -> str:
-        text = m.group(0)
-        if "=" in text:
-            return f"{text.split('=')[0]}=[REDACTED]"
-        return f"{text.split(':')[0]}: [REDACTED]"
+        key = m.group("key")
+        gap = m.group("gap")
+        sep = m.group("sep")
+        sp = m.group("sp")
+        value = m.group("value")
+        # 引号包裹的值保留引号，仅替换引号内的内容（保持日志行结构）。
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+            return f"{key}{gap}{sep}{sp}{value[0]}[REDACTED]{value[-1]}"
+        return f"{key}{gap}{sep}{sp}[REDACTED]"
 
     return SENSITIVE_PATTERN.sub(_redact, message)
 

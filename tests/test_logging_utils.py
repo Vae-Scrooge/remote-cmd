@@ -47,6 +47,27 @@ class TestRedactSensitiveData:
         """测试：大小写不敏感（Token=xxx）"""
         assert redact_sensitive_data("Token=abc") == "Token=[REDACTED]"
 
+    def test_redacts_multi_word_value(self):
+        """测试：含空格的多词口令整体脱敏，不泄漏尾部单词"""
+        result = redact_sensitive_data("password=correct horse battery staple")
+        assert result == "password=[REDACTED]"
+
+    def test_redacts_multi_word_quoted_value(self):
+        """测试：带引号的多词口令整体脱敏，不泄漏明文"""
+        result = redact_sensitive_data("passwd='correct horse battery staple'")
+        assert "correct" not in result
+        assert "horse" not in result
+        assert "battery" not in result
+        assert "staple" not in result
+        assert "[REDACTED]" in result
+
+    def test_redacts_multi_word_value_keeps_following_field(self):
+        """测试：多词口令脱敏后仍保留后续字段"""
+        result = redact_sensitive_data("host=web-1 password=secret phrase status=ok")
+        assert "secret" not in result
+        assert "phrase" not in result
+        assert result.endswith("status=ok")
+
     def test_leaves_plain_message_unchanged(self):
         """测试：无敏感信息时原文不变"""
         msg = "连接主机 web-1 成功"
@@ -72,6 +93,23 @@ class TestSensitiveDataFilter:
         assert SensitiveDataFilter().filter(record) is True
         assert "password=[REDACTED]" in record.msg
         assert "hunter2" not in record.msg
+
+    def test_filters_multipart_secret(self):
+        """测试：过滤消息中含空格的多词口令"""
+        record = logging.LogRecord(
+            "test",
+            logging.INFO,
+            __file__,
+            1,
+            "连接 password=correct horse battery staple",
+            (),
+            None,
+        )
+        assert SensitiveDataFilter().filter(record) is True
+        assert "password=[REDACTED]" in record.msg
+        assert "horse" not in record.msg
+        assert "battery" not in record.msg
+        assert "staple" not in record.msg
 
     def test_filters_args(self):
         """测试：过滤 %s 参数中的敏感信息"""
